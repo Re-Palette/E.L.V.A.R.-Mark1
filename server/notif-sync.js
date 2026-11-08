@@ -1,19 +1,13 @@
-// Relay for phone notifications -> PC. The phone encrypts each notification (AES-256-GCM, key from the owner's access token); this server and
+// Relay for phone notifications -> PC. The phone encrypts each notification (AES-256-GCM, key derived from the vault's notification secret); this server and
 // Upstash Redis only ever see ciphertext + a timestamp. Everything expires after 3 days (enforced on every call, plus a Redis TTL).
+import { getStore } from './store/index.js';
 const KEY = 'elvar:notif:v1', KEEP_MS = 3 * 864e5, MAX_ITEMS = 200;
-const url = () => (process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL || '').replace(/\/+$/, '');
-const token = () => process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN || '';
-export const syncConfigured = () => !!(url() && token());
+export const syncConfigured = () => !!getStore();
 
 async function pipeline(cmds) {
-  if (!syncConfigured()) throw Object.assign(new Error('Redis（Upstash）が未設定です（UPSTASH_REDIS_REST_URL と UPSTASH_REDIS_REST_TOKEN）'), { status: 503 });
-  let r;
-  try { r = await fetch(url() + '/pipeline', { method: 'POST', signal: AbortSignal.timeout(8000), headers: { authorization: `Bearer ${token()}`, 'content-type': 'application/json' }, body: JSON.stringify(cmds) }); }
-  catch (e) { throw Object.assign(new Error(`Redisに接続できません: ${e?.cause?.code || e?.message || e}`), { status: 502 }); }
-  const j = await r.json().catch(() => null);
-  if (!r.ok || !Array.isArray(j)) throw Object.assign(new Error(`Redisのエラー (${r.status})`), { status: 502 });
-  const bad = j.find((x) => x?.error); if (bad) throw Object.assign(new Error(`Redisのエラー: ${String(bad.error).slice(0, 80)}`), { status: 502 });
-  return j.map((x) => x.result);
+  const store = getStore();
+  if (!store) throw Object.assign(new Error('保存先（Upstash Redis）が未設定です。Vercel の Storage から Upstash を追加してください'), { status: 503 });
+  return store.cmd(cmds);
 }
 
 const b64 = /^[A-Za-z0-9+/_=-]+$/;

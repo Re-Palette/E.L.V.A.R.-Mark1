@@ -87,9 +87,11 @@ test('notification crypto: round trip; wrong key or tampering gives null; the Ko
 
 test('notification relay (server): validates items, stores ciphertext only, trims to 3 days, pulls, clears; needs Redis config', async () => {
   const { handleNotif, pushItems, pullSince, validItem, syncConfigured } = await import('../server/notif-sync.js');
-  const keep = { u: process.env.UPSTASH_REDIS_REST_URL, t: process.env.UPSTASH_REDIS_REST_TOKEN, a: process.env.KV_REST_API_URL, b: process.env.KV_REST_API_TOKEN }, real = globalThis.fetch;
+  const keep = { s: process.env.ELVAR_STORE, v: process.env.VERCEL, u: process.env.UPSTASH_REDIS_REST_URL, t: process.env.UPSTASH_REDIS_REST_TOKEN, a: process.env.KV_REST_API_URL, b: process.env.KV_REST_API_TOKEN }, real = globalThis.fetch;
   try {
-    for (const k of ['UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN', 'KV_REST_API_URL', 'KV_REST_API_TOKEN']) delete process.env[k];
+    // The test store is the memory store; here we exercise the Vercel case (no storage at all), then Upstash.
+    for (const k of ['ELVAR_STORE', 'UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN', 'KV_REST_API_URL', 'KV_REST_API_TOKEN']) delete process.env[k];
+    process.env.VERCEL = '1';
     assert.equal(syncConfigured(), false); assert.equal((await handleNotif({ method: 'GET', query: {} })).status, 503); assert.deepEqual((await handleNotif({ method: 'GET', query: { status: 1 } })).body, { configured: false });
     process.env.UPSTASH_REDIS_REST_URL = 'https://x.upstash.io/'; process.env.UPSTASH_REDIS_REST_TOKEN = 'rt';
     const sent = []; let stored = [];
@@ -109,7 +111,7 @@ test('notification relay (server): validates items, stores ciphertext only, trim
     assert.equal((await handleNotif({ method: 'PUT' })).status, 405);
     globalThis.fetch = async () => { throw new TypeError('fetch failed', { cause: { code: 'ENOTFOUND' } }); };
     const down = await handleNotif({ method: 'GET', query: {} }); assert.equal(down.status, 502); assert.match(down.body.error, /ENOTFOUND/);
-  } finally { globalThis.fetch = real; for (const [k, v] of [['UPSTASH_REDIS_REST_URL', keep.u], ['UPSTASH_REDIS_REST_TOKEN', keep.t], ['KV_REST_API_URL', keep.a], ['KV_REST_API_TOKEN', keep.b]]) v === undefined ? delete process.env[k] : (process.env[k] = v); }
+  } finally { globalThis.fetch = real; for (const [k, v] of [['ELVAR_STORE', keep.s], ['VERCEL', keep.v], ['UPSTASH_REDIS_REST_URL', keep.u], ['UPSTASH_REDIS_REST_TOKEN', keep.t], ['KV_REST_API_URL', keep.a], ['KV_REST_API_TOKEN', keep.b]]) v === undefined ? delete process.env[k] : (process.env[k] = v); }
 });
 
 test('notifications: the tool is offered to the voice model; the Android parts exist (listener, bridge, manifest entry)', async () => {
