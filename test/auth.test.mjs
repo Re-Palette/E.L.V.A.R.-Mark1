@@ -236,9 +236,9 @@ test('approval tickets are signed with a key derived from the vault key (same on
   const { token } = await setup(logs);
   const c1 = (await getConfig(withTok(token))).cfg, c2 = (await getConfig(withTok(token))).cfg;
   const t = runWithConfig(c1, () => signTicket('gmail_send', { to: 'a' }));
-  assert.equal(runWithConfig(c2, () => verifyTicket(t, 'gmail_send', { to: 'a' })).ok, true, 'another request / instance of the same vault verifies it');
+  assert.equal((await runWithConfig(c2, () => verifyTicket(t, 'gmail_send', { to: 'a' }))).ok, true, 'another request / instance of the same vault verifies it');
   const t2 = runWithConfig(c1, () => signTicket('gmail_send', { to: 'a' }));
-  assert.equal(runWithConfig(envConfig(), () => verifyTicket(t2, 'gmail_send', { to: 'a' })).ok, false, 'a different key (no vault) cannot');
+  assert.equal((await runWithConfig(envConfig(), () => verifyTicket(t2, 'gmail_send', { to: 'a' }))).ok, false, 'a different key (no vault) cannot');
   assert.equal(c1.ticketKey.length, 32); assert.equal(c1.auth.mode, 'vault'); assert.equal(c1.dek, undefined, 'the vault key itself is not on cfg');
 }));
 

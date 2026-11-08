@@ -122,7 +122,7 @@ test('a ticket cannot be reused for different args, a different tool, or forged/
   assert.equal((await run('gmail_create_draft', args, ticket)).status, 403);
   assert.equal((await run('gmail_send', args, 'garbage.ticket')).status, 403);
   assert.equal((await run('gmail_send', args, ticket.slice(0, -3) + 'AAA')).status, 403);
-  assert.equal(verifyTicket(signTicket('gmail_send', args, Date.now() - 200_000), 'gmail_send', args).ok, false, 'expired');
+  assert.equal((await verifyTicket(signTicket('gmail_send', args, Date.now() - 200_000), 'gmail_send', args)).ok, false, 'expired');
   assert.equal(writes().length, 0, 'none of the refused attempts may send');
   assert.equal((await run('gmail_send', args, ticket)).status, 200, 'the untouched args still work once');
   assert.equal(writes().length, 1);

@@ -69,7 +69,7 @@ export async function executeGoogle({ tool, args = {}, ticket }) {
       const summary = await t.describe(args);
       return { status: 200, body: { ok: true, needsApproval: true, tool, danger: t.danger || 'normal', summary, ticket: signTicket(tool, args) } };
     }
-    const v = verifyTicket(ticket, tool, args);
+    const v = await verifyTicket(ticket, tool, args);
     if (!v.ok) { audit({ tool, outcome: 'refused', reason: v.reason }); return { status: 403, body: { ok: false, error: v.reason } }; }
     const result = await t.run(args);
     audit({ tool, outcome: 'executed', danger: t.danger, args: summarizeArgs(args), result });
