@@ -6,7 +6,7 @@ import { DEFAULT_PROFILE, mergeProfile } from '../profile/defaults.js';
 import { KEYS, keyInfo, isSecret } from './keys.js';
 import { authenticate } from './auth.js';
 import { getStore } from '../store/index.js';
-import { readDoc, ticketKeyFromDek } from './vault.js';
+import { readDoc, ticketKeyFromDek, connectorKeyFromDek } from './vault.js';
 import { loadLogin } from '../google/login-record.js';
 
 const als = new AsyncLocalStorage();
@@ -24,7 +24,7 @@ export function envConfig(auth = { mode: 'env' }) {
     get: (name) => process.env[name],
     source: (name) => (process.env[name] ? 'env' : 'default'),
     secretStatus: () => secretStatus((n) => process.env[n], () => 'env'),
-    profile, connectors: [], features: profile.features || {}, version: 0, google: null,
+    profile, connectors: [], features: profile.features || {}, version: 0, google: null, cxSecret: () => '',
     auth: { mode: auth.mode, deviceId: auth.deviceId },
   };
 }
@@ -62,7 +62,8 @@ export function vaultConfig(doc, auth, docVer, google = null) {
     get, source, secretStatus: () => secretStatus(get, source),
     profile, connectors: Array.isArray(doc.connectors) ? doc.connectors : [], features: profile.features || {}, version: docVer, google,
     auth: { mode: 'vault', deviceId: auth.deviceId },
-    ticketKey: ticketKeyFromDek(auth.dek), notifSecret: doc.notifSecret || null,
+    ticketKey: ticketKeyFromDek(auth.dek), connectorKey: connectorKeyFromDek(auth.dek), notifSecret: doc.notifSecret || null,
+    cxSecret: (id, what = 'auth') => (secrets[`cx:${id}:${what}`] ? String(secrets[`cx:${id}:${what}`]) : ''),
   };
 }
 

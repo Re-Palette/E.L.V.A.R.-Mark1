@@ -134,23 +134,25 @@ async function defaultResolve(hostname) {
   return r.map((x) => ({ address: x.address, family: x.family }));
 }
 
-function defaultTransport({ protocol, ip, port, hostname, hostHeader, method, path, headers, body, maxBytes, signal }) {
+function defaultTransport({ protocol, ip, port, hostname, hostHeader, method, path, headers, body, maxBytes, signal, stopWhen }) {
   return new Promise((resolve, reject) => {
     const lib = protocol === 'http:' ? http : https;
     const opts = { host: ip, port, method, path, headers: { ...headers, host: hostHeader }, agent: false, signal, ...(protocol === 'https:' && !net.isIP(hostname) ? { servername: hostname } : {}) };
     const req = lib.request(opts, (res) => {
-      const chunks = []; let n = 0, truncated = false;
+      const chunks = []; let n = 0, truncated = false, stopped = false, done = false;
+      const hdrs = Object.fromEntries(Object.entries(res.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(', ') : String(v)]));
+      const finish = () => { if (done) return; done = true; resolve({ status: res.statusCode, headers: hdrs, body: Buffer.concat(chunks), truncated, stopped }); };
       res.on('data', (c) => {
-        if (truncated) return;
+        if (truncated || stopped) return;
         n += c.length;
         if (n > maxBytes) { chunks.push(c.subarray(0, c.length - (n - maxBytes))); truncated = true; res.destroy(); req.destroy(); finish(); return; }
         chunks.push(c);
+        // a streaming answer (SSE) may stay open after the message we wanted: the caller can say "that is enough"
+        if (stopWhen) { let enough = false; try { enough = stopWhen(Buffer.concat(chunks), hdrs); } catch { /* not enough yet */ } if (enough) { stopped = true; res.destroy(); req.destroy(); finish(); } }
       });
-      let done = false;
-      const finish = () => { if (done) return; done = true; resolve({ status: res.statusCode, headers: Object.fromEntries(Object.entries(res.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(', ') : String(v)])), body: Buffer.concat(chunks), truncated }); };
       res.on('end', finish);
       res.on('close', finish);
-      res.on('error', (e) => { if (truncated) finish(); else reject(e); });
+      res.on('error', (e) => { if (truncated || stopped) finish(); else reject(e); });
     });
     req.on('error', reject);
     if (body !== undefined && body !== null) req.write(body);
@@ -223,7 +225,7 @@ export async function safeFetch(url, opts = {}) {
       const reqHeaders = body !== undefined && body !== null ? { ...headers, 'content-length': String(Buffer.byteLength(body)) } : headers;
       let res;
       try {
-        res = await Promise.race([transport({ protocol: t.u.protocol, ip: addr.address, family: addr.family, port: t.port, hostname: t.host, hostHeader, method, path: t.u.pathname + t.u.search, headers: reqHeaders, body, maxBytes, signal: ac.signal }), deadline]);
+        res = await Promise.race([transport({ protocol: t.u.protocol, ip: addr.address, family: addr.family, port: t.port, hostname: t.host, hostHeader, method, path: t.u.pathname + t.u.search, headers: reqHeaders, body, maxBytes, signal: ac.signal, stopWhen: opts.stopWhen }), deadline]);
       } catch (e) {
         if (e instanceof SafeFetchError) throw e;
         if (ac.signal.aborted) throw new SafeFetchError('timeout', '時間切れになりました');
@@ -236,7 +238,7 @@ export async function safeFetch(url, opts = {}) {
         current = next; continue;
       }
       const buf = Buffer.from(res.body || []);
-      return { status: res.status, ok: res.status >= 200 && res.status < 300, headers: res.headers || {}, body: buf, truncated: Boolean(res.truncated), url: current, ip: addr.address,
+      return { status: res.status, ok: res.status >= 200 && res.status < 300, headers: res.headers || {}, body: buf, truncated: Boolean(res.truncated), stopped: Boolean(res.stopped), url: current, ip: addr.address,
         text: () => buf.toString('utf8'), json: () => JSON.parse(buf.toString('utf8')) };
     }
   } finally { clearTimeout(timer); }

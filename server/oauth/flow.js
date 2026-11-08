@@ -38,9 +38,9 @@ export const discardPending = (store, state) => (STATE_RE.test(String(state || '
  * @param {object} o  store, provider, authUrl, tokenUrl, clientId, clientSecret, redirectUri, scopes[], createdBy?, params? (extra authorize parameters)
  * @returns {{url:string, state:string, pendingId:string, expiresInSec:number}}
  */
-export async function startFlow({ store, provider, authUrl, tokenUrl, clientId, clientSecret, redirectUri, scopes, createdBy = null, params = {}, now = Date.now() }) {
+export async function startFlow({ store, provider, authUrl, tokenUrl, clientId, clientSecret, redirectUri, scopes, createdBy = null, params = {}, tokenParams = {}, requireRefresh = true, meta = null, now = Date.now() }) {
   const state = crypto.randomBytes(32).toString('base64url'), verifier = newVerifier();
-  await writePending(store, state, { v: 1, phase: 'started', provider, redirectUri, clientId, clientSecret, tokenUrl, verifier, scopes, createdBy, exp: now + PENDING_TTL * 1000 });
+  await writePending(store, state, { v: 1, phase: 'started', provider, redirectUri, clientId, clientSecret, tokenUrl, verifier, scopes, createdBy, tokenParams, requireRefresh, meta, exp: now + PENDING_TTL * 1000 });
   const url = authUrl + '?' + new URLSearchParams({
     client_id: clientId, redirect_uri: redirectUri, response_type: 'code', scope: scopes.join(' '), state,
     code_challenge: challengeS256(verifier), code_challenge_method: 'S256', ...params,
@@ -67,7 +67,7 @@ export async function handleCallback({ store, state, code, error, fetchImpl = fe
   try {
     const r = await fetchImpl(p.tokenUrl, {
       method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ code: String(code), client_id: p.clientId, client_secret: p.clientSecret, redirect_uri: p.redirectUri, grant_type: 'authorization_code', code_verifier: p.verifier }),
+      body: new URLSearchParams({ code: String(code), client_id: p.clientId, ...(p.clientSecret ? { client_secret: p.clientSecret } : {}), redirect_uri: p.redirectUri, grant_type: 'authorization_code', code_verifier: p.verifier, ...(p.tokenParams || {}) }),
       signal: AbortSignal.timeout(15_000),
     });
     j = await r.json().catch(() => ({}));
@@ -76,8 +76,8 @@ export async function handleCallback({ store, state, code, error, fetchImpl = fe
     await settle({ phase: 'error', error: 'network' });
     return { ok: false, reason: 'network', provider: p.provider };
   }
-  if (!j.refresh_token) { await settle({ phase: 'error', error: 'no_refresh_token' }); return { ok: false, reason: 'no_refresh_token', provider: p.provider }; }
-  await settle({ phase: 'done', tokens: { refresh_token: j.refresh_token, access_token: j.access_token || '', expires_in: Number(j.expires_in) || 3600, scope: short(j.scope, 2000) } });
+  if (!j.refresh_token && p.requireRefresh !== false) { await settle({ phase: 'error', error: 'no_refresh_token' }); return { ok: false, reason: 'no_refresh_token', provider: p.provider }; }
+  await settle({ phase: 'done', tokens: { refresh_token: j.refresh_token || '', access_token: j.access_token || '', expires_in: Number(j.expires_in) || 3600, scope: short(j.scope, 2000) } });
   return { ok: true, provider: p.provider };
 }
 
@@ -90,6 +90,6 @@ export async function claimFlow({ store, state, now = Date.now() }) {
   if (!p) return { status: 'missing' };
   if (p.phase === 'started') return { status: 'pending' };
   if (p.phase === 'error') { await discardPending(store, state); return { status: 'error', error: p.error || 'error', description: p.description || '' }; }
-  if (p.phase !== 'done' || !p.tokens?.refresh_token) return { status: 'missing' };
-  return { status: 'ok', provider: p.provider, tokens: p.tokens, scopes: p.scopes || [], clientId: p.clientId, redirectUri: p.redirectUri };
+  if (p.phase !== 'done' || !(p.tokens?.refresh_token || (p.requireRefresh === false && p.tokens?.access_token))) return { status: 'missing' };
+  return { status: 'ok', provider: p.provider, tokens: p.tokens, scopes: p.scopes || [], clientId: p.clientId, redirectUri: p.redirectUri, tokenUrl: p.tokenUrl, meta: p.meta || null };
 }

@@ -199,3 +199,5 @@ export async function updateDoc(store, dek, fn) {
 
 // ---- keys derived from the DEK for other purposes
 export const ticketKeyFromDek = (dek) => hkdf(dek, Buffer.alloc(0), 'elvar-approval-ticket-v1');
+// Connector (MCP OAuth) tokens are refreshed deep inside a tool call where the vault key itself is deliberately not available: they are sealed under this narrower key.
+export const connectorKeyFromDek = (dek) => hkdf(dek, Buffer.alloc(0), 'elvar-connector-tok-v1');
