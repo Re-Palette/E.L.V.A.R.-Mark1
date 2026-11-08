@@ -8,8 +8,11 @@ const path = require('node:path');
 
 const arg = (n) => process.argv.find((a) => a.startsWith(`--${n}=`))?.slice(n.length + 3);
 const START_URL = arg('url') || process.env.ELVAR_URL || 'http://localhost:8787';
-// Access token for /api/live-token (Electron has no window.prompt): env ELVAR_ACCESS_TOKEN or --token=...
-const ACCESS_TOKEN = arg('token') || process.env.ELVAR_ACCESS_TOKEN || '';
+// Optional pre-set credential (the app also has its own sign-in screen): a device token (elv1....) in ELVAR_DEVICE_TOKEN, or the env-mode
+// ELVAR_ACCESS_TOKEN. From the environment only, never from the command line (other users of the computer can read process arguments).
+// It reaches the page over IPC, and only for our own origin.
+const ACCESS_TOKEN = process.env.ELVAR_DEVICE_TOKEN || process.env.ELVAR_ACCESS_TOKEN || '';
+if (arg('token')) console.warn('[elvar] --token is no longer read (process arguments are visible to other users). Use ELVAR_DEVICE_TOKEN, or sign in inside the app.');
 const TEST_LOG = process.env.ELVAR_TEST_LOG === '1'; // prints machine-readable events for automated checks
 const log = (o) => { if (TEST_LOG) console.log('ELVAR_EVT ' + JSON.stringify({ t: Date.now(), ...o })); };
 
@@ -25,6 +28,7 @@ app.on('second-instance', () => bringToFront('second-instance'));
 let win = null, tray = null, quitting = false, topTimer = null;
 const origin = (u) => { try { return new URL(u).origin; } catch { return ''; } };
 const OUR_ORIGIN = origin(START_URL);
+ipcMain.on('elvar:token', (e) => { e.returnValue = origin(e.senderFrame?.url || '') === OUR_ORIGIN ? ACCESS_TOKEN : ''; });
 
 function createWindow() {
   win = new BrowserWindow({
@@ -35,7 +39,6 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true, nodeIntegration: false, sandbox: true,
       backgroundThrottling: false,
-      additionalArguments: ACCESS_TOKEN ? [`--elvar-token=${ACCESS_TOKEN}`] : [],
       autoplayPolicy: 'no-user-gesture-required',
     },
   });

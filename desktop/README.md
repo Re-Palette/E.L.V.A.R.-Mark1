@@ -13,14 +13,14 @@ Needs Node.js 22.12 or newer. In PowerShell:
 ```powershell
 cd desktop
 npm install
-npm start -- --url=https://YOUR-APP.vercel.app --token=YOUR_TOKEN
+npm start -- --url=https://YOUR-APP.vercel.app
 ```
-(or set the environment first: `$env:ELVAR_URL="https://..."; $env:ELVAR_ACCESS_TOKEN="..."; npm start`; in cmd.exe use `set ELVAR_URL=...`).
+(or set the environment first: `$env:ELVAR_URL="https://..."; npm start`; in cmd.exe use `set ELVAR_URL=...`). Sign in inside the app the first time; optionally pre-set a device token with the environment variable `ELVAR_DEVICE_TOKEN` (never on the command line).
 
-**Double-click launcher:** copy `elvar.example.cmd` to `elvar.cmd`, fill in the URL and token, double-click it. For "start with Windows", put a shortcut to `elvar.cmd` in the folder opened by `Win+R` → `shell:startup`.
+**Double-click launcher:** copy `elvar.example.cmd` to `elvar.cmd`, fill in the URL, double-click it. For "start with Windows", put a shortcut to `elvar.cmd` in the folder opened by `Win+R` → `shell:startup`.
 
 - `--url` / `ELVAR_URL` — where the HUD is served (default `http://localhost:8787`, i.e. `npm run build` then `npm start` in the repo root).
-- `--token` / `ELVAR_ACCESS_TOKEN` — the same value as on the server (Electron has no `window.prompt`).
+- `ELVAR_DEVICE_TOKEN` (or `ELVAR_ACCESS_TOKEN` in env mode) — optional, environment only; otherwise the app shows its sign-in screen.
 - Windows may ask once for microphone access; also check **Settings → Privacy & security → Microphone → "Let desktop apps access your microphone"**.
 - Add `?standby=1` to the URL the first time if the clap listener does not start on its own.
 - If your mic driver has "audio enhancements" / noise suppression, turn them off (Sound settings → Recording → your mic → Properties → Enhancements): they can erase the sharp transient of a clap before the app hears it. Use `?clapdebug=1` to see what the detector hears.

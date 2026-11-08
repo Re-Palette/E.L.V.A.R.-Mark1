@@ -46,25 +46,6 @@
   <p class="note">※ アプリは<b>×で閉じず、最小化</b>してお使いください（閉じると拍手の待機が止まります）。<br>
   ※ 仕組み：拡張機能は、あなたが許可したアドレスのページが「前面に出して」と頼んだときだけ動きます。ページの内容は読みません。</p>
 </main>
-<script>
-  const $ = (id) => document.getElementById(id);
-  $('origin').textContent = location.origin;
-  $('copy').onclick = async () => { try { await navigator.clipboard.writeText(location.origin); $('copy').textContent = 'コピーしました'; } catch { $('copy').textContent = '手動でコピーしてください'; } };
-  const check = () => {
-    const ok = document.documentElement.dataset.elvarExtension === '1';
-    $('status').innerHTML = ok
-      ? '拡張機能：<b class="ok">検出しました ✓</b>　このアドレスで有効です。下の動作テストをお試しください。'
-      : '拡張機能：<b class="no">未検出</b>　まだ入れていない、またはこのアドレスを追加していません。下の手順で進めてください。';
-  };
-  check(); setInterval(check, 1000);
-  $('test').onclick = () => {
-    let n = 5; $('test').disabled = true;
-    const t = setInterval(() => {
-      $('countdown').textContent = `${n}…`;
-      if (n-- <= 0) { clearInterval(t); $('countdown').textContent = ''; $('test').disabled = false;
-        window.postMessage({ source: 'elvar-hud', type: 'bring-to-front' }, location.origin); }
-    }, 1000);
-  };
-</script>
+<script src="./page.js"></script>
 </body>
 </html>

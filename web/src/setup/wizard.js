@@ -21,7 +21,7 @@ export function startStep(state, saved, hasToken) {
   return 'gemini';
 }
 
-export function runWizard({ state }) {
+export function runWizard({ state, setupCode = '' }) {
   return new Promise((resolve) => {
     const o = overlay({ title: 'E.L.V.A.R. SETUP', sub: '最初の設定', label: 'セットアップ' });
     o.back.classList.add('ev-setup');
@@ -32,6 +32,7 @@ export function runWizard({ state }) {
     const bar = () => `<div class="ev-steps">${STEPS.slice(1).map((s) => `<span class="${s === step ? 'on' : STEPS.indexOf(s) < STEPS.indexOf(step) ? 'done' : ''}"></span>`).join('')}</div>`;
     const $ = (id) => o.panel.querySelector('#' + id);
     const msg = (t, cls = '') => { const m = $('ev-msg'); if (m) { m.textContent = t; m.className = 'ev-msg ' + cls; } };
+    if (setupCode) setupCode = String(setupCode).toUpperCase();
     const go = (s) => { step = s; if (s !== 'storage' && s !== 'owner') setSetupStep(s); render(); };
     const busy = (on) => o.panel.querySelectorAll('button').forEach((b) => { b.disabled = on; });
 
@@ -54,8 +55,8 @@ export function runWizard({ state }) {
         <div class="ev-btns"><button class="ev-btn pri" id="ev-go" type="button">もう一度確認</button></div>`,
       owner: () => `
         <p class="ev-p">このアシスタントの持ち主（オーナー）を登録します。パスワードは、新しい端末でログインするときに使います。</p>
-        ${st.setupCodeRequired ? `<label class="ev-field"><span>セットアップコード</span><input class="ev-input ev-code" id="ev-code" type="text" autocomplete="one-time-code" maxlength="12" placeholder="XXXX-XXXX" spellcheck="false"></label>
-        <p class="ev-note">サーバーのログに <b>ELVAR SETUP CODE</b> として出ています（Vercel: Project → Logs、ローカル: サーバーを起動したターミナル）。60分有効です。</p>` : ''}
+        <label class="ev-field"><span>セットアップコード</span><input class="ev-input ev-code" id="ev-code" type="text" autocomplete="one-time-code" maxlength="12" placeholder="XXXX-XXXX" spellcheck="false" value="${esc(setupCode)}"></label>
+        <p class="ev-note">${setupCode ? 'セットアップ用のリンクから入力しました。' : 'サーバーのログに <b>ELVAR SETUP CODE</b> として出ています（Vercel: Project → Logs、ローカル: サーバーを起動したターミナル。そこに出るリンクを開くと自動で入ります）。'}60分有効です。</p>
         <label class="ev-field"><span>パスワード（10文字以上）</span><input class="ev-input" id="ev-pw" type="password" autocomplete="new-password" minlength="10"></label>
         <label class="ev-field"><span>パスワード（確認）</span><input class="ev-input" id="ev-pw2" type="password" autocomplete="new-password"></label>
         <label class="ev-field"><span>この端末の名前</span><input class="ev-input" id="ev-dev" type="text" maxlength="40" value="${esc(defaultDeviceName())}"></label>
@@ -112,7 +113,8 @@ export function runWizard({ state }) {
         const pw = $('ev-pw').value, pw2 = $('ev-pw2').value;
         if (pw.length < 10) return msg('パスワードは10文字以上にしてください', 'warn');
         if (pw !== pw2) return msg('確認のパスワードが一致しません', 'warn');
-        const r = await api('/api/elvar/setup/claim', { method: 'POST', body: { setupCode: $('ev-code')?.value || '', password: pw, deviceName: $('ev-dev').value } });
+        const code = $('ev-code').value.trim(); if (!code) return msg('セットアップコードを入力してください', 'warn');
+        const r = await api('/api/elvar/setup/claim', { method: 'POST', body: { setupCode: code, password: pw, deviceName: $('ev-dev').value } });
         if (r.status === 409) { msg('すでに登録されています。ログインしてください', 'warn'); setTimeout(() => { o.close(); setSetupStep(''); resolve(); }, 1200); return; }
         if (r.status !== 200) return msg(r.body?.message || '登録できませんでした', 'warn');
         setToken(r.body.token); st = { ...st, initialized: true };

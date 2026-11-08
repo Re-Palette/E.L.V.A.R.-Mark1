@@ -60,7 +60,7 @@ export default defineConfig({
     fs: { allow: ['..'] },   // ../shared (tz, profile schema) is imported by the app
     // The API server trusts a request from this machine as the owner only before setup. Requests that reach Vite from another device
     // (vite --host) are marked with x-forwarded-for so the API server does not mistake them for local ones.
-    proxy: { '/api': { target: 'http://localhost:8787', configure: (proxy) => proxy.on('proxyReq', (pReq, req) => {
+    proxy: { '/api': { target: 'http://127.0.0.1:8787', configure: (proxy) => proxy.on('proxyReq', (pReq, req) => {
       const a = req.socket?.remoteAddress || '';
       if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(a)) pReq.setHeader('x-forwarded-for', a || 'unknown');
     }) } },

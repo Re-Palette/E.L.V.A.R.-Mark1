@@ -109,13 +109,24 @@ export const setSetupStep = (s) => (s ? ls.set(SETUP_STEP_KEY, s) : ls.del(SETUP
  *   - set up, no valid token -> the sign-in screen
  * Offline / server down: returns null and the HUD starts anyway (it shows what fails).
  */
+/** The one-time setup link printed by the local server (http://localhost:8787/?setup=XXXX-XXXX): read once, then removed from the address bar. */
+export function takeSetupCodeFromUrl() {
+  try {
+    const u = new URL(location.href), c = u.searchParams.get('setup');
+    if (c === null) return '';
+    u.searchParams.delete('setup'); history.replaceState(null, '', u.pathname + (u.search || '') + u.hash);
+    return /^[A-Za-z0-9-]{4,20}$/.test(c) ? c : '';
+  } catch { return ''; }
+}
+
 export async function bootAuth() {
+  const setupCode = takeSetupCodeFromUrl();
   const st = await getState();
   if (!st) return null;
   const needWizard = (!st.initialized && !st.envMode) || (st.initialized && setupStep() && getToken());
   if (needWizard) {
     const { runWizard } = await import('../setup/wizard.js');
-    await runWizard({ state: st });
+    await runWizard({ state: st, setupCode });
   }
   let s = await loadSession();
   if (!s) { await requireLogin({ envMode: st.envMode }); s = currentSession(); }

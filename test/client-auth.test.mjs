@@ -114,3 +114,30 @@ test('Android bridge passes the vault notification secret; the phone derives the
   assert.match(st, /syncSecret/); assert.match(sync, /syncSecret\(ctx\)\.ifBlank \{ token \}/);
   assert.match(read('web/src/notifications.js'), /setSyncConfig\?\.\(location\.origin, token\(\), syncOn\(\), key\(\)\)/);
 });
+
+test('setup link: ?setup=CODE is read once and removed from the address bar', () => {
+  const calls = [];
+  globalThis.location = { href: 'http://localhost:8787/?setup=ABCD-EFGH&x=1#h' };
+  globalThis.history = { replaceState: (a, b, u) => calls.push(u) };
+  try {
+    assert.equal(auth.takeSetupCodeFromUrl(), 'ABCD-EFGH'); assert.deepEqual(calls, ['/?x=1#h']);
+    globalThis.location = { href: 'http://localhost:8787/?setup=%3Cscript%3E' }; assert.equal(auth.takeSetupCodeFromUrl(), '', 'junk is ignored');
+    globalThis.location = { href: 'http://localhost:8787/' }; assert.equal(auth.takeSetupCodeFromUrl(), '');
+  } finally { delete globalThis.location; delete globalThis.history; }
+});
+
+test('desktop: the token never travels on the command line; it reaches only our own origin over IPC', () => {
+  const main = read('desktop/main.js'), pre = read('desktop/preload.js');
+  assert.ok(!/additionalArguments/.test(main) && !/--elvar-token/.test(main + pre), 'not in argv');
+  assert.ok(!/ACCESS_TOKEN = arg\('token'\)/.test(main));
+  assert.match(main, /ipcMain\.on\('elvar:token'[^\n]*OUR_ORIGIN \? ACCESS_TOKEN : ''/);
+  assert.match(pre, /ipcRenderer\.sendSync\('elvar:token'\)/);
+});
+
+test('public pages have no inline scripts (they run under the site CSP)', () => {
+  for (const d of ['extension', 'google-setup', 'settings', 'privacy', 'terms']) {
+    const h = read(`web/public/${d}/index.html`);
+    assert.ok(!/<script(?![^>]*\bsrc=)[^>]*>/.test(h), d); assert.ok(!/\son[a-z]+="/.test(h), d + ': no inline handlers');
+  }
+  assert.ok(!/<script>/.test(read('web/index.html')));
+});
