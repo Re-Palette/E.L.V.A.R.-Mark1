@@ -10,7 +10,8 @@ import { CAPABILITIES, routeOrder } from './routing.js';
 import { chat as stdChat, tts as stdTts } from './chat-api.js';
 import { sarashinaConfigured, sarashinaChat } from './sarashina.js';
 import { apiConnections } from './api-status.js';
-import { env } from './config/resolve.js';
+import { env, currentConfig } from './config/resolve.js';
+import { keyInfo } from './config/keys.js';
 
 const withTimeout = (p, ms = 7000) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('時間切れ')), ms))]);
 const why = (e) => String(e?.cause?.code || e?.message || e).slice(0, 140);
@@ -19,7 +20,17 @@ export async function runServerChecks({ deep = false } = {}) {
   const cfg = readConfig(), items = [], t0 = Date.now();
   const add = (id, label, status, detail, fix) => items.push({ id, group: 'server', label, status, detail, ...(fix ? { fix } : {}) });
 
-  add('access', 'アクセストークン', cfg.accessToken ? 'ok' : 'warn', cfg.accessToken ? '設定済み（認証あり）' : '未設定です。URLを知っていれば誰でも使える状態です', cfg.accessToken ? '' : 'Vercelの環境変数 ELVAR_ACCESS_TOKEN を設定');
+  const cc = currentConfig(), mode = cc.auth?.mode === 'vault' ? 'vault' : cfg.accessToken ? 'env' : 'local';
+  add('access', 'オーナー認証', mode === 'vault' ? 'ok' : mode === 'env' ? 'ok' : 'warn',
+    mode === 'vault' ? 'オーナーのパスワードと端末トークンで保護されています' : mode === 'env' ? '環境変数のアクセストークンで保護されています（設定はアプリから変更できません）' : 'まだセットアップされていません。この端末からだけ使える状態です',
+    mode === 'vault' || mode === 'env' ? undefined : 'アプリを開いてセットアップを完了する');
+  // Where each configured value comes from (app = saved in the app, env = environment variable), and what is still missing.
+  { const st = cc.secretStatus(), set = Object.entries(st).filter(([, v]) => v.set);
+    const label = (n) => (keyInfo(n)?.label || n);
+    const missing = ['GEMINI_API_KEY'].filter((n) => !st[n]?.set);
+    add('config', '設定の出どころ', missing.length ? 'fail' : 'ok',
+      (set.length ? set.map(([n, v]) => `${label(n)}: ${v.source === 'app' ? 'アプリ' : '環境変数'}${v.last4 ? `（末尾 ${v.last4}）` : ''}`).join('、') : 'キーはまだありません') + (missing.length ? `。未設定の必須項目: ${missing.map(label).join('、')}` : ''),
+      missing.length ? '設定画面の「APIキー」で入力' : undefined); }
   add('runtime', '動作環境', 'ok', cfg.onVercel ? 'Vercel' : 'ローカルのサーバー');
 
   const jobs = [];

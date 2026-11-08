@@ -70,3 +70,16 @@ test('api connections: one row per service; free probes only; key-only services 
     urls.length = 0; await apiConnections({ deep: true }); assert.ok(urls.some((u) => /exa\.ai/.test(u)) && urls.some((u) => /newsdata/.test(u)), 'deep checks Exa and NewsData too');
   } finally { globalThis.fetch = real; for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]; Object.assign(process.env, keep); }
 });
+
+test('system check: reports where each key comes from (app / env) and the missing required key', async () => {
+  const { runWithConfig, envConfig } = await import('../server/config/resolve.js');
+  const st = { GEMINI_API_KEY: { set: false, source: 'default', last4: null }, GROQ_API_KEY: { set: true, source: 'app', last4: 'AB12' }, EXA_API_KEY: { set: true, source: 'env', last4: null } };
+  const cfg = { ...envConfig(), auth: { mode: 'vault' }, secretStatus: () => st };
+  const realFetch = globalThis.fetch; globalThis.fetch = async () => { throw new Error('offline'); };
+  try {
+    const r = await runWithConfig(cfg, () => runServerChecks({}));
+    const c = by(r, 'config');
+    assert.equal(c.status, 'fail'); assert.match(c.detail, /Groq API key: アプリ（末尾 AB12）/); assert.match(c.detail, /Exa API key: 環境変数/); assert.match(c.detail, /未設定の必須項目: Gemini API key/);
+    assert.equal(by(r, 'access').status, 'ok');
+  } finally { globalThis.fetch = realFetch; }
+});
