@@ -51,7 +51,7 @@ export const UI_CSS = `
   clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px)}
 .ev-btn:hover:not(:disabled){background:rgba(232,185,106,.14);color:var(--gh)}
 .ev-btn.pri{background:linear-gradient(180deg,var(--gh),var(--g) 45%,#b07a32);color:#1a1006;border-color:var(--gh)}
-.ev-btn.pri:hover:not(:disabled){filter:brightness(1.08);color:#120a02}
+.ev-btn.pri:hover:not(:disabled){background:linear-gradient(180deg,var(--gh),var(--g) 45%,#b07a32);filter:brightness(1.08);color:#120a02}   /* keep the gold fill: the generic hover rule would otherwise turn it transparent under dark text */
 .ev-btn.sm{padding:4px 12px;font-size:13px}
 .ev-btn.danger{color:#ffb08a;border-color:rgba(255,122,74,.6)}
 .ev-btn:disabled{opacity:.4;cursor:default}

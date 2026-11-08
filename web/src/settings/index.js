@@ -24,6 +24,7 @@ const DEVICE_CSS = `
   clip-path:polygon(7px 0,100% 0,100% calc(100% - 7px),calc(100% - 7px) 100%,0 100%,0 7px)}
 .ev-settings .vs-btn:hover:not(:disabled){background:rgba(232,185,106,.14);color:#FFD99A}
 .ev-settings .vs-btn.pri{background:linear-gradient(180deg,#FFD99A,#E8B96A 45%,#b07a32);color:#1a1006;border-color:#FFD99A}
+.ev-settings .vs-btn.pri:hover:not(:disabled){background:linear-gradient(180deg,#FFD99A,#E8B96A 45%,#b07a32);color:#1a1006;filter:brightness(1.08)}
 .ev-settings .vs-btn:disabled{opacity:.35;cursor:default}
 .ev-settings .vs-info{color:#e9dcc4;font-size:14px;word-break:break-all}.ev-settings .vs-info b{color:#FFD99A}
 .ev-settings .vs-msg{font-size:13px;color:#b99b6a;min-height:1.3em}.ev-settings .vs-msg.warn{color:#ff7a4a}.ev-settings .vs-msg.ok{color:#9fe3a8}
