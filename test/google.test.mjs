@@ -176,7 +176,7 @@ test('docs / sheets / tasks writes go through the same gate', async () => {
 test('Google login problems give a clear message (invalid_grant)', async () => {
   oauthMode = 'bad'; resetTokenCache();
   const r = await run('calendar_list_events', {});
-  assert.equal(r.status, 401); assert.match(r.body.error, /google-setup/);
+  assert.equal(r.status, 401); assert.match(r.body.error, /Googleと連携/);
   oauthMode = 'ok'; resetTokenCache();
 });
 

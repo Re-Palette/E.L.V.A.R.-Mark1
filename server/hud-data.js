@@ -1,7 +1,7 @@
 // Real data for the HUD cards: weather, today's schedule, tasks, next event. Each part is optional and independent: when a service is not
 // connected or fails, that card says so honestly ("未連携" / "取得できませんでした") instead of showing invented content.
 import { TOOL_MAP } from './google/tools.js';
-import { googleConfigured } from './google/config.js';
+import { googleConfigured, googleReauthRequired } from './google/config.js';
 import { AGENTS } from './agents/registry.js';
 import { pickProvider } from './agents/provider.js';
 import { env } from './config/resolve.js';
@@ -17,7 +17,7 @@ const cut = (s, n) => { s = String(s ?? ''); return s.length > n ? s.slice(0, n 
 const msg = (e) => cut(String(e?.message || e).replace(/^.*?：/, ''), 40);
 
 export async function buildHudData({ now = Date.now() } = {}) {
-  const out = { at: new Date(now).toISOString(), google: googleConfigured(), agentsAvailable: Object.fromEntries(Object.entries(AGENTS).map(([id, a]) => [id, !!pickProvider() && (!a.available || !!a.available())])), budgets: { geminiLiveMinutesPerDay: Number(env('GEMINI_LIVE_DAILY_MINUTES')) > 0 ? Number(env('GEMINI_LIVE_DAILY_MINUTES')) : 60 } };
+  const out = { at: new Date(now).toISOString(), google: googleConfigured(), googleReauth: googleReauthRequired(), agentsAvailable: Object.fromEntries(Object.entries(AGENTS).map(([id, a]) => [id, !!pickProvider() && (!a.available || !!a.available())])), budgets: { geminiLiveMinutesPerDay: Number(env('GEMINI_LIVE_DAILY_MINUTES')) > 0 ? Number(env('GEMINI_LIVE_DAILY_MINUTES')) : 60 } };
   const today = jdate(now), t0 = startOfLocalDay(today, TZ());
   const jobs = [];
 

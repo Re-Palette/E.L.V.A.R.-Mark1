@@ -4,7 +4,7 @@
 //                   human-readable summary shown on the approval card. Deletes only move things to the trash.
 import crypto from 'node:crypto';
 import { gfetch } from './http.js';
-import { googleConfig, googleConfigured } from './config.js';
+import { googleConfig, googleConfigured, googleToolAllowed } from './config.js';
 import { brainConfigured, brainSearch, brainRead, brainList, brainWrite, brainGraph, brainProjects, brainSecretScan, brainWarm, brainCreateProject, brainAppendConversation, brainProjectMaterial, brainProjectAdd, brainRepoIsPrivate } from '../brain.js';
 import { analyzeProjects } from '../project-intel.js';
 import { setSubscription, updateEntry, addEntries, cancelEntry, setBudget, addAsset, addRule, financeSummary, parseCsv, parsePaymentNotification, CATEGORIES as FIN_CATS } from '../finance.js';
@@ -974,7 +974,7 @@ const FEATURE_OF = (name) => (/^finance_/.test(name) ? 'finance' : /^shift_/.tes
 export function declarations({ alwaysOnly = false, includeHidden = false, features } = {}) {
   // Keep to the most widely accepted JSON-Schema subset for the model; unknown/extra arguments are still rejected server-side.
   const clean = ({ additionalProperties, ...rest }) => ({ ...rest, ...(rest.required?.length ? {} : { required: undefined }) });
-  return TOOLS.filter((t) => (t.name !== 'deep_think' || env('GROQ_API_KEY') || env('GEMINI_API_KEY') || sarashinaConfigured()) && (!t.enabled || t.enabled()) && !(features && FEATURE_OF(t.name) && features[FEATURE_OF(t.name)] === false) && (includeHidden || !t.hidden) && (!alwaysOnly || t.alwaysOn)).map((t) => {
+  return TOOLS.filter((t) => (t.name !== 'deep_think' || env('GROQ_API_KEY') || env('GEMINI_API_KEY') || sarashinaConfigured()) && (!t.enabled || t.enabled()) && googleToolAllowed(t) && !(features && FEATURE_OF(t.name) && features[FEATURE_OF(t.name)] === false) && (includeHidden || !t.hidden) && (!alwaysOnly || t.alwaysOn)).map((t) => {
     const schema = clean(t.schema); if (schema.required === undefined) delete schema.required;
     schema.properties = Object.fromEntries(Object.entries(schema.properties || {}).map(([k, v]) => { const { maxLength, ...rest } = v; return [k, rest]; }));   // server-only limit, keep the model's schema minimal
     return { name: t.name, description: (t.kind === 'write' ? '【書き込み・ユーザーの承認が必要】' : '【読み取り】') + t.description, parametersJsonSchema: schema };

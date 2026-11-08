@@ -7,6 +7,7 @@ import { KEYS, keyInfo, isSecret } from './keys.js';
 import { authenticate } from './auth.js';
 import { getStore } from '../store/index.js';
 import { readDoc, ticketKeyFromDek } from './vault.js';
+import { loadLogin } from '../google/login-record.js';
 
 const als = new AsyncLocalStorage();
 
@@ -23,7 +24,7 @@ export function envConfig(auth = { mode: 'env' }) {
     get: (name) => process.env[name],
     source: (name) => (process.env[name] ? 'env' : 'default'),
     secretStatus: () => secretStatus((n) => process.env[n], () => 'env'),
-    profile, connectors: [], features: profile.features || {}, version: 0,
+    profile, connectors: [], features: profile.features || {}, version: 0, google: null,
     auth: { mode: auth.mode, deviceId: auth.deviceId },
   };
 }
@@ -44,7 +45,8 @@ const FROM_PROFILE = {
 };
 export const PROFILE_KEYS = Object.keys(FROM_PROFILE);
 
-export function vaultConfig(doc, auth, docVer) {
+/** `google` = the decrypted tok:google record (the login made in the app), or null. */
+export function vaultConfig(doc, auth, docVer, google = null) {
   const profile = mergeProfile(doc.profile || {});
   const secrets = doc.secrets || {}, settings = doc.settings || {};
   const own = (name) => {
@@ -58,7 +60,7 @@ export function vaultConfig(doc, auth, docVer) {
   const source = (name) => (own(name) !== undefined ? 'app' : process.env[name] ? 'env' : 'default');
   return {
     get, source, secretStatus: () => secretStatus(get, source),
-    profile, connectors: Array.isArray(doc.connectors) ? doc.connectors : [], features: profile.features || {}, version: docVer,
+    profile, connectors: Array.isArray(doc.connectors) ? doc.connectors : [], features: profile.features || {}, version: docVer, google,
     auth: { mode: 'vault', deviceId: auth.deviceId },
     ticketKey: ticketKeyFromDek(auth.dek), notifSecret: doc.notifSecret || null,
   };
@@ -71,8 +73,9 @@ async function loadDoc(auth, token) {
   const k = crypto.createHash('sha256').update(token).digest('hex'), now = Date.now();
   const hit = warm.get(k);
   if (hit && hit.docVer === auth.meta.docVer && now - hit.at < WARM_MS) return hit;
-  const { doc, ver } = await readDoc(getStore(), auth.dek, auth.meta);
-  const rec = { docVer: auth.meta.docVer, doc, ver, at: now };
+  const store = getStore();
+  const [{ doc, ver }, tok] = await Promise.all([readDoc(store, auth.dek, auth.meta), loadLogin(store, auth.dek).catch(() => null)]);
+  const rec = { docVer: auth.meta.docVer, doc, ver, google: tok || null, at: now };
   warm.set(k, rec);
   if (warm.size > 50) for (const [kk, v] of warm) if (now - v.at > WARM_MS) warm.delete(kk);
   return rec;
@@ -85,8 +88,8 @@ export async function getConfig(req) {
   if (!auth.ok) return { ok: false, status: auth.status, error: auth.error, auth, cfg: envConfig({ mode: 'none' }) };
   if (auth.mode !== 'vault') return { ok: true, status: 200, auth, cfg: envConfig(auth) };
   try {
-    const { doc, docVer } = await loadDoc(auth, String(req.headers['x-elvar-token']));
-    return { ok: true, status: 200, auth, cfg: vaultConfig(doc, auth, docVer), doc };
+    const { doc, docVer, google } = await loadDoc(auth, String(req.headers['x-elvar-token']));
+    return { ok: true, status: 200, auth, cfg: vaultConfig(doc, auth, docVer, google), doc };
   } catch (e) {
     console.error('[elvar] vault read failed:', e?.code || e?.message);
     return { ok: false, status: 500, error: 'vault_unavailable', auth, cfg: envConfig({ mode: 'none' }) };

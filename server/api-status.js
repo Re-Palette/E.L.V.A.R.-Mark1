@@ -76,7 +76,7 @@ export async function apiConnections({ deep = false } = {}) {
   jobs.push((async () => {
     try {
       const g = await withTimeout(googleStatus({ probe: true }), 9000);
-      if (!g.configured) return add('google', 'Google（Gmail・カレンダー・Drive・タスク）', 'off', '未設定です', { fix: 'docs/GOOGLE_INTEGRATION.md の手順で連携' });
+      if (!g.configured) return add('google', 'Google（Gmail・カレンダー・Drive・タスク）', 'off', '未設定です', { fix: '設定の「Google」で連携' });
       add('google', 'Google（Gmail・カレンダー・Drive・タスク）', g.authenticated ? 'ok' : 'fail', g.authenticated ? '接続できています（認証OK）' : `認証できません: ${g.error || '不明'}`, g.authenticated ? {} : { fix: 'Googleの連携をやり直す' });
     } catch (e) { add('google', 'Google（Gmail・カレンダー・Drive・タスク）', 'warn', `確認できませんでした: ${why(e)}`, { verified: false }); }
   })());

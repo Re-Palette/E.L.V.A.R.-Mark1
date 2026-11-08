@@ -10,18 +10,6 @@
       "destination": "/api/google-execute"
     },
     {
-      "source": "/api/google/status",
-      "destination": "/api/google-status"
-    },
-    {
-      "source": "/api/google/connect",
-      "destination": "/api/google-connect"
-    },
-    {
-      "source": "/api/google/callback",
-      "destination": "/api/google-callback"
-    },
-    {
       "source": "/api/agent/run",
       "destination": "/api/agent-run"
     },
@@ -32,6 +20,14 @@
     {
       "source": "/api/hud/data",
       "destination": "/api/hud-data"
+    },
+    {
+      "source": "/api/google/callback",
+      "destination": "/api/elvar?p=connect/google/callback"
+    },
+    {
+      "source": "/api/google/status",
+      "destination": "/api/elvar?p=connect/google/status"
     },
     {
       "source": "/api/elvar/:path*",

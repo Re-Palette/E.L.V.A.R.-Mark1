@@ -1,10 +1,10 @@
 // Entry point for the Google tools: validation, the read/write approval gate, audit log, status probe.
 import { TOOL_MAP, TOOLS, declarations } from './tools.js';
-import { googleConfig, googleConfigured } from './config.js';
+import { googleConfig, googleConfigured, googleReauthRequired, googleState, googleToolAllowed, serviceLabel } from './config.js';
 import { signTicket, verifyTicket } from './ticket.js';
-import { accessToken, GoogleError } from './http.js';
+import { accessToken, GoogleError, REAUTH_MESSAGE } from './http.js';
 
-export { googleConfigured, declarations };
+export { googleConfigured, googleReauthRequired, declarations };
 
 function validate(schema, args) {
   if (args === null || typeof args !== 'object' || Array.isArray(args)) return '引数はオブジェクトで指定してください';
@@ -44,9 +44,14 @@ export async function executeGoogle({ tool, args = {}, ticket }) {
   const t = TOOL_MAP[tool];
   if (!t) return { status: 404, body: { ok: false, error: `未知のツールです: ${tool}` } };
   // Only the Google services need the Google login; notes (GitHub), build requests, web search etc. work with their own settings.
-  if (/^(calendar|gmail|drive|sheets|docs|tasks|contacts)_/.test(tool)) { if (!googleConfigured()) return { status: 503, body: { ok: false, error: 'Google連携が設定されていません（docs/GOOGLE_INTEGRATION.md）' } }; }
+  const NOT_SET = 'Google連携が設定されていません（アプリの設定の「Google」から連携してください）';
+  if (/^(calendar|gmail|drive|sheets|docs|tasks|contacts)_/.test(tool)) {
+    if (!googleConfigured()) return { status: 503, body: { ok: false, error: NOT_SET } };
+    if (googleReauthRequired()) return { status: 401, body: { ok: false, error: REAUTH_MESSAGE, reauthRequired: true } };
+    if (!googleToolAllowed(t)) return { status: 403, body: { ok: false, error: `${serviceLabel(tool)}は、Googleの連携で許可されていません。設定の「Google」でサービスを選んで、もう一度連携してください` } };
+  }
   else if (t.enabled && !t.enabled()) return { status: 503, body: { ok: false, error: `${tool} は使えません（必要な設定が未完了です）` } };
-  else if (!t.enabled && !googleConfigured() && !['current_datetime', 'weather', 'news', 'deep_think', 'jp_text', 'web_search', 'web_sources', 'briefing_data'].includes(tool)) return { status: 503, body: { ok: false, error: 'Google連携が設定されていません（docs/GOOGLE_INTEGRATION.md）' } };
+  else if (!t.enabled && !googleConfigured() && !['current_datetime', 'weather', 'news', 'deep_think', 'jp_text', 'web_search', 'web_sources', 'briefing_data'].includes(tool)) return { status: 503, body: { ok: false, error: NOT_SET } };
   args = coerceArgs(t.schema, args);
   const bad = validate(t.schema, args);
   if (bad) return { status: 400, body: { ok: false, error: bad } };
@@ -82,9 +87,10 @@ const summarizeArgs = (a) => JSON.parse(JSON.stringify(a, (k, v) => (typeof v ==
 export async function googleStatus({ probe = false } = {}) {
   const cfg = googleConfig();
   const configured = googleConfigured(cfg);
-  const out = { configured, tools: TOOLS.length, read: TOOLS.filter((t) => t.kind === 'read').length, write: TOOLS.filter((t) => t.kind === 'write').length };
-  if (configured && probe) {
-    try { await accessToken(cfg); out.authenticated = true; } catch (e) { out.authenticated = false; out.error = String(e.message || e); }
-  }
+  const tools = TOOLS.filter((t) => googleToolAllowed(t, cfg.scopes));
+  const out = { configured, state: googleState(cfg), reauthRequired: googleReauthRequired(cfg), tools: tools.length, read: tools.filter((t) => t.kind === 'read').length, write: tools.filter((t) => t.kind === 'write').length };
+  if (configured && probe && !out.reauthRequired) {
+    try { await accessToken(cfg); out.authenticated = true; } catch (e) { out.authenticated = false; out.error = String(e.message || e); out.reauthRequired = e?.code === 'invalid_grant'; }
+  } else if (configured && out.reauthRequired) { out.authenticated = false; out.error = REAUTH_MESSAGE; }
   return out;
 }

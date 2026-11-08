@@ -41,26 +41,4 @@ export function verifyTicket(ticket, tool, args, now = Date.now()) {
     return { ok: true };
   } catch { return { ok: false, reason: '許可証を確認できません' }; }
 }
-
-// ---- OAuth "state" for the in-browser Google login: signed, 10 minutes, single use, bound to the redirect URI.
-const stateKey = () => crypto.createHmac('sha256', key()).update('elvar-oauth-state-v1').digest();
-const usedStates = new Map();
-export function signState(redirectUri, now = Date.now()) {
-  const payload = b64(JSON.stringify({ r: redirectUri, e: now + 600_000, j: crypto.randomUUID() }));
-  return `${payload}.${b64(crypto.createHmac('sha256', stateKey()).update(payload).digest())}`;
-}
-/** @returns {{ok:true, redirectUri:string}|{ok:false, reason:string}} */
-export function verifyState(state, now = Date.now()) {
-  try {
-    const [payload, sig] = String(state).split('.');
-    const want = crypto.createHmac('sha256', stateKey()).update(payload).digest();
-    const got = Buffer.from(sig || '', 'base64url');
-    if (got.length !== want.length || !crypto.timingSafeEqual(got, want)) return { ok: false, reason: 'state が不正です' };
-    const p = JSON.parse(Buffer.from(payload, 'base64url').toString());
-    if (p.e < now) return { ok: false, reason: 'ログインの有効期限（10分）が切れました。もう一度ボタンを押してください' };
-    for (const [j, e] of usedStates) if (e < now) usedStates.delete(j);
-    if (usedStates.has(p.j)) return { ok: false, reason: 'このログインは使用済みです。もう一度ボタンを押してください' };
-    usedStates.set(p.j, p.e);
-    return { ok: true, redirectUri: p.r };
-  } catch { return { ok: false, reason: 'state を確認できません' }; }
-}
+// (The OAuth `state` of the Google login is no longer signed here: it is a random value kept hashed in the store, see server/oauth/flow.js.)

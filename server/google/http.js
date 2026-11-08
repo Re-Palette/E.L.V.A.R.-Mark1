@@ -1,14 +1,23 @@
 // Tiny Google REST client: access-token cache (from the refresh token) + fetch wrapper with timeouts and clean errors.
+import crypto from 'node:crypto';
 import { googleConfig, base } from './config.js';
+import { markReauth } from './tok.js';
 
 export class GoogleError extends Error {
   constructor(status, message, code) { super(message); this.status = status; this.code = code; }
 }
 
-let cached = { token: '', exp: 0 };
+// Access tokens live in memory only, one per login: keyed by sha256(client id + refresh token), so a reconnect, a second owner login or a
+// changed client never reuses another login's token (and a revoked one is dropped).
+const cache = new Map();
+const cacheKey = (cfg) => crypto.createHash('sha256').update(`${cfg.clientId}\n${cfg.refreshToken}`).digest('hex');
+
+export const REAUTH_MESSAGE = 'Googleとの接続が切れました（取り消し・期限切れ。「テスト中」のアプリは7日で切れます）。設定の「Google」で、もう一度「Googleと連携」を押してください。';
 
 export async function accessToken(cfg = googleConfig()) {
-  if (cached.token && Date.now() < cached.exp - 60_000) return cached.token;
+  const key = cacheKey(cfg), hit = cache.get(key);
+  if (hit && Date.now() < hit.exp - 60_000) return hit.token;
+  if (cfg.reauth) throw new GoogleError(401, REAUTH_MESSAGE, 'reauth_required');     // already known to be refused: do not ask Google again
   const r = await fetch(base('oauth', cfg), {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
@@ -17,15 +26,21 @@ export async function accessToken(cfg = googleConfig()) {
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok || !j.access_token) {
-    const why = j.error === 'invalid_grant'
-      ? 'Googleのログインが無効になっています（期限切れ・取り消し）。アプリの /google-setup/ の「Googleにログイン」ボタンからやり直し、GOOGLE_REFRESH_TOKEN を更新してください。'
+    cache.delete(key);
+    if (j.error === 'invalid_grant') {
+      if (cfg.fromVault) await markReauth(cfg.refreshToken, 'invalid_grant');
+      throw new GoogleError(401, REAUTH_MESSAGE, 'invalid_grant');
+    }
+    const why = j.error === 'invalid_client' || j.error === 'unauthorized_client'
+      ? 'GoogleのクライアントIDかシークレットが正しくありません。設定の「Google」で入れ直してください。'
       : `Googleの認証に失敗しました（${j.error || r.status}）`;
     throw new GoogleError(401, why, j.error);
   }
-  cached = { token: j.access_token, exp: Date.now() + (j.expires_in || 3600) * 1000 };
-  return cached.token;
+  cache.set(key, { token: j.access_token, exp: Date.now() + (j.expires_in || 3600) * 1000 });
+  if (cache.size > 20) for (const [k, v] of cache) if (v.exp < Date.now()) cache.delete(k);
+  return j.access_token;
 }
-export const resetTokenCache = () => { cached = { token: '', exp: 0 }; };
+export const resetTokenCache = () => cache.clear();
 
 /**
  * @param {string} service  key in config.base()
@@ -39,7 +54,12 @@ export async function gfetch(service, path, o = {}) {
   const headers = { authorization: `Bearer ${await accessToken(cfg)}`, ...(o.headers || {}) };
   let body = o.body;
   if (o.json !== undefined) { headers['content-type'] = 'application/json'; body = JSON.stringify(o.json); }
-  const r = await fetch(url, { method: o.method || 'GET', headers, body, signal: AbortSignal.timeout(20_000) });
+  let r = await fetch(url, { method: o.method || 'GET', headers, body, signal: AbortSignal.timeout(20_000) });
+  if (r.status === 401) {   // the cached access token was revoked early: get a fresh one once (a refused refresh token ends in the reconnect message)
+    cache.delete(cacheKey(cfg));
+    headers.authorization = `Bearer ${await accessToken(cfg)}`;
+    r = await fetch(url, { method: o.method || 'GET', headers, body, signal: AbortSignal.timeout(20_000) });
+  }
   if (r.status === 204) return null;
   const raw = await r.text();
   if (!r.ok) {

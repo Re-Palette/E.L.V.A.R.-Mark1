@@ -7,12 +7,14 @@ import { PROFILE_KEYS } from './config/resolve.js';
 import * as V from './config/vault.js';
 import { validateProfile } from '../shared/profile.js';
 import { testKey } from './api-status.js';
+import { SERVICE_IDS, googleState, googleConfig } from './google/config.js';
 
 const bad = (status, error, message, extra = {}) => ({ status, body: { error, ...(message ? { message } : {}), ...extra } });
 const audit = (event, extra) => console.log('[audit] ' + JSON.stringify({ at: new Date().toISOString(), event, ...extra }));
-// The Google keys are connected by the in-app Google login (Phase 3), not typed here; profile-backed names are edited in the profile.
-const SECRET_EDITABLE = (name) => isSecret(name) && keyInfo(name).group !== 'google';
-const SETTING_EDITABLE = (name) => keyInfo(name)?.kind === 'setting' && keyInfo(name).group !== 'google' && !PROFILE_KEYS.includes(name);
+// The Google client id / secret are typed in Settings (the Google tab); the refresh token is never typed: the in-app login puts it in the vault.
+// Profile-backed names are edited in the profile.
+const SECRET_EDITABLE = (name) => isSecret(name) && name !== 'GOOGLE_REFRESH_TOKEN';
+const SETTING_EDITABLE = (name) => keyInfo(name)?.kind === 'setting' && !PROFILE_KEYS.includes(name);
 const writable = (a) => a.mode === 'vault';
 const readOnly = (a) => bad(409, 'read_only', a.mode === 'env' ? '環境変数モードです。設定は環境変数で変更してください' : 'まだセットアップされていません');
 
@@ -28,6 +30,9 @@ export function configView(cfg, a) {
 
 // Settings that end up inside a URL (repository names, model ids) get a strict format; anything that would be a host / URL is env-only (keys.js infra).
 const SHAPES = [
+  [/^GOOGLE_CLIENT_ID$/, /^[0-9A-Za-z._-]{6,120}\.apps\.googleusercontent\.com$/, 'クライアントIDの形式が正しくありません（…apps.googleusercontent.com で終わる文字列です）'],
+  [/^GOOGLE_SERVICES$/, new RegExp(`^(${SERVICE_IDS.join('|')})(,(${SERVICE_IDS.join('|')}))*$`), '選べないサービスが入っています'],
+  [/^GOOGLE_READONLY$/, /^1$/, '1 か空にしてください'],
   [/_REPO$/, /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/, 'owner/name の形で入力してください'],
   [/MODEL/, /^[A-Za-z0-9][A-Za-z0-9_.:-]*(\/[A-Za-z0-9][A-Za-z0-9_.:-]*)?$/, 'モデル名の形式が正しくありません'],
   [/_(URL|ORIGIN|HOST|ENDPOINT)$/, /^$/, 'このアドレスはアプリからは変更できません'],
@@ -98,6 +103,7 @@ export async function getSession({ cfg, auth: a }) {
     mode: a.mode, profile: p, features: cfg.features,
     brand: { name: p.assistant.displayName, spokenName: p.assistant.spokenName, ownerAddress: p.owner.address },
     notifSecret: cfg.notifSecret || null,
+    google: { state: googleState(googleConfig()) },     // 'reauth_required' = the reconnect prompt (notification + badge in Settings)
     missing: ['GEMINI_API_KEY'].filter((n) => !cfg.get(n)),
   } };
 }

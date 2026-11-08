@@ -75,9 +75,9 @@ test('full setup flow: state -> claim -> save the Gemini key (write-only) -> pro
   assert.equal((await call('POST', '/api/elvar/setup/claim', { ip: '203.0.113.5', body: { setupCode: code, password: PW } })).status, 409, 'setup runs once');
 }, { ELVAR_SETUP_CODE: undefined }));
 
-test('config PATCH validation: unknown / google / profile-backed keys, whitespace in keys, null deletes, settings revert to default', () => fresh(async () => {
+test('config PATCH validation: unknown / refresh-token / profile-backed keys, whitespace in keys, null deletes, settings revert to default', () => fresh(async () => {
   const token = await owner(); const patch = (body) => call('PATCH', '/api/elvar/config', { token, body });
-  for (const body of [{ secrets: { NOPE_KEY: 'x' } }, { secrets: { GOOGLE_CLIENT_SECRET: 'x' } }, { secrets: { GOOGLE_REFRESH_TOKEN: 'x' } }, { settings: { GEMINI_API_KEY: 'x' } }, { settings: { GEMINI_LIVE_VOICE: 'Puck' } }, { settings: { UPSTASH_REDIS_REST_TOKEN: 'x' } }, { secrets: { GROQ_MODEL: 'x' } }]) {
+  for (const body of [{ secrets: { NOPE_KEY: 'x' } }, { secrets: { GOOGLE_REFRESH_TOKEN: 'x' } }, { settings: { GEMINI_API_KEY: 'x' } }, { settings: { GEMINI_LIVE_VOICE: 'Puck' } }, { settings: { UPSTASH_REDIS_REST_TOKEN: 'x' } }, { secrets: { GROQ_MODEL: 'x' } }]) {
     const r = await patch(body); assert.equal(r.status, 400, JSON.stringify(body)); assert.equal(r.body.error, 'unknown_key');
   }
   for (const v of ['', '   ', 'has space', 'new\nline', 'x'.repeat(513), 42, {}]) assert.equal((await patch({ secrets: { GROQ_API_KEY: v } })).status, 400, JSON.stringify(v));
@@ -86,6 +86,21 @@ test('config PATCH validation: unknown / google / profile-backed keys, whitespac
   await patch({ settings: { GROQ_MODEL: 'custom' } });
   const back = await patch({ settings: { GROQ_MODEL: '' } }); assert.equal(back.body.settings.GROQ_MODEL.value, 'openai/gpt-oss-120b'); assert.equal(back.body.settings.GROQ_MODEL.source, 'default');
   assert.equal((await patch({ settings: { GROQ_MODEL: 'a\u0000b' } })).status, 400);
+}));
+
+test('Google client id / secret / products are editable in the app (secret write-only, strict shapes); the refresh token is not', () => fresh(async ({ logs }) => {
+  const token = await owner(); const patch = (body) => call('PATCH', '/api/elvar/config', { token, body });
+  const SEC = 'FAKE-SECRET-fake-secret-ABCDEFGH1234';
+  const ok = await patch({ secrets: { GOOGLE_CLIENT_SECRET: SEC }, settings: { GOOGLE_CLIENT_ID: '123456-abc.apps.googleusercontent.com', GOOGLE_SERVICES: 'calendar,tasks', GOOGLE_READONLY: '1' } });
+  assert.equal(ok.status, 200);
+  assert.deepEqual([ok.body.secrets.GOOGLE_CLIENT_SECRET.set, ok.body.secrets.GOOGLE_CLIENT_SECRET.last4], [true, '1234']);
+  assert.equal(ok.body.settings.GOOGLE_CLIENT_ID.value, '123456-abc.apps.googleusercontent.com'); assert.equal(ok.body.settings.GOOGLE_SERVICES.value, 'calendar,tasks');
+  assert.ok(!ok.body.secrets.GOOGLE_REFRESH_TOKEN, 'the refresh token is not part of the editable keys');
+  const all = JSON.stringify([ok.body, (await call('GET', '/api/elvar/config', { token })).body, (await call('GET', '/api/elvar/session', { token })).body]) + logs.join('\n');
+  assert.ok(!all.includes('fake-secret-ABCDEFGH'), 'the client secret is never echoed or logged');
+  for (const bad of [{ GOOGLE_CLIENT_ID: 'not-a-client-id' }, { GOOGLE_CLIENT_ID: 'x.apps.googleusercontent.com' }, { GOOGLE_SERVICES: 'calendar,evil' }, { GOOGLE_READONLY: 'yes' }]) {
+    const r = await patch({ settings: bad }); assert.equal(r.status, 400, JSON.stringify(bad)); assert.equal(r.body.error, 'bad_value');
+  }
 }));
 
 test('profile PUT validates (422 with per-field errors) and keeps the old profile on error', () => fresh(async () => {

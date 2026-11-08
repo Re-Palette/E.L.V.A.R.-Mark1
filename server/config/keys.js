@@ -13,7 +13,7 @@ export const KEYS = [
   secret('BRAIN_GITHUB_TOKEN', 'brain', 'Second-brain GitHub token'),
   secret('BUILD_GITHUB_TOKEN', 'build', 'Build GitHub token'),
   secret('GOOGLE_CLIENT_SECRET', 'google', 'Google OAuth client secret'),
-  secret('GOOGLE_REFRESH_TOKEN', 'google', 'Google refresh token'),
+  secret('GOOGLE_REFRESH_TOKEN', 'google', 'Google refresh token (env mode only; the app keeps its own in the vault)'),
 
   setting('GEMINI_LIVE_MODEL', 'gemini', 'Live model', 'gemini-3.8-live'),
   setting('GEMINI_LIVE_MODEL_FALLBACK', 'gemini', 'Live fallback model', ''),
@@ -27,6 +27,8 @@ export const KEYS = [
   setting('NEWSDATA_DAILY_CREDITS', 'usage', 'NewsData credits per day (guide)', '200'),
   setting('WEB_SEARCH_DAILY', 'usage', 'Web searches per day (guide)', '0'),
   setting('GOOGLE_CLIENT_ID', 'google', 'Google OAuth client id', ''),
+  setting('GOOGLE_SERVICES', 'google', 'Google products to connect (comma separated: calendar,gmail,drive,docs,sheets,tasks,contacts; empty = all)', ''),
+  setting('GOOGLE_READONLY', 'google', 'Google: read-only access (1 = on)', ''),
   setting('GOOGLE_TIMEZONE', 'google', 'Time zone (moves to profile)', 'Asia/Tokyo'),
   setting('WEATHER_PLACE', 'weather', 'Weather place (moves to profile)', ''),
   setting('BRAIN_REPO', 'brain', 'Second-brain repository (owner/name)', ''),
@@ -65,6 +67,7 @@ export const KEYS = [
   // Endpoints that receive a secret are env-only: a value typed in the app could send the key to another host.
   infra('SARASHINA_BASE_URL', 'sarashina', 'Sarashina base URL (env only; default https://api.sarashina.ai/v1)'),
   infra('VERCEL', 'server', 'Set by Vercel'),
+  infra('ELVAR_PUBLIC_ORIGIN', 'server', 'The app\'s public address (https://...): the base of the Google redirect URI. Needed off Vercel when the app is not opened as localhost'),
   infra('ELVAR_ACCESS_TOKEN', 'auth', 'Shared access token (env mode)'),
   infra('ELVAR_PROFILE', 'profile', 'Profile JSON (env mode)'),
   infra('GOOGLE_API_MOCK_ORIGIN', 'test', 'Test only: mock Google origin'),

@@ -2,9 +2,11 @@
 // endpoints never get a file of their own.
 //   auth: 'none'  - anyone (state, login, claim: protected by their own checks and rate limits)
 //         'owner' - a valid device token (or the env token / local loopback before setup)
+//         'state' - a browser coming back from another site (the Google callback): no device token, protected by a single-use `state`; it may answer HTML
 import { getConfig, runWithConfig, envConfig } from './config/resolve.js';
 import * as A from './config/auth.js';
 import * as API from './elvar-api.js';
+import * as G from './google/connect.js';
 
 const bad = (status, error) => ({ status, body: { error } });
 
@@ -22,7 +24,20 @@ export const ROUTES = [
   { method: 'GET', path: '/api/elvar/profile', auth: 'owner', handler: API.getProfile },
   { method: 'PUT', path: '/api/elvar/profile', auth: 'owner', handler: API.putProfile },
   { method: 'GET', path: '/api/elvar/session', auth: 'owner', handler: API.getSession },
+  { method: 'GET', path: '/api/elvar/connect/google/status', auth: 'owner', handler: G.connectStatus },
+  { method: 'POST', path: '/api/elvar/connect/google/start', auth: 'owner', handler: G.connectStart },
+  { method: 'POST', path: '/api/elvar/connect/google/claim', auth: 'owner', handler: G.connectClaim },
+  { method: 'POST', path: '/api/elvar/connect/google/disconnect', auth: 'owner', handler: G.connectDisconnect },
+  { method: 'GET', path: '/api/elvar/connect/google/callback', auth: 'state', handler: G.connectCallback },
 ];
+
+// Paths that existed before the router (the callback URL is what the owner registers at Google, so it must not change). Vercel rewrites them
+// into this router (vercel.json); the local server hands them over here too.
+export const ALIASES = {
+  '/api/google/callback': '/api/elvar/connect/google/callback',
+  '/api/google/status': '/api/elvar/connect/google/status',
+};
+export const isRouterPath = (pathname) => pathname.startsWith('/api/elvar/') || Object.hasOwn(ALIASES, pathname.replace(/\/+$/, ''));
 
 const compiled = ROUTES.map((r) => ({ ...r, parts: r.path.split('/').filter(Boolean) }));
 function match(pathname) {
@@ -43,6 +58,7 @@ function match(pathname) {
  * @returns {Promise<{status:number, body:object}>}
  */
 export async function routeElvar(req, { pathname, query = {}, body = {} }) {
+  pathname = ALIASES[pathname.replace(/\/+$/, '')] || pathname;
   let hits;
   try { hits = match(pathname); } catch { return bad(400, 'bad_path'); }   // a malformed %-escape
   if (!hits.length) return bad(404, 'not_found');

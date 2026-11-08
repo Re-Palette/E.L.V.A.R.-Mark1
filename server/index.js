@@ -4,16 +4,15 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readConfig, handleLiveToken, handleHealth, sendJson, sendHtml } from './live-token-core.js';
-import { buildConnect, handleCallback } from './google/oauth-web.js';
-import { executeGoogle, googleStatus } from './google/index.js';
+import { readConfig, handleLiveToken, handleHealth, sendJson } from './live-token-core.js';
+import { executeGoogle } from './google/index.js';
 import { runAgent } from './agents/runner.js';
 import { runServerChecks } from './system-check.js';
 import { buildHudData } from './hud-data.js';
 import { handleNotif } from './notif-sync.js';
 import { handleChat } from './chat-api.js';
 import { getConfig, runWithConfig } from './config/resolve.js';
-import { routeElvar } from './router.js';
+import { routeElvar, isRouterPath } from './router.js';
 import { getStore, storeKind } from './store/index.js';
 import { loadMeta } from './config/vault.js';
 import { ensureSetupCode } from './config/auth.js';
@@ -57,13 +56,13 @@ const server = http.createServer((req, res) => {
   handle(req, res);
 });
 
-const OWNER_API = new Set(['/api/live-token', '/api/google/connect', '/api/google/execute', '/api/google/status', '/api/system/check', '/api/chat', '/api/notif', '/api/hud/data', '/api/agent/run']);
+const OWNER_API = new Set(['/api/live-token', '/api/google/execute', '/api/system/check', '/api/chat', '/api/notif', '/api/hud/data', '/api/agent/run']);
 const BODY_METHODS = new Set(['POST', 'PUT', 'PATCH']);
 
 async function handle(req, res) {
   try {
     const { pathname, searchParams } = new URL(req.url, 'http://x');
-    if (pathname.startsWith('/api/elvar/')) {
+    if (isRouterPath(pathname)) {
       return sendJson(res, await routeElvar(req, { pathname, query: Object.fromEntries(searchParams), body: BODY_METHODS.has(req.method) ? await readJson(req) : {} }));
     }
     if (!pathname.startsWith('/api/')) return serveStatic(req, res);
@@ -81,12 +80,6 @@ async function handle(req, res) {
 async function api(req, res, pathname, q, g) {
   if (pathname === '/api/health') return sendJson(res, handleHealth(readConfig()));
   if (pathname === '/api/live-token') return sendJson(res, await handleLiveToken(req, readConfig()));
-  if (pathname === '/api/google/connect') {
-    if (req.method !== 'POST') return sendJson(res, { status: 405, body: { error: 'method_not_allowed' } });
-    return sendJson(res, buildConnect(req));
-  }
-  if (pathname === '/api/google/callback') { const r = await handleCallback(req); return sendHtml(res, r.status, r.html); }
-  if (pathname === '/api/google/status') return sendJson(res, { status: 200, body: await googleStatus({ probe: q.get('probe') === '1' }) });
   if (pathname === '/api/google/execute') {
     if (req.method !== 'POST') return sendJson(res, { status: 405, body: { error: 'method_not_allowed' } });
     return sendJson(res, await executeGoogle(await readJson(req)));

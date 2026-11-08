@@ -51,8 +51,8 @@ export async function runServerChecks({ deep = false } = {}) {
   jobs.push((async () => {
     try {
       const g = await withTimeout(googleStatus({ probe: true }), 12000);
-      if (!g.configured) return add('google', 'Google連携', 'off', '未設定です（予定・メール・Driveなどは使えません）', 'docs/GOOGLE_INTEGRATION.md の手順で設定');
-      if (g.authenticated === false) return add('google', 'Google連携', 'fail', g.error || 'ログインが無効です', '/google-setup/ からログインし直して GOOGLE_REFRESH_TOKEN を更新');
+      if (!g.configured) return add('google', 'Google連携', 'off', '未設定です（予定・メール・Driveなどは使えません）', '設定の「Google」で連携する');
+      if (g.authenticated === false) return add('google', 'Google連携', 'fail', g.error || 'ログインが無効です', '設定の「Google」で、もう一度「Googleと連携」を押す');
       add('google', 'Google連携', 'ok', `認証OK（道具 ${g.tools} 個、うち書き込み ${g.write}）`);
     } catch (e) { add('google', 'Google連携', 'warn', `確認できませんでした: ${why(e)}`); }
   })());
