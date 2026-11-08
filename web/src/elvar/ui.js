@@ -68,6 +68,7 @@ export const UI_CSS = `
 .ev-tabs{display:flex;gap:2px;flex-wrap:wrap;margin:14px 0 2px;border-bottom:1px solid rgba(232,185,106,.25)}
 .ev-tab{background:none;border:0;color:var(--sub);padding:7px 14px;cursor:pointer;font:600 13.5px/1.2 'Barlow Semi Condensed','Noto Sans JP',sans-serif;letter-spacing:1.6px;border-bottom:2px solid transparent;margin-bottom:-1px}
 .ev-tab:hover{color:var(--gh)}
+.ev-tab.alert::after{content:'';display:inline-block;width:7px;height:7px;margin-left:6px;border-radius:50%;background:var(--warn);box-shadow:0 0 6px rgba(255,122,74,.8);vertical-align:middle}
 .ev-tab.on{color:var(--gh);border-bottom-color:var(--g);text-shadow:0 0 6px rgba(255,200,120,.35)}
 .ev-pane[hidden]{display:none}
 .ev-grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}

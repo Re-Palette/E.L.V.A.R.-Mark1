@@ -96,7 +96,7 @@ export function mountDevice(root, app, { close }) {
 
     <section class="vs-sec"><h3>Google連携（カレンダー・Gmail・Drive・タスク・連絡先）</h3>
       <div class="vs-row"><span class="l">状態</span><span class="vs-info" id="vs-g">確認中…</span><button class="vs-btn" id="vs-gcheck" type="button">接続を確認</button></div>
-      <p class="vs-note">予定やメールの確認などは声で頼めます。作成・変更・送信・削除などの書き込みは、実行前に必ず画面の承認カードで確認します（削除はゴミ箱に移すだけ）。設定の手順：<a href="/google-setup/" target="_blank" rel="noopener" style="color:#FFD99A">/google-setup/</a>（日本語の案内）</p>
+      <p class="vs-note">予定やメールの確認などは声で頼めます。作成・変更・送信・削除などの書き込みは、実行前に必ず画面の承認カードで確認します（削除はゴミ箱に移すだけ）。つなぎ方は、設定の「Google」タブにあります。</p>
     </section>
 `;
   const $ = (id) => root.querySelector('#' + id);
@@ -140,8 +140,8 @@ export function mountDevice(root, app, { close }) {
       const r = await fetch('/api/google/status?probe=1', { headers: live.authHeaders() });
       const j = await r.json().catch(() => ({}));
       if (r.status === 401) el.innerHTML = '<span style="color:#ff9a6a">ログインし直してください</span>';
-      else if (!j.configured) el.innerHTML = '<span style="color:#ff9a6a">未設定</span>（サーバーに GOOGLE_* が未登録。/google-setup/ の手順へ）';
-      else if (j.authenticated === false) el.innerHTML = `<span style="color:#ff9a6a">ログイン切れ</span>：${esc(j.error || '')}`;
+      else if (!j.configured) el.innerHTML = '<span style="color:#ff9a6a">未設定</span>（設定の「Google」タブでつなぎます）';
+      else if (j.authenticated === false) el.innerHTML = `<span style="color:#ff9a6a">再接続が必要です</span>：設定の「Google」タブで、もう一度つなぎます`;
       else el.innerHTML = `<b style="color:#9fe3a8">接続済み ✓</b>（読み取り ${j.read} ／ 書き込み ${j.write}・要承認）`;
     } catch { el.innerHTML = '<span style="color:#ff9a6a">サーバーに接続できません</span>'; }
   }

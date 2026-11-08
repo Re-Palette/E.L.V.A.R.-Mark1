@@ -3,226 +3,150 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>E.L.V.A.R. Google連携の設定</title>
+<title>E.L.V.A.R. Googleと連携する手順</title>
 <link rel="icon" type="image/png" href="/icons/icon-192.png">
 <style>
-  :root { color-scheme: dark; --bg:#000c1d; --panel:#04203f; --line:#1ea6d8; --cy:#19d3ff; --txt:#d9eef9; --sub:#7fb6d6; --ok:#1ee8c0; --warn:#ffb347; }
+  :root { color-scheme: dark; --bg:#080604; --panel:#100c07; --line:rgba(232,185,106,.4); --g:#E8B96A; --gh:#FFD99A; --txt:#f6efe2; --sub:#b99b6a; --ok:#9fe3a8; --warn:#ff9a6a; }
   * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--txt); font:16px/1.8 "Yu Gothic UI","Meiryo","Hiragino Sans",system-ui,sans-serif; }
-  main { max-width: 800px; margin: 0 auto; padding: 28px 18px 80px; }
-  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: .04em; color: var(--cy); }
-  h2 { font-size: 18px; margin: 30px 0 6px; color: var(--cy); border-top: 1px solid rgba(30,166,216,.35); padding-top: 18px; }
-  h2 span { display:inline-block; min-width:28px; height:28px; line-height:28px; text-align:center; border-radius:50%; background:var(--cy); color:#001428; font-size:15px; margin-right:8px; }
-  p.lead { margin: 0 0 14px; color: var(--sub); }
-  .box { border:1px solid rgba(30,166,216,.45); background:rgba(4,32,63,.6); border-radius:8px; padding:12px 16px; margin: 10px 0; }
-  .box.warn { border-color: rgba(255,179,71,.7); } .box.warn b.t { color: var(--warn); }
-  ol, ul { margin: 6px 0 6px 0; padding-left: 1.4em; } li { margin: 4px 0; }
-  code, pre { background:#001a33; border:1px solid rgba(30,166,216,.4); border-radius:4px; font: 14px/1.6 Consolas, "Courier New", monospace; }
-  code { padding:1px 6px; word-break: break-all; }
-  pre { padding: 10px 14px; overflow-x: auto; white-space: pre; position: relative; }
-  a { color: var(--cy); } a.btn, button { display:inline-block; background:var(--cy); color:#001428; border:0; border-radius:6px; padding:8px 16px; font:inherit; font-weight:700; cursor:pointer; text-decoration:none; margin:4px 8px 4px 0; }
-  button.sub { background:transparent; color:var(--cy); border:1px solid var(--cy); }
-  small, .note { color: var(--sub); } .ok { color: var(--ok); } .no { color: var(--warn); }
-  table { border-collapse: collapse; width: 100%; font-size: 14.5px; } td, th { border:1px solid rgba(30,166,216,.35); padding: 6px 10px; text-align: left; vertical-align: top; } th { background: rgba(4,32,63,.8); }
+  body { margin:0; background:radial-gradient(ellipse 60% 40% at 50% 0,rgba(150,96,36,.2),transparent 70%),var(--bg); color:var(--txt); font:16px/1.85 "Barlow Semi Condensed","Noto Sans JP","Hiragino Sans","Yu Gothic UI","Meiryo",system-ui,sans-serif; }
+  main { max-width: 780px; margin: 0 auto; padding: 28px 18px 90px; }
+  h1 { font:400 22px/1.4 "Cinzel","Times New Roman",serif; letter-spacing:4px; margin:0 0 6px; color:var(--gh); text-shadow:0 0 8px rgba(255,200,120,.3); }
+  h2 { font-size:18px; margin:34px 0 8px; color:var(--g); border-top:1px solid rgba(232,185,106,.25); padding-top:18px; letter-spacing:.04em; }
+  h2 .n { display:inline-block; min-width:28px; height:28px; line-height:28px; text-align:center; background:linear-gradient(180deg,var(--gh),#b07a32); color:#1a1006; font-weight:700; font-size:15px; margin-right:10px; clip-path:polygon(7px 0,100% 0,100% calc(100% - 7px),calc(100% - 7px) 100%,0 100%,0 7px); }
+  p.lead { margin:0 0 14px; color:var(--sub); }
+  .box { border:1px solid var(--line); background:var(--panel); padding:12px 16px; margin:12px 0; }
+  .box.warn { border-color:rgba(255,122,74,.65); background:rgba(255,122,74,.06); } .box.warn b.t { color:var(--warn); }
+  ol, ul { margin:6px 0; padding-left:1.4em; } li { margin:5px 0; }
+  code { background:#0d0a06; border:1px solid var(--line); font:14px/1.6 Consolas,"Courier New",monospace; padding:1px 6px; word-break:break-all; }
+  a { color:var(--gh); }
+  button { background:linear-gradient(180deg,var(--gh),var(--g) 45%,#b07a32); color:#1a1006; border:0; padding:6px 16px; font:inherit; font-weight:700; cursor:pointer; clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px); }
+  button.sub { background:transparent; color:var(--g); border:1px solid var(--g); }
+  a.btn { display:inline-block; background:linear-gradient(180deg,var(--gh),var(--g) 45%,#b07a32); color:#1a1006; padding:7px 20px; font-weight:700; text-decoration:none; clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px); }
+  small, .note { color:var(--sub); } .ok { color:var(--ok); } .no { color:var(--warn); }
+  table { border-collapse:collapse; width:100%; font-size:14.5px; } td, th { border:1px solid rgba(232,185,106,.3); padding:6px 10px; text-align:left; vertical-align:top; } th { background:#100c07; color:var(--g); }
+  .uri { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:6px 0; } .uri code { flex:1; min-width:14em; padding:7px 10px; }
 </style>
 </head>
 <body>
 <main>
-  <h1>E.L.V.A.R. Google連携の設定</h1>
-  <p class="lead">カレンダー・Gmail・Drive（ドキュメント／スプレッドシート）・タスク・連絡先を、声で扱えるようにします。最初に一度だけ、約15分の設定が必要です。</p>
+  <h1>GOOGLE CONNECT</h1>
+  <p class="lead">カレンダー・Gmail・ドライブ・ドキュメント・スプレッドシート・タスク・連絡先を、声で頼めるようにします。<b>自分のGoogleアカウントに、自分のOAuthクライアントを作る</b>方式です。初回だけ、約10分かかります。環境変数も、トークンの貼り付けも要りません。</p>
 
   <div class="box" id="status">現在の状態を確認中…</div>
-  <button class="sub" id="recheck" type="button">状態を再確認</button>
+  <button class="sub" id="recheck" type="button">状態を再確認</button> <a class="btn" href="/?settings=google" style="margin-left:6px">アプリの設定を開く</a>
 
-  <h2 style="border-top:0;padding-top:0">できること・安全のしくみ</h2>
-  <table>
-    <tr><th>サービス</th><th>すぐ実行（読むだけ）</th><th>画面で「承認」したときだけ実行</th></tr>
-    <tr><td>カレンダー</td><td>予定の確認、空き時間</td><td>予定の追加・変更・削除</td></tr>
-    <tr><td>Gmail</td><td>検索、本文を読む</td><td>下書き作成、<b>送信</b>、ゴミ箱へ移動</td></tr>
-    <tr><td>Drive・ドキュメント・スプレッドシート</td><td>検索、中身を読む</td><td>文書の作成・追記、セルの更新・追加、ゴミ箱へ移動、特定の1人への共有</td></tr>
-    <tr><td>タスク</td><td>一覧</td><td>追加・完了・削除</td></tr>
-    <tr><td>連絡先</td><td>検索</td><td>（読み取りのみ）</td></tr>
-  </table>
-  <ul>
-    <li>書き込みは、<b>画面に出る承認カードで「承認して実行」を押したときだけ</b>実行されます。Enterキーでは承認されません。Escか、2分放置で、自動的に却下されます。</li>
-    <li>削除は<b>ゴミ箱に移すだけ</b>（約30日は戻せます）。完全な削除はしません。共有は、指定した1人のGoogleアカウントだけで、「リンクを知っている全員」は使いません。</li>
-    <li>メール本文などに「これを送れ」と書かれていても従いません（あなたに報告します）。仮に従っても、実行には必ずあなたの承認が要ります。</li>
-    <li>鍵（クライアントシークレットなど）は、サーバーの環境変数にだけ置きます。ブラウザには渡りません。</li>
-  </ul>
-
-  <h2><span>0</span>準備：何もインストールしません</h2>
-  <p>パソコンに、新しいソフトを入れる必要はありません。ブラウザだけで、最後まで進められます。<br>
-    <small>（コマンドの操作が平気な方向けに、Node.js を使う別の方法を、いちばん下に残してあります。）</small></p>
-
-  <h2><span>1</span>Google Cloud でプロジェクトを作る</h2>
+  <h2><span class="n">0</span>全体の流れ</h2>
   <ol>
-    <li><a href="https://console.cloud.google.com/" target="_blank" rel="noopener">Google Cloud Console</a> を、E.L.V.A.R. で使うGoogleアカウントで開きます（初回は利用規約への同意を求められます）。</li>
-    <li>画面の上のほうにあるプロジェクト名の部分（「プロジェクトを選択」）を押し、<b>「新しいプロジェクト」</b>を選びます。</li>
-    <li>プロジェクト名に <code>elvar</code> と入力して<b>「作成」</b>。作成後、そのプロジェクトが選ばれている（上に <code>elvar</code> と出ている）ことを確認します。</li>
+    <li>Google Cloud で、プロジェクトを作り、7つのAPIを有効にする。</li>
+    <li>同意画面を作り、<b>自分をテストユーザーに入れ</b>、<b>公開ステータスを「本番」にする</b>。</li>
+    <li>OAuthクライアント（種類：<b>ウェブ アプリケーション</b>）を作り、<b>下のリダイレクトURI</b>を登録する。</li>
+    <li>アプリの <b>設定 → Google</b> に、クライアントIDとシークレットを入れて「Googleと連携」を押し、許可する。</li>
   </ol>
 
-  <h2><span>2</span>7つのAPIを有効にする</h2>
-  <p>次のリンクを順に開き、それぞれ<b>「有効にする」（Enable）</b>を押します。（リンクが開かないときは、左メニュー「APIとサービス」→「ライブラリ」で、名前を検索してください。）</p>
+  <div class="box"><b>登録するリダイレクトURI</b>（手順3で、そのまま貼り付けます）
+    <div class="uri"><code id="u-redirect">https://（このアプリのアドレス）/api/google/callback</code><button class="sub" id="copy-redirect" type="button">コピー</button></div>
+    <small id="u-note">アプリの設定の「Google」タブにも、同じ値が出ます（そちらが正確です）。</small>
+  </div>
+
+  <h2><span class="n">1</span>プロジェクトを作る</h2>
   <ol>
+    <li><a href="https://console.cloud.google.com/" target="_blank" rel="noopener">Google Cloud Console</a> を、使うGoogleアカウントで開きます（初回は利用規約に同意します）。</li>
+    <li>画面上部のプロジェクト名（「プロジェクトを選択」）を押し、<b>「新しいプロジェクト」</b>を選びます。</li>
+    <li>名前を <code>elvar</code> にして<b>「作成」</b>。上に <code>elvar</code> と出ていること（選ばれていること）を確認します。</li>
+  </ol>
+
+  <h2><span class="n">2</span>7つのAPIを有効にする</h2>
+  <p>次のリンクを開き、それぞれ<b>「有効にする」</b>を押します。使わないサービスは、飛ばして構いません。</p>
+  <ul>
     <li><a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com" target="_blank" rel="noopener">Google Calendar API</a></li>
     <li><a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com" target="_blank" rel="noopener">Gmail API</a></li>
     <li><a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank" rel="noopener">Google Drive API</a></li>
     <li><a href="https://console.cloud.google.com/apis/library/docs.googleapis.com" target="_blank" rel="noopener">Google Docs API</a></li>
     <li><a href="https://console.cloud.google.com/apis/library/sheets.googleapis.com" target="_blank" rel="noopener">Google Sheets API</a></li>
     <li><a href="https://console.cloud.google.com/apis/library/tasks.googleapis.com" target="_blank" rel="noopener">Google Tasks API</a></li>
-    <li><a href="https://console.cloud.google.com/apis/library/people.googleapis.com" target="_blank" rel="noopener">People API</a>（連絡先用）</li>
+    <li><a href="https://console.cloud.google.com/apis/library/people.googleapis.com" target="_blank" rel="noopener">People API</a>（連絡先）</li>
+  </ul>
+
+  <h2><span class="n">3</span>同意画面を作る</h2>
+  <p><a href="https://console.cloud.google.com/auth/overview" target="_blank" rel="noopener">Google Auth Platform</a> を開き、<b>「開始」</b>を押します（画面の見た目が古いときは、左メニュー「APIとサービス」→「OAuth 同意画面」。名前は少し違いますが、同じことをします）。</p>
+  <ol>
+    <li><b>アプリ情報：</b>アプリ名に <code>E.L.V.A.R.</code>、サポートメールに自分のGmail。</li>
+    <li><b>対象：</b><b>「外部」</b>を選びます。</li>
+    <li><b>連絡先情報：</b>自分のメールアドレス。</li>
+    <li><b>終了：</b>ポリシーへの同意にチェックして、「続行」→「作成」。</li>
   </ol>
 
-  <h2><span>3</span>「同意画面」を作る（細かい手順）</h2>
-  <p>「このアプリが、あなたのGoogleのどこにアクセスするか」をGoogleに登録する画面です。<b>入力するのは、アプリ名とメールアドレスだけ</b>で、あとは基本的に飛ばして構いません。</p>
-
-  <div class="box"><b>まず、どちらの画面か確認します。</b>手順2までを終えたあと、アドレスバーに次のどちらかを入力して開いてください。
-    <ul>
-      <li><a href="https://console.cloud.google.com/auth/overview" target="_blank" rel="noopener">console.cloud.google.com/auth/overview</a> を開いて、<b>「Google Auth Platform」</b>と書かれた画面が出る → <b>下の「A. 新しい画面」</b>へ。</li>
-      <li>上が開けない・古い見た目の画面になる場合は、<a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank" rel="noopener">console.cloud.google.com/apis/credentials/consent</a> を開く → <b>下の「B. 古い画面」</b>へ。</li>
-    </ul>
-    <small>どちらの場合も、画面の上に「<code>elvar</code>」（手順1で作ったプロジェクト）が選ばれていることを、先に確認してください。</small>
-  </div>
-
-  <h3 style="color:#8fe3ff;margin:22px 0 4px">A. 新しい画面（Google Auth Platform）の場合</h3>
-  <p><b>「Google Auth Platform はまだ構成されていません」</b>と出て、<b>「開始」</b>ボタンがあるはずです。それを押すと、4つの段階に分かれた入力が始まります。</p>
+  <h2><span class="n">4</span>テストユーザーに自分を入れ、「本番」に切り替える</h2>
+  <p>左メニューの<b>「対象」</b>（Audience）を開きます。</p>
   <ol>
-    <li><b>段階1「アプリ情報」</b>
-      <ul>
-        <li><b>アプリ名</b>：<code>E.L.V.A.R.</code> と入力します。</li>
-        <li><b>ユーザー サポートのメール</b>：右の▼を押して、ご自身のGmailアドレスを選びます（1つしか出ません）。</li>
-        <li>右下の<b>「次へ」</b>を押します。</li>
-      </ul></li>
-    <li><b>段階2「対象」</b>
-      <ul>
-        <li><b>「外部」</b>を選びます（「内部」は選べないか、会社のGoogle Workspace用です）。</li>
-        <li><b>「次へ」</b>を押します。</li>
-      </ul></li>
-    <li><b>段階3「連絡先情報」</b>
-      <ul>
-        <li><b>メールアドレス</b>：ご自身のメールアドレスを入力します（Googleからの通知が届く先です）。</li>
-        <li><b>「次へ」</b>を押します。</li>
-      </ul></li>
-    <li><b>段階4「終了」</b>
-      <ul>
-        <li><b>「Google API サービス：ユーザーデータに関するポリシーに同意します」</b>のチェックボックスに<b>チェック</b>を入れます。</li>
-        <li><b>「続行」</b>を押し、続けて<b>「作成」</b>を押します。</li>
-      </ul></li>
-    <li>「概要」の画面に変わります。<b>これで同意画面の本体は完成です。</b>次に、左のメニューで<b>「対象」</b>（英語表示では Audience）を押します。</li>
-    <li><b>「対象」の画面で2つのことをします。</b>
-      <ul>
-        <li><b>① テストユーザーを追加する：</b>画面の下のほうの<b>「テストユーザー」</b>の<b>「+ Add users」</b>（ユーザーを追加）を押し、ご自身のGmailアドレスを入力して<b>「保存」</b>します。</li>
-        <li><b>② アプリを公開する：</b>画面の上のほうに<b>「公開ステータス：テスト」</b>と書かれ、その下に<b>「アプリを公開」</b>（Publish app）ボタンがあります。それを押し、確認の画面で<b>「確認」</b>を押します。表示が<b>「本番環境」</b>（In production）に変われば成功です。<br>
-          <small>※ 「テスト」のままだと、ログインが7日で切れるはずです。公開しても、あなた専用のアプリなので、他の人が使えるようになることはありません。確認の画面に「確認が必要」のような注意が出ても、そのまま進めて構いません。</small></li>
-      </ul></li>
-    <li><b>「ブランディングを完成させてください」と出て、公開できないとき</b><br>
-      左メニューの<b>「ブランディング」</b>（Branding）を開き、次のように入力して<b>「保存」</b>します。<span class="no">アプリのロゴは、入れないでください</span>（入れると、Googleの審査が必要になることがあります）。
+    <li><b>テストユーザー：</b>「ユーザーを追加」で、自分のGmailアドレスを入れて保存します。</li>
+    <li><b>公開ステータス：</b><b>「アプリを公開」</b>を押し、確認で「確認」。<b>「本番環境」</b>になれば完了です。</li>
+  </ol>
+  <div class="box warn"><b class="t">ここが大事です：「テスト」のままだと、7日で連携が切れます。</b><br>
+    公開ステータスが「テスト」のアプリでは、Googleが更新用のトークンを<b>7日で失効</b>させます。1週間おきに「再接続が必要です」と出ます。<br>
+    <b>自分専用なら「本番」に切り替えてください。</b>審査は要りません。同意画面に「Googleで確認されていないアプリ」と警告が出るだけで、自分で許可すれば使えます（他の人が使えるようになることもありません）。</div>
+  <ul>
+    <li>公開できずに「ブランディングを完成させてください」と出たら、左メニューの<b>「ブランディング」</b>で、次を入れて保存します（ロゴは入れません）。
       <table>
         <tr><th>欄</th><th>入れる値</th></tr>
-        <tr><td>アプリ名（*）</td><td><code>E.L.V.A.R.</code></td></tr>
-        <tr><td>ユーザー サポートメール（*）</td><td>ご自身のGmail</td></tr>
-        <tr><td>アプリケーションのホームページ</td><td><code id="u-home">https://（このアプリのアドレス）/</code></td></tr>
-        <tr><td>アプリケーション プライバシー ポリシー リンク</td><td><code id="u-priv">https://（このアプリのアドレス）/privacy/</code></td></tr>
-        <tr><td>アプリケーション利用規約 リンク</td><td><code id="u-terms">https://（このアプリのアドレス）/terms/</code></td></tr>
-        <tr><td>承認済みドメイン</td><td>下の注意を見てください</td></tr>
-        <tr><td>デベロッパーの連絡先情報 メールアドレス（*）</td><td>ご自身のメールアドレス</td></tr>
-      </table>
-      <small>※ （*）は必須です。ホームページ・ポリシー・規約は、このページを開いているアドレスのもの（自動で入ります）を使います。<b>先に、それらのページが開けること</b>を、ブラウザで確認してください。</small>
-      <ul>
-        <li><b>承認済みドメイン：</b>「ドメインの追加」を押し、アドレスの<code>https://</code>と<code>/</code>を除いた部分（例：<code>〇〇.vercel.app</code>）を入れます。「ドメインが無効」のように拒否されたら、<b>空のままにして</b>保存を試してください（このアプリは、ログインにドメインを使わないので、必須でないはずです）。それでも進めないときは、表示された文言を教えてください。</li>
-      </ul></li>
-    <li><b>左のメニューの「データアクセス」</b>（Data Access）は、<b>今は何もしなくて構いません</b>（権限は、手順5のログインのときに、許可の画面で求めます）。<br>
-      <small>もし手順5で「アクセスをブロック：このアプリのリクエストは無効です」のようなエラーが出たときだけ、ここで「スコープを追加または削除」を押して、権限（Calendar、Gmail、Drive、Docs、Sheets、Tasks、Contacts）を追加してください。</small></li>
-  </ol>
+        <tr><td>アプリのホームページ</td><td><code id="u-home">https://（このアプリのアドレス）/</code></td></tr>
+        <tr><td>プライバシー ポリシー</td><td><code id="u-priv">https://（このアプリのアドレス）/privacy/</code></td></tr>
+        <tr><td>利用規約</td><td><code id="u-terms">https://（このアプリのアドレス）/terms/</code></td></tr>
+        <tr><td>承認済みドメイン</td><td>アドレスの <code>https://</code> と <code>/</code> を除いた部分（例：<code>〇〇.vercel.app</code>）</td></tr>
+      </table></li>
+    <li>左メニューの「データアクセス」は、何もしなくて構いません（権限は、連携のときの許可画面で求められます）。</li>
+  </ul>
 
-  <h3 style="color:#8fe3ff;margin:22px 0 4px">B. 古い画面（OAuth 同意画面）の場合</h3>
+  <h2><span class="n">5</span>OAuthクライアントを作る</h2>
   <ol>
-    <li><b>User Type（ユーザーの種類）</b>の画面：<b>「外部」</b>（External）を選び、<b>「作成」</b>を押します。</li>
-    <li><b>「アプリ情報」の画面</b>
-      <ul>
-        <li><b>アプリ名</b>：<code>E.L.V.A.R.</code></li>
-        <li><b>ユーザー サポートメール</b>：ご自身のGmailを選びます。</li>
-        <li>「アプリのロゴ」「アプリのドメイン」は<b>空のまま</b>で構いません。</li>
-        <li>一番下の<b>「デベロッパーの連絡先情報」</b>の<b>メールアドレス</b>に、ご自身のメールアドレスを入力します。</li>
-        <li><b>「保存して次へ」</b>を押します。</li>
-      </ul></li>
-    <li><b>「スコープ」の画面</b>：何も追加せず、そのまま<b>「保存して次へ」</b>を押します。</li>
-    <li><b>「テストユーザー」の画面</b>：<b>「+ ADD USERS」</b>（ユーザーを追加）を押し、ご自身のGmailアドレスを入力して<b>「追加」</b>。続けて<b>「保存して次へ」</b>を押します。</li>
-    <li><b>「概要」の画面</b>：内容を確認して、一番下の<b>「ダッシュボードに戻る」</b>を押します。</li>
-    <li>ダッシュボードの<b>「公開ステータス」</b>が<b>「テスト」</b>（Testing）になっています。その下の<b>「アプリを公開」</b>（PUBLISH APP）ボタンを押し、確認の画面で<b>「確認」</b>を押します。表示が<b>「本番環境」</b>（In production）に変われば成功です。<br>
-      <small>※ 「テスト」のままだと、ログインが7日で切れるはずです。公開しても、あなた専用のアプリなので、他の人が使えるようになることはありません。</small></li>
+    <li>左メニューの<b>「クライアント」</b>（古い画面では「認証情報」→「＋認証情報を作成」→「OAuth クライアント ID」）を開き、<b>「クライアントを作成」</b>を押します。</li>
+    <li><b>アプリケーションの種類：「ウェブ アプリケーション」</b>を選びます。<span class="no">「デスクトップ アプリ」や「Android」ではありません。</span></li>
+    <li>名前は <code>elvar</code> など、なんでも構いません。</li>
+    <li><b>「承認済みのリダイレクト URI」</b>の「URIを追加」を押し、上の<b>リダイレクトURI</b>を<b>一字一句そのまま</b>貼り付けます。<br>
+      <small>「承認済みの JavaScript 生成元」は空のままです。最後に <code>/</code> を足す、<code>http</code> と <code>https</code> を間違える、などでも失敗します。</small></li>
+    <li><b>「作成」</b>を押すと、<b>クライアントID</b>と<b>クライアントシークレット</b>が表示されます。<b>シークレットは、この画面で必ずコピー</b>してください（あとで見られないことがあります）。</li>
   </ol>
 
-  <div class="box"><b>これでできたかの確認：</b>「公開ステータス」が<b>「本番環境」</b>になっていて、テストユーザーにご自身のGmailが入っていればOKです。<br>
-    <small>うまく進まなくなったら、<b>いま見えている画面の上のほうに書かれている文字</b>と、<b>押したいボタンの名前</b>を教えてください。そこから探します。</small></div>
-
-  <h2><span>4</span>ログイン用の「クライアントID」を作る（ウェブ アプリケーション型）</h2>
+  <h2><span class="n">6</span>アプリで連携する</h2>
   <ol>
-    <li>左メニューの<b>「認証情報」</b>を開き、上の<b>「＋ 認証情報を作成」→「OAuth クライアント ID」</b>を選びます。</li>
-    <li><b>アプリケーションの種類：「ウェブ アプリケーション」</b>を選びます（<span class="no">「デスクトップ アプリ」ではありません</span>。前に作ったものがあっても、別に、もう1つ作ります）。名前は <code>elvar-web</code> など。</li>
-    <li>下のほうの<b>「承認済みのリダイレクト URI」</b>の<b>「＋ URI を追加」</b>を押し、次のアドレスを<b>一字一句そのまま</b>貼り付けます。<br>
-      <code id="u-redirect">https://（このアプリのアドレス）/api/google/callback</code> <button class="sub" id="copy-redirect" type="button">コピー</button><br>
-      <small>※ 「承認済みの JavaScript 生成元」は、空のままで構いません。アドレスの最後に <code>/</code> を足したり、<code>http</code> と <code>https</code> を間違えたりすると、ログインできません。</small></li>
-    <li><b>「作成」</b>を押します。<b>クライアント ID</b>と<b>クライアント シークレット</b>が表示されるので、メモ帳に控えます。<br>
-      <small>シークレットは、他の人に見せたり、チャットに貼ったりしないでください（私にも貼らないでください）。</small></li>
+    <li>E.L.V.A.R. の<b>設定 → Google</b>（<a href="/?settings=google">ここから開けます</a>）を開きます。</li>
+    <li><b>クライアントID</b>と<b>クライアントシークレット</b>を貼り付けます。使うサービスにチェックを入れます（読み取りだけにもできます）。</li>
+    <li><b>「Googleと連携」</b>を押します。Googleの画面が、<b>外部のブラウザ（スマホではChromeのタブ）</b>で開きます。</li>
+    <li>使うアカウントを選びます。「<b>Googleで確認されていないアプリ</b>」と出たら、<b>「詳細」→「E.L.V.A.R.（安全ではないページ）に移動」</b>を選びます（自分で作ったアプリなので問題ありません）。</li>
+    <li>権限の一覧で、<b>すべてにチェックが入っている</b>ことを確認して「続行」。「連携しました」と出たら、アプリに戻ります。自動で完了します。</li>
   </ol>
+  <p>つながったら、話しかけてみます：「今日の予定を教えて」「未読のメールを3件、要点だけ」「明日の15時に打ち合わせを入れて」（書き込みは、画面の承認カードで確認します）。</p>
 
-  <h2><span>5</span>Vercel に2つ登録して、再デプロイする</h2>
-  <ol>
-    <li><a href="https://vercel.com/dashboard" target="_blank" rel="noopener">Vercel</a> で、このアプリのプロジェクトを開き、<b>「Settings」→「Environment Variables」</b>を開きます。</li>
-    <li>次の2つを、名前と値のペアで追加します（Environment は「Production」を含めて選択）。
-      <table>
-        <tr><th>名前（Key）</th><th>値（Value）</th></tr>
-        <tr><td><code>GOOGLE_CLIENT_ID</code></td><td>手順4の「クライアント ID」</td></tr>
-        <tr><td><code>GOOGLE_CLIENT_SECRET</code></td><td>手順4の「クライアント シークレット」</td></tr>
-      </table>
-    </li>
-    <li><span class="no">すでに <code>ELVAR_ACCESS_TOKEN</code> が登録されていることも確認してください</span>（Google連携の入口を守るために必要です）。</li>
-    <li>「Deployments」を開き、最新のデプロイの右の「…」から<b>「Redeploy」</b>を押します（完了まで1〜2分）。</li>
-  </ol>
+  <h2><span class="n">7</span>うまくいかないとき</h2>
+  <div class="box warn"><ul>
+    <li><b>redirect_uri_mismatch</b>：手順5で登録したURIが、1文字でも違います。アプリの設定「Google」に出ているURIを、もう一度正確に登録します。</li>
+    <li><b>アクセスをブロック／このアプリは審査プロセスを完了していません</b>：自分のGmailが「テストユーザー」に入っていません（手順4）。</li>
+    <li><b>invalid_client / 「トークンの発行を断りました」</b>：クライアントIDかシークレットが違う、またはクライアントの種類が「ウェブ アプリケーション」ではありません（手順5）。</li>
+    <li><b>「更新用のトークンが返りませんでした」</b>：<a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">Googleアカウントの権限の管理</a>で E.L.V.A.R. を一度削除してから、もう一度「Googleと連携」を押します。</li>
+    <li><b>「再接続が必要です」と出た</b>：連携が切れています（取り消した／「テスト」のまま7日たった／パスワードを変えた）。設定の「Google」で「再接続」を押します。繰り返すなら、手順4の「本番」を確認します。</li>
+    <li><b>サービスが使えない（「許可されていません」）</b>：設定の「Google」でサービスにチェックを入れて、もう一度「再接続」を押します。許可の画面で一部のチェックを外していないかも確認します。</li>
+    <li><b>Google の画面が、アプリの中で開いてしまう</b>：「disallowed_useragent」と出ます。アプリの設定から押し直してください（外部のブラウザで開く作りです）。</li>
+  </ul></div>
 
-  <h2><span>6</span>ボタンを押して、Googleにログインする</h2>
-  <ol>
-    <li>再デプロイが終わったら、このページを開き直して、下のボタンを押します。<br>
-      <button id="login" type="button">Googleにログイン</button> <span id="login-msg" class="note"></span></li>
-    <li>Googleのページが開きます。使うGoogleアカウントを選びます。</li>
-    <li>「<b>Google でまだ確認されていないアプリ</b>」と出たら、<b>「詳細」→「E.L.V.A.R.（安全ではないページ）に移動」</b>を選びます（ご自身で作ったアプリなので問題ありません）。</li>
-    <li>権限の一覧が出ます。<b>すべての項目にチェックが入っていること</b>を確認して、<b>「続行」</b>を押します。</li>
-    <li>「<b>Googleにログインできました ✓</b>」というページが開き、長い文字列が表示されます。<b>「コピー」</b>を押します。<br>
-      <small>この値は、あなたのGoogleに入るための鍵です。<b>この画面は、一度閉じると二度と表示できません</b>。他の人には見せないでください（私にも貼らないでください）。</small></li>
-    <li>Vercel の「Environment Variables」に戻り、次を追加して、もう一度<b>「Redeploy」</b>します。
-      <table>
-        <tr><th>名前（Key）</th><th>値（Value）</th></tr>
-        <tr><td><code>GOOGLE_REFRESH_TOKEN</code></td><td>いまコピーした長い文字列</td></tr>
-      </table>
-    </li>
-  </ol>
+  <h2><span class="n">8</span>できること・安全のしくみ</h2>
+  <table>
+    <tr><th>サービス</th><th>すぐ実行（読むだけ）</th><th>画面で「承認」したときだけ実行</th></tr>
+    <tr><td>カレンダー</td><td>予定の確認、空き時間</td><td>予定の追加・変更・削除</td></tr>
+    <tr><td>Gmail</td><td>検索、本文を読む</td><td>下書き作成、<b>送信</b>、ゴミ箱へ移動</td></tr>
+    <tr><td>ドライブ・ドキュメント・スプレッドシート</td><td>検索、中身を読む</td><td>文書の作成・追記、セルの更新・追加、ゴミ箱へ移動、特定の1人への共有</td></tr>
+    <tr><td>タスク</td><td>一覧</td><td>追加・完了・削除</td></tr>
+    <tr><td>連絡先</td><td>検索</td><td>（読み取りのみ）</td></tr>
+  </table>
+  <ul>
+    <li>書き込みは、画面の承認カードで<b>「承認して実行」を押したときだけ</b>実行されます。Enterキーでは承認されません。Escか2分放置で、自動的に却下されます。</li>
+    <li>削除は<b>ゴミ箱に移すだけ</b>です。メール本文に「これを送れ」と書かれていても従いません。</li>
+    <li>クライアントシークレットと更新トークンは、サーバーで暗号化して保存します。ブラウザには渡らず、画面にも表示されません。</li>
+    <li>いつでも解除できます：設定の「Google」の<b>「切断」</b>（Google側の許可も取り消します）、または<a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">Googleアカウントの権限の管理</a>。</li>
+  </ul>
 
-  <h2><span>7</span>つながったか確認する</h2>
-  <ol>
-    <li>このページの上の「状態」が<b class="ok">「接続済み ✓」</b>になることを確認します（「状態を再確認」ボタンで更新）。アプリの<b>歯車（設定）→「Google連携」→「接続を確認」</b>でも同じです。</li>
-    <li>E.L.V.A.R. に話しかけてみます：<br>
-      ・「今日の予定を教えて」　・「未読のメールを3件、要点だけ教えて」　・「明日の15時に打ち合わせを入れて」→ 画面に承認カードが出ます。</li>
-  </ol>
-  <div class="box warn"><b class="t">うまくいかないとき</b>
-    <ul>
-      <li>「<b>ログイン切れ</b>」：手順6のボタンをもう一度押して、<code>GOOGLE_REFRESH_TOKEN</code> を新しい値に入れ替え、再デプロイします。</li>
-      <li>「<b>未設定</b>」：手順5・6の3つの値の名前の綴りと、再デプロイを確認します。</li>
-      <li>ボタンを押したあとに Google の画面で「<b>redirect_uri_mismatch</b>」と出たら、手順4で登録したアドレスが、一字でも違います。<code>https://…/api/google/callback</code> を、もう一度正確に登録し直してください。</li>
-      <li>「<b>アクセストークンが違います</b>」：<code>ELVAR_ACCESS_TOKEN</code> が、アプリに保存した値と一致しているか確認します。</li>
-      <li>「<b>更新トークンが返りませんでした</b>」と出たら、<a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">Googleアカウントの権限の管理</a>で E.L.V.A.R. を一度削除してから、手順6をやり直します。</li>
-      <li>画面の名前が違って迷ったら、見えている画面の名前を教えてください。一緒に探します。</li>
-    </ul>
-  </div>
-  <details class="box"><summary><b>別の方法：Node.js を使う（コマンド操作が平気な方向け）</b></summary>
-    <p>手順4で「<b>デスクトップ アプリ</b>」型のクライアントを作り、PowerShell で次を実行する方法です（Node.js 22以上が必要）。</p>
-    <ol>
-      <li><a href="/google-auth.mjs" download="google-auth.mjs">google-auth.mjs</a> を <code>C:\elvar</code> に保存します。</li>
-<li>PowerShell で、<code>cd C:\elvar</code> → <code>$env:GOOGLE_CLIENT_ID="…"</code> → <code>$env:GOOGLE_CLIENT_SECRET="…"</code> → <code>node google-auth.mjs</code> を順に実行し、ブラウザで許可すると、<code>GOOGLE_REFRESH_TOKEN=…</code> が表示されます。</li>
-      <li>3つの値（ID・シークレット・トークン）を Vercel に登録して、再デプロイします。</li>
-    </ol>
+  <details class="box"><summary><b>自分のサーバーで環境変数を使う方へ</b></summary>
+    <p>アプリの設定を使わず、環境変数だけで動かすこともできます（読み取り専用の「環境変数モード」）。<code>GOOGLE_CLIENT_ID</code>・<code>GOOGLE_CLIENT_SECRET</code>・<code>GOOGLE_REFRESH_TOKEN</code> を設定します。リフレッシュトークンは、<a href="/google-auth.mjs" download="google-auth.mjs">google-auth.mjs</a>（Node.js 22以上、「デスクトップ アプリ」型のクライアント）で取れます。この場合、サービスの絞り込みはできず、すべての道具が使えます。</p>
   </details>
-  <p class="note">いつでも解除できます：<a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">Googleアカウントの権限の管理</a>で、E.L.V.A.R. を削除してください。</p>
 </main>
 <script src="./page.js"></script>
 </body>

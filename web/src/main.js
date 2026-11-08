@@ -21,7 +21,8 @@ import { initGoogleTools } from './google-tools.js';
 import { initBrainViewer } from './brain-viewer.js';
 import { detectProtocolCommand, detectHandCommand, createTranscriptWatcher } from './human-protocol.js';
 import { ownerAddress, brand, features, profileCache, timeZone } from './brand.js';
-import { bootAuth } from './elvar/auth.js';
+import { bootAuth, currentSession } from './elvar/auth.js';
+import { initGoogleWatch } from './google-watch.js';
 import { localDate, localMinutes } from '../../shared/tz.js';
 
 const STANDBY_KEY = 'elvar_standby'; // '1' = on, '0' = opted out, unset = on automatically once the mic permission is granted
@@ -520,6 +521,8 @@ initSettingsPanel({
   defaults: { speechRate: DEFAULT_SPEECH_RATE },
   armStandby, greetDelayMs,
 });
+
+initGoogleWatch({ inbox, hudLive, session: currentSession });   // claims the Google login when the consent screen (another browser / Custom Tab) is done; asks to reconnect when Google refuses
 
 // Launched from the Android assistant gesture (apk wrapper opens ?assistant=1): start the conversation right away.
 if (qs.get('assistant') === '1') {

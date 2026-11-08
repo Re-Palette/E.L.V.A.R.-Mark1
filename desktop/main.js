@@ -3,7 +3,7 @@
 // What it does: hosts the HUD (ELVAR_URL), keeps it running while hidden/covered/minimised (no background
 // throttling, autoplay allowed, mic allowed), keeps living in the tray/menu bar when the window is closed,
 // and on a double clap puts the window in front of everything (also over full-screen apps).
-const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, session, systemPreferences } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, session, shell, systemPreferences } = require('electron');
 const path = require('node:path');
 
 const arg = (n) => process.argv.find((a) => a.startsWith(`--${n}=`))?.slice(n.length + 3);
@@ -28,6 +28,7 @@ app.on('second-instance', () => bringToFront('second-instance'));
 let win = null, tray = null, quitting = false, topTimer = null;
 const origin = (u) => { try { return new URL(u).origin; } catch { return ''; } };
 const OUR_ORIGIN = origin(START_URL);
+const GOOGLE_AUTH_URL = /^https:\/\/accounts\.google\.com\/o\/oauth2\/(v2\/)?auth\?/;
 ipcMain.on('elvar:token', (e) => { e.returnValue = origin(e.senderFrame?.url || '') === OUR_ORIGIN ? ACCESS_TOKEN : ''; });
 
 function createWindow() {
@@ -106,6 +107,10 @@ app.whenReady().then(async () => {
   if (process.platform === 'darwin') { try { await systemPreferences.askForMediaAccess('microphone'); } catch {} }
 
   ipcMain.on('elvar:bring-to-front', (e) => { if (win && e.sender === win.webContents) bringToFront('ipc'); });
+  // Google refuses sign-in inside an embedded window, so the consent screen opens in the system browser. Only Google's own authorize URL, only from our window.
+  ipcMain.on('elvar:open-external', (e, url) => {
+    if (win && e.sender === win.webContents && origin(e.senderFrame?.url || '') === OUR_ORIGIN && GOOGLE_AUTH_URL.test(String(url))) shell.openExternal(String(url));
+  });
   createWindow();
   try { createTray(); } catch (e) { log({ evt: 'tray-unavailable', message: String(e) }); }
 

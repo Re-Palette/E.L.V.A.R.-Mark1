@@ -67,6 +67,23 @@ class MainActivity : Activity() {
         @JavascriptInterface fun setSyncConfig(baseUrl: String, token: String, enabled: Boolean, notifSecret: String) { NotifStore.setSync(applicationContext, baseUrl, token, enabled, notifSecret); if (enabled) NotifSync.trigger(applicationContext) }
         @JavascriptInterface fun clearNotifications() { NotifStore.clear(applicationContext) }
 
+        /**
+         * Google's consent screen. Google refuses sign-in inside a WebView ("disallowed_useragent"), so it is opened in a Custom Tab (the user's browser,
+         * with their Google session). Only Google's authorize URL is accepted. When the user comes back, onResume() tells the page to claim the result.
+         */
+        @JavascriptInterface fun openExternal(url: String) {
+            if (!url.startsWith("https://accounts.google.com/o/oauth2/")) return
+            runOnUiThread {
+                try {
+                    val i = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                    val extras = Bundle()
+                    extras.putBinder("android.support.customtabs.extra.SESSION", null)   // what CustomTabsIntent.Builder does: ask the browser for a Custom Tab
+                    i.putExtras(extras)
+                    startActivity(i)
+                } catch (e: Exception) { Toast.makeText(this@MainActivity, "ブラウザを開けませんでした", Toast.LENGTH_LONG).show() }
+            }
+        }
+
         @JavascriptInterface
         fun saveFile(name: String, mime: String, base64: String): Boolean {
             return try {
@@ -203,6 +220,9 @@ class MainActivity : Activity() {
     override fun onBackPressed() { if (web.canGoBack()) web.goBack() else super.onBackPressed() }
 
     override fun onPause() { super.onPause(); web.onPause() }
-    override fun onResume() { super.onResume(); web.onResume() }
+    override fun onResume() {
+        super.onResume(); web.onResume()
+        try { web.evaluateJavascript("window.__elvarResume&&window.__elvarResume()", null) } catch (_: Exception) {}   // back from the Google consent screen: the page claims the login
+    }
     override fun onDestroy() { try { unregisterReceiver(unlockReceiver) } catch (_: Exception) {}; web.destroy(); super.onDestroy() }
 }

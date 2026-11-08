@@ -20,7 +20,7 @@ export function mountKeys(root) {
     const ro = !cfg.writable;
     root.innerHTML = `
       ${ro ? `<p class="ev-note">${cfg.mode === 'env' ? '環境変数モードです。キーは環境変数で変更してください（ここでは状態だけ表示します）。' : 'セットアップが済むと、ここでキーを保存できます。'}</p>` : '<p class="ev-note">保存したキーは暗号化され、画面には二度と表示されません。入れ直すときは、新しいキーを入力して保存します。</p>'}
-      ${Object.entries(cfg.secrets).map(([k, s]) => `
+      ${Object.entries(cfg.secrets).filter(([, s]) => s.group !== 'google').map(([k, s]) => `
         <div class="ev-key" data-k="${esc(k)}">
           <div class="ev-row" style="margin:0"><span class="nm">${esc(label(k, s))}</span><span class="ev-chip ${s.set ? 'ok' : 'off'}">${esc(keyStatusText(s))}</span></div>
           <div class="st">${esc(HELP[k] || '')}</div>

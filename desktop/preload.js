@@ -7,4 +7,6 @@ contextBridge.exposeInMainWorld('elvarDesktop', {
   accessToken: (() => { try { return ipcRenderer.sendSync('elvar:token') || ''; } catch { return ''; } })(),
   /** Ask the OS to put the HUD window in front of everything, right now. */
   bringToFront: () => ipcRenderer.send('elvar:bring-to-front'),
+  /** Open Google's consent screen in the system browser (the main process refuses any other URL). */
+  openExternal: (url) => ipcRenderer.send('elvar:open-external', String(url)),
 });

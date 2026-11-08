@@ -1,5 +1,5 @@
 // First-run setup wizard: storage check -> setup code + owner password -> Gemini key (+ check) -> name / address / language / time zone / city
-// -> speaking style + greeting preview -> optional services -> done. Each step is saved on the server as it is completed; the step reached is kept
+// -> speaking style + greeting preview -> optional services -> optional Google connect (skippable) -> done. Each step is saved on the server as it is completed; the step reached is kept
 // on this device (elvar_setup_step), so a reload continues where it stopped. Keys are write-only: never shown again, only "設定済み・末尾4桁".
 import { overlay, esc } from '../elvar/ui.js';
 import { api, setToken, getToken, setSetupStep, setupStep, defaultDeviceName, loadSession } from '../elvar/auth.js';
@@ -8,10 +8,11 @@ import { renderFields, readFields, mergeInto, errorText, browserTimeZone } from 
 import { greetingLine } from '../live/clap-standby.js';
 import { setProfileCache } from '../brand.js';
 import { keyStatusText } from './wizard-text.js';
+import { mountGoogle } from '../settings/google.js';
 export { keyStatusText };
 
-export const STEPS = ['storage', 'owner', 'gemini', 'profile', 'persona', 'services', 'done'];
-const TITLES = { storage: '保存先の確認', owner: 'オーナーの登録', gemini: 'Gemini の APIキー', profile: 'あなたについて', persona: '話し方と挨拶', services: 'ほかのサービス（任意）', done: '準備ができました' };
+export const STEPS = ['storage', 'owner', 'gemini', 'profile', 'persona', 'services', 'google', 'done'];
+const TITLES = { storage: '保存先の確認', owner: 'オーナーの登録', gemini: 'Gemini の APIキー', profile: 'あなたについて', persona: '話し方と挨拶', services: 'ほかのサービス（任意）', google: 'Google と連携（任意）', done: '準備ができました' };
 
 /** Where to start: the saved step (resume), or the first step that is not done yet. Pure (tested). */
 export function startStep(state, saved, hasToken) {
@@ -82,8 +83,11 @@ export function runWizard({ state, setupCode = '' }) {
       services: (cfg) => `
         <p class="ev-p">なくても使えます。入れると、難しい推論（Groq）や本格的な調べもの（Exa）が使えます。</p>
         ${['GROQ_API_KEY', 'EXA_API_KEY'].map((k) => `<label class="ev-field"><span>${k === 'GROQ_API_KEY' ? 'Groq API キー' : 'Exa API キー'} <span class="ev-chip ${cfg?.[k]?.set ? 'ok' : 'off'}">${esc(keyStatusText(cfg?.[k]))}</span></span><input class="ev-input" data-key="${k}" type="password" autocomplete="off" spellcheck="false"></label>`).join('')}
-        <p class="ev-note">Google（カレンダー・Gmail）は、あとで設定画面からつなぎます。</p>
         <div class="ev-btns"><button class="ev-btn pri" id="ev-go" type="button">保存して次へ</button><button class="ev-btn" id="ev-skip" type="button">スキップ</button></div>`,
+      google: () => `
+        <p class="ev-p">Googleのカレンダー・Gmail・ドライブなどを、声で頼めるようにします。なくても使えます。あとから、設定の「Google」でもつなげます。</p>
+        <div id="ev-gpane"></div>
+        <div class="ev-btns"><button class="ev-btn pri" id="ev-go" type="button">次へ</button><button class="ev-btn" id="ev-back" type="button">戻る</button></div>`,
       done: (cfg) => `
         <p class="ev-p">セットアップが終わりました。拍手2回、またはマイクのボタンで話しかけてください。</p>
         <div class="ev-kv"><span>オーナー</span><span>${esc(profile.owner.address)}</span><span>タイムゾーン</span><span>${esc(profile.locale.timeZone)}</span><span>Gemini</span><span class="ev-chip ${cfg?.set ? 'ok' : 'off'}">${esc(keyStatusText(cfg))}</span></div>
@@ -106,7 +110,7 @@ export function runWizard({ state, setupCode = '' }) {
       const skip = $('ev-skip'); if (skip) skip.onclick = () => go(STEPS[STEPS.indexOf(step) + 1]);
       const btn = $('ev-go');
       const run = async (fn) => { busy(true); try { await fn(); } catch { msg('サーバーに接続できません', 'warn'); } finally { busy(false); } };
-      o.panel.onkeydown = (e) => { if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA' && btn && !btn.disabled) btn.click(); };
+      o.panel.onkeydown = (e) => { if (e.key === 'Enter' && step !== 'google' && e.target.tagName !== 'TEXTAREA' && btn && !btn.disabled) btn.click(); };
 
       if (step === 'storage') btn.onclick = () => run(async () => { const r = await api('/api/elvar/state'); if (r.status === 200) { st = r.body; if (st.storage !== 'none') go(startStep(st, null, Boolean(getToken()))); else msg('まだ見つかりません。追加して再デプロイしたあと、もう一度押してください', 'warn'); } });
       if (step === 'owner') btn.onclick = () => run(async () => {
@@ -148,8 +152,9 @@ export function runWizard({ state, setupCode = '' }) {
           o.panel.querySelectorAll('[data-key]').forEach((el) => { el.value = ''; });
           if (r.status !== 200) return msg(r.body?.message || '保存できませんでした', 'warn');
         }
-        go('done');
+        go('google');
       });
+      if (step === 'google') { mountGoogle($('ev-gpane'), { compact: true }).refresh(); btn.onclick = () => go('done'); }
       if (step === 'done') btn.onclick = () => run(async () => { setSetupStep(''); await loadSession(); o.close(); resolve(); });
     }
 
