@@ -1,0 +1,19 @@
+name: Test
+# Runs on every Pull Request (including the ones Claude Code opens for E.L.V.A.R.'s own changes) and on pushes to main.
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: npm }
+      - run: npm ci
+      - run: npm test
+        env:
+          # Newline-separated list of private terms the public repo must never contain (kept in a repository secret, never in the repo).
+          ELVAR_SCRUB_TERMS: ${{ secrets.ELVAR_SCRUB_TERMS }}
+      - run: npm run build

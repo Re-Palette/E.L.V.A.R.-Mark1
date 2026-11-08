@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E.L.V.A.R. 拡張機能のインストール</title>
+<link rel="icon" type="image/png" href="/icons/icon-192.png">
+<style>
+  :root { color-scheme: dark; --bg:#000c1d; --panel:#04203f; --line:#1ea6d8; --cy:#19d3ff; --txt:#d9eef9; --sub:#7fb6d6; --ok:#1ee8c0; --warn:#ffb347; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:16px/1.7 "Yu Gothic UI","Meiryo","Hiragino Sans",system-ui,sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: .04em; color: var(--cy); }
+  p.lead { margin: 0 0 24px; color: var(--sub); }
+  .status { border:1px solid var(--line); background:var(--panel); border-radius:8px; padding:12px 16px; margin-bottom:24px; }
+  .status b.ok { color: var(--ok); } .status b.no { color: var(--warn); }
+  ol { padding-left: 0; list-style: none; counter-reset: s; margin: 0; }
+  li { counter-increment: s; position: relative; padding: 12px 14px 12px 52px; margin-bottom: 10px; border:1px solid rgba(30,166,216,.35); border-radius:8px; background:rgba(4,32,63,.6); }
+  li::before { content: counter(s); position:absolute; left:14px; top:12px; width:26px; height:26px; border-radius:50%; background:var(--cy); color:#001428; font-weight:700; text-align:center; line-height:26px; }
+  a.btn, button { display:inline-block; background:var(--cy); color:#001428; border:0; border-radius:6px; padding:8px 16px; font:inherit; font-weight:700; cursor:pointer; text-decoration:none; margin:4px 8px 4px 0; }
+  button.sub { background:transparent; color:var(--cy); border:1px solid var(--cy); }
+  code { background:#001a33; border:1px solid rgba(30,166,216,.4); padding:1px 6px; border-radius:4px; word-break:break-all; }
+  small, .note { color: var(--sub); }
+  #countdown { color: var(--warn); font-weight:700; margin-left: 6px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>E.L.V.A.R. 拡張機能のインストール</h1>
+  <p class="lead">最小化したままでも、拍手2回でアプリを元に戻して一番前に出すための、Chrome／Edge用の小さな拡張機能です。</p>
+
+  <div class="status" id="status">状態を確認中…</div>
+
+  <ol>
+    <li><b>ダウンロード：</b><a class="btn" href="/elvar-extension.zip" download>elvar-extension.zip</a>
+      <br><small>ダウンロードしたら、<b>右クリック → すべて展開</b>で、好きな場所（例：ドキュメント）に展開します。展開したあとも、このフォルダは<b>消さないでください</b>（拡張機能の本体です）。</small></li>
+    <li><b>Chromeで</b> アドレスバーに <code>chrome://extensions</code> を入力して開き（Edgeは <code>edge://extensions</code>）、右上の<b>「デベロッパー モード」</b>をオンにします。</li>
+    <li><b>「パッケージ化されていない拡張機能を読み込む」</b>を押して、展開した <code>elvar-extension</code> フォルダを選びます。</li>
+    <li><b>このアプリのアドレスを許可：</b>追加された拡張機能の<b>「詳細」→「拡張機能のオプション」</b>を開き、次のアドレスを貼り付けて<b>「許可して追加」</b>を押します。<br>
+      <code id="origin"></code> <button class="sub" id="copy" type="button">コピー</button></li>
+    <li><b>アプリのウィンドウを再読み込み</b>（アプリで Ctrl＋R）。このページの状態が「検出しました」になれば完了です。</li>
+    <li><b>動作テスト：</b>下のボタンを押したら、<b>すぐこのウィンドウを最小化</b>してください。5秒後に、自動で元に戻って最前面に出れば成功です。<br>
+      <button id="test" type="button">5秒後に前面に出すテスト</button><span id="countdown"></span></li>
+  </ol>
+
+  <p class="note">※ アプリは<b>×で閉じず、最小化</b>してお使いください（閉じると拍手の待機が止まります）。<br>
+  ※ 仕組み：拡張機能は、あなたが許可したアドレスのページが「前面に出して」と頼んだときだけ動きます。ページの内容は読みません。</p>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  $('origin').textContent = location.origin;
+  $('copy').onclick = async () => { try { await navigator.clipboard.writeText(location.origin); $('copy').textContent = 'コピーしました'; } catch { $('copy').textContent = '手動でコピーしてください'; } };
+  const check = () => {
+    const ok = document.documentElement.dataset.elvarExtension === '1';
+    $('status').innerHTML = ok
+      ? '拡張機能：<b class="ok">検出しました ✓</b>　このアドレスで有効です。下の動作テストをお試しください。'
+      : '拡張機能：<b class="no">未検出</b>　まだ入れていない、またはこのアドレスを追加していません。下の手順で進めてください。';
+  };
+  check(); setInterval(check, 1000);
+  $('test').onclick = () => {
+    let n = 5; $('test').disabled = true;
+    const t = setInterval(() => {
+      $('countdown').textContent = `${n}…`;
+      if (n-- <= 0) { clearInterval(t); $('countdown').textContent = ''; $('test').disabled = false;
+        window.postMessage({ source: 'elvar-hud', type: 'bring-to-front' }, location.origin); }
+    }, 1000);
+  };
+</script>
+</body>
+</html>

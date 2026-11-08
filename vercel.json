@@ -1,0 +1,54 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "npm install",
+  "buildCommand": "npm run build",
+  "outputDirectory": "web/dist",
+  "rewrites": [
+    {
+      "source": "/api/google/execute",
+      "destination": "/api/google-execute"
+    },
+    {
+      "source": "/api/google/status",
+      "destination": "/api/google-status"
+    },
+    {
+      "source": "/api/google/connect",
+      "destination": "/api/google-connect"
+    },
+    {
+      "source": "/api/google/callback",
+      "destination": "/api/google-callback"
+    },
+    {
+      "source": "/api/agent/run",
+      "destination": "/api/agent-run"
+    },
+    {
+      "source": "/api/system/check",
+      "destination": "/api/system-check"
+    },
+    {
+      "source": "/api/hud/data",
+      "destination": "/api/hud-data"
+    }
+  ],
+  "functions": {
+    "api/agent-run.js": {
+      "maxDuration": 60
+    },
+    "api/system-check.js": {
+      "maxDuration": 30
+    },
+    "api/hud-data.js": {
+      "maxDuration": 20
+    },
+    "api/notif.js": {
+      "maxDuration": 15
+    },
+    "api/chat.js": {
+      "maxDuration": 40
+    }
+  }
+}

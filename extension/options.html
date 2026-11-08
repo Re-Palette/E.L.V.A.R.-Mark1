@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>E.L.V.A.R. Bring to Front</title>
+<style>
+  body { font: 15px/1.6 system-ui, "Yu Gothic UI", "Meiryo", sans-serif; max-width: 640px; margin: 32px auto; padding: 0 16px; color: #0b2233; }
+  h1 { font-size: 20px; } input { width: 100%; padding: 8px; font-size: 15px; box-sizing: border-box; }
+  button { padding: 8px 14px; font-size: 14px; margin-top: 8px; cursor: pointer; } ul { padding-left: 18px; }
+  .ok { color: #0a7a3d; } .err { color: #b3261e; } small { color: #55707f; }
+</style>
+<h1>E.L.V.A.R. Bring to Front</h1>
+<p>拍手2回で、最小化されたこのブラウザのウィンドウを元に戻して、E.L.V.A.R. のタブを最前面に出します。<br>
+<small>許可したサイトのページが「前面に出して」と頼んだときだけ動きます。ページの内容は読みません。</small></p>
+<p><b>E.L.V.A.R. のアドレスを追加</b>（例：<code>https://your-app.vercel.app</code>。<code>http://localhost</code> は最初から許可済み）</p>
+<input id="origin" placeholder="https://your-app.vercel.app">
+<button id="add">許可して追加</button> <span id="msg"></span>
+<p><b>許可済みのサイト</b></p>
+<ul id="list"></ul>
+<p><small>追加したあと、E.L.V.A.R. のタブを一度再読み込みしてください。</small></p>
+<script src="options.js"></script>

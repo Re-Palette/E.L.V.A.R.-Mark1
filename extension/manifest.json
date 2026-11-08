@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "E.L.V.A.R. Bring to Front",
+  "version": "0.1.0",
+  "description": "When E.L.V.A.R. hears your double clap, restore this browser window if it is minimised and bring the tab to the front.",
+  "minimum_chrome_version": "111",
+  "permissions": ["scripting", "storage"],
+  "host_permissions": ["http://localhost/*", "http://127.0.0.1/*"],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    { "matches": ["http://localhost/*", "http://127.0.0.1/*"], "js": ["content.js"], "run_at": "document_start" }
+  ],
+  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "action": { "default_title": "E.L.V.A.R. Bring to Front" }
+}

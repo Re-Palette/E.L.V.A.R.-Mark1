@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#050403">
+  <title>ELVAR HUD Demo</title>
+  <style>
+    html,body{margin:0;height:100%;background:#050403;overflow:hidden}
+    #demo-panel{position:fixed;right:10px;top:10px;z-index:10;width:250px;padding:10px 12px;border:1px solid #b8884a;
+      background:rgba(14,11,7,.94);color:#eadcc0;font:12px/1.4 system-ui,sans-serif;border-radius:4px;box-shadow:0 0 10px rgba(255,176,80,.3)}
+    #demo-panel.is-hidden{display:none}
+    #demo-panel h3{margin:0 0 6px;font-size:12px;letter-spacing:1px;color:#ffd99a}
+    #demo-panel label{display:block;margin:6px 0 2px}
+    #demo-panel input[type=range]{width:100%}
+    #demo-panel .row{display:flex;flex-wrap:wrap;gap:4px}
+    #demo-panel button{background:#221a10;color:#eadcc0;border:1px solid #8a5a20;border-radius:3px;padding:3px 6px;font-size:11px;cursor:pointer}
+    #demo-panel button.on{background:#8a5a20;color:#fff}
+    #demo-log{margin-top:6px;max-height:60px;overflow:auto;color:#c9a878;font-size:11px}
+    #demo-toggle{position:fixed;right:10px;bottom:10px;z-index:11;background:#221a10;color:#ffd99a;border:1px solid #8a5a20;border-radius:3px;font-size:11px;padding:2px 6px;cursor:pointer}
+  </style>
+</head>
+<body>
+  <div id="hud-root"></div>
+  <!-- stand-in for the wake-up music "STOP" tab that main.js adds while the BGM plays (styled by hud.css); ?bgm=0 hides it -->
+  <button id="elvar-bgm-stop" class="on" type="button" aria-label="音楽を停止"><span>♪ BGM</span><span>■ STOP</span></button>
+  <button id="demo-toggle" type="button">demo ⚙</button>
+  <div id="demo-panel" class="is-hidden">
+    <h3>HUD DEMO (no backend)</h3>
+    <div class="row" id="demo-states"></div>
+    <label>source</label>
+    <div class="row"><button data-src="mic" class="on">mic</button><button data-src="model">model</button></div>
+    <label>level <span id="lv">0.00</span></label><input id="level" type="range" min="0" max="1" step="0.01" value="0">
+    <label>pitch <span id="pv">0.50</span></label><input id="pitch" type="range" min="0" max="1" step="0.01" value="0.5">
+    <label><input id="synth" type="checkbox"> synthetic speech envelope</label>
+    <div class="row" style="margin-top:6px">
+      <button id="t-user">user transcript</button><button id="t-model">model transcript</button><button id="t-clear">clear</button>
+      <button id="s-online">ONLINE</button><button id="s-conn">CONNECTING</button><button id="s-off">OFFLINE</button>
+    </div>
+    <div id="demo-log"></div>
+  </div>
+  <script type="module" src="/src/hud/demo.js"></script>
+</body>
+</html>

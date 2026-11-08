@@ -1,0 +1,204 @@
+/* ELVAR HUD (gold theme) — PHONE layout (portrait). Design stage = 852px wide reference
+   (852x1846 phone screenshot), scaled uniformly by index.js. All coordinates are reference px.
+   Everything is scoped under .vh-root.vh-phone so the desktop layout is untouched. */
+
+.vh-phone .vm-bg {
+  position: absolute; inset: 0;
+  background:
+    radial-gradient(ellipse 70% 30% at 50% var(--vm-cy, 47%), rgba(150, 96, 36, 0.24), transparent 72%),
+    linear-gradient(120deg, transparent 0 30%, rgba(255, 214, 150, 0.03) 36%, transparent 44%),
+    linear-gradient(60deg, transparent 0 62%, rgba(255, 214, 150, 0.025) 68%, transparent 75%),
+    radial-gradient(ellipse 110% 70% at 50% 50%, transparent 55%, rgba(0, 0, 0, 0.6) 100%),
+    linear-gradient(#0b0907, #050403 45%, #070504);
+}
+
+.vh-phone .vm-stage {
+  position: absolute; left: 0; top: 0;
+  width: 852px; height: 1846px;
+  transform-origin: 0 0;
+}
+.vh-phone .vm-stage > * { position: absolute; left: 0; top: 0; }
+.vh-phone .vm-top, .vh-phone .vm-mid, .vh-phone .vm-bottom { width: 852px; height: 1846px; pointer-events: none; }
+.vh-phone .vm-top > *, .vh-phone .vm-mid > *, .vh-phone .vm-bottom > * { position: absolute; }
+.vh-phone .vm-top { translate: 0 var(--vm-dt, 0px); }
+.vh-phone .vm-bottom { translate: 0 var(--vm-db, 0px); }
+.vh-phone .vm-botchrome { translate: 0 var(--vm-dc, 0px); overflow: visible; pointer-events: none; }
+.vh-phone .vm-mid { transform-origin: 425.5px 869px; transform: translateY(var(--vm-dm, 0px)) scale(var(--vm-m, 1)); }
+.vh-phone svg { overflow: visible; }
+.vh-phone .vm-topfx, .vh-phone .vm-midfx, .vh-phone .vm-botfx { left: 0; top: 0; }
+.vh-phone button, .vh-phone input { pointer-events: auto; }
+
+/* ---------- shared line styles ---------- */
+.vh-phone .vm-fill { fill: url(#vh-g-fill); }
+.vh-phone .vm-line { fill: none; stroke: url(#vh-g-edge); stroke-width: 2; stroke-linejoin: miter;
+  filter: drop-shadow(0 0 3px rgba(231, 177, 82, 0.85)); }
+.vh-phone .vm-line-hi { fill: none; stroke: #f3d6a5; stroke-width: 2; filter: drop-shadow(0 0 3px rgba(239, 201, 136, 0.9)); }
+.vh-phone .vm-botchrome path { fill: none; stroke: #d09d44; stroke-width: 1.8; filter: drop-shadow(0 0 3px rgba(231, 177, 82, 0.8)); }
+
+/* ---------- top bar ---------- */
+.vh-phone .vm-brand { left: 36px; top: 121px; color: #e8b96a; filter: drop-shadow(0 0 2.5px rgba(243, 214, 165, 0.55)); }
+.vh-phone .vm-logo { position: absolute; left: 0; top: 0; overflow: visible; filter: drop-shadow(0 0 4px rgba(255, 190, 100, 0.6)); }
+.vh-phone .vm-wm { position: absolute; left: 62px; top: 2px; line-height: 40px; white-space: nowrap; }
+.vh-phone .vm-wordmark { font-family: var(--vh-font-display); font-weight: 400; font-size: 34px; letter-spacing: 13px; line-height: 40px;
+  background: linear-gradient(180deg, #fff6e2 0%, #f0dcb4 45%, #c99a58 78%, #f2d8a4 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent; }
+.vh-phone .vm-vdiv { background: rgba(210, 167, 92, 0.85); width: 2px; }
+.vh-phone .vm-vdiv-1 { left: 330px; top: 126px; height: 36px; }
+.vh-phone .vm-tagline { left: 352px; top: 125.5px; font-size: 15.5px; line-height: 18px; font-weight: 500; color: #efe6d4;
+  white-space: nowrap; letter-spacing: 0.05px; text-shadow: 0 0 6px rgba(231, 177, 82, 0.35); }
+.vh-phone .vm-tagline span { display: block; }
+.vh-phone .vm-nav { left: 0; top: 0; }
+.vh-phone .vm-navbtn { position: absolute; top: 122px; width: 46px; height: 44px; display: grid; place-items: center; }
+.vh-phone .vm-nav-home { left: 520px; color: #fff; filter: drop-shadow(0 0 4px rgba(243, 214, 165, 0.85)); }
+.vh-phone .vm-nav-folder { left: 590px; color: #f3d6a5; filter: drop-shadow(0 0 2px rgba(231, 177, 82, 0.6)); }
+.vh-phone .vm-nav-cube { left: 657px; color: #edd5ab; filter: drop-shadow(0 0 2px rgba(236, 192, 117, 0.6)); }
+.vh-phone .vm-nav-bell { left: 724px; color: #eed09e; filter: drop-shadow(0 0 2px rgba(233, 183, 97, 0.65)); }
+.vh-phone .vm-nav-user { left: 780px; color: #eabb68; filter: drop-shadow(0 0 3px rgba(231, 177, 82, 0.75)); }
+
+/* ---------- date block ---------- */
+.vh-phone .vm-date { left: 0; top: 0; }
+.vh-phone .vm-date > * { position: absolute; white-space: nowrap; }
+.vh-phone .vm-wd { left: 40px; top: 223.5px; font-size: 27px; line-height: 27px; font-weight: 500; letter-spacing: 2.4px; color: #e5bd77;
+  text-shadow: 0 0 6px rgba(231, 177, 82, 0.45); }
+.vh-phone .vm-day { left: 40.5px; top: 250px; font-family: var(--vh-font-jp); font-weight: 300; font-size: 68.5px; line-height: 68.5px; color: #fff;
+  letter-spacing: -1.6px; text-shadow: 0 0 8px rgba(243, 214, 165, 0.35); }
+.vh-phone .vm-vdiv-2 { left: 130px; top: 263px; height: 52px; width: 2px; }
+.vh-phone .vm-mo { left: 147px; top: 289px; font-size: 26.5px; line-height: 26.5px; font-weight: 400; letter-spacing: 0.6px; color: #ecc98e;
+  text-shadow: 0 0 6px rgba(231, 177, 82, 0.35); }
+.vh-phone .vm-date-ul { left: 41px; top: 342px; width: 36px; height: 2px; background: rgba(203, 157, 77, 0.8); }
+
+/* ---------- active agents ---------- */
+.vh-phone .vm-agents { left: 0; top: 0; }
+.vh-phone .vm-agents > * { position: absolute; }
+.vh-phone .vm-ag-spot { left: 490px; top: 257px; width: 18px; height: 18px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(243, 214, 165, 0.55), transparent 70%); }
+.vh-phone .vm-ag-title { left: 503px; top: 260px; margin: 0; font: 500 20px/20px var(--vh-font); letter-spacing: 2.3px; color: #f8f1e2;
+  white-space: nowrap; text-shadow: 0 0 5px rgba(243, 214, 165, 0.4); }
+.vh-phone .vm-ag-chev { left: 792px; top: 262.5px; color: #f4e9d2; line-height: 0; }
+.vh-phone .vm-agent { top: 302.5px; width: 50.5px; height: 50.5px; border-radius: 50%; border: 1.8px solid #d6a55c; display: grid; place-items: center;
+  color: #fbf3e4; background: radial-gradient(circle at 50% 40%, #1d160d, #0a0806 70%);
+  box-shadow: 0 0 0 3px rgba(8, 6, 4, 0.9), 0 0 0 4px rgba(232, 185, 106, 0.22), 0 0 8px rgba(255, 176, 80, 0.45), inset 0 0 8px rgba(255, 190, 100, 0.18); }
+.vh-phone .vm-agdot { top: 367.8px; width: 8.8px; height: 8.8px; border-radius: 50%; background: radial-gradient(circle at 40% 35%, #ffe7b8, #f4a83a 55%, #c07020); box-shadow: var(--vh-dot-glow); }
+
+/* ---------- middle ---------- */
+.vh-phone .vm-core { left: 45.5px; top: 489px; width: 760px; height: 760px; will-change: transform; contain: strict; }
+.vh-phone .vm-sphere { width: 100%; height: 100%; display: block; }
+.vh-phone .vm-vline { stroke: url(#vm-vline); stroke-width: 1.2; }
+.vh-phone .vm-hline { stroke: url(#vm-hline); stroke-width: 1; }
+.vh-phone .vm-tabvl { stroke: rgba(203, 157, 77, 0.28); stroke-width: 1; }
+.vh-phone .vm-grid path { stroke: rgba(203, 157, 77, 0.045); stroke-width: 1; fill: none; }
+.vh-phone .vm-plat { fill: none; stroke: #e1b05a; stroke-opacity: .7; stroke-width: 1.2; filter: drop-shadow(0 0 2px rgba(231, 177, 82, 0.7)); }
+.vh-phone .vm-plat-halo { fill: none; stroke-width: 1.4; }
+.vh-phone .vm-plat-in { fill: rgba(172, 120, 29, 0.12); stroke: rgba(217, 169, 85, 0.35); stroke-width: 1; }
+.vh-phone .vm-plat-seg { stroke: rgba(228, 184, 108, 0.4); stroke-width: 1; fill: none; }
+.vh-phone .vm-sparks circle { fill: #f3d6a5; opacity: .85; filter: drop-shadow(0 0 3px rgba(236, 192, 117, 1)) drop-shadow(0 0 6px rgba(233, 183, 97, .8)); }
+.vh-phone .vm-tab-o { fill: none; stroke: #b8862e; stroke-width: 1.3; filter: drop-shadow(0 0 2px rgba(215, 162, 71, 0.45)); }
+.vh-phone .vm-tab-i { fill: none; stroke: #dead59; stroke-width: 2; filter: drop-shadow(0 0 3px rgba(231, 177, 82, 0.9));
+  transition: stroke .3s, filter .3s; }
+
+.vh-phone .vm-tab { top: 0; left: 0; width: 1px; height: 1px; }
+.vh-phone .vm-tab > * { position: absolute; }
+.vh-phone .vm-tab-dot { top: 790.5px; width: 9px; height: 9px; border-radius: 50%; background: #e9bb6d; box-shadow: 0 0 5px rgba(235, 188, 107, 0.9); transition: background .3s, box-shadow .3s; }
+.vh-phone .vm-tab-line { top: 811px; width: 2px; height: 64px; background: #e7ba6c; box-shadow: 0 0 4px rgba(231, 177, 82, 0.7); transition: box-shadow .3s; }
+.vh-phone .vm-tab-label { top: 890.5px; width: 100px; text-align: center; font: 400 19.5px/21px var(--vh-font); letter-spacing: 2.5px; color: #f6ebd6;
+  white-space: nowrap; transition: color .3s, text-shadow .3s; }
+.vh-phone .vm-tab-chev { top: 927px; color: #f8f1e2; }
+.vh-phone .vm-tab-l .vm-tab-dot { left: 60.5px; }
+.vh-phone .vm-tab-l .vm-tab-line { left: 64px; }
+.vh-phone .vm-tab-l .vm-tab-label { left: 25px; }
+.vh-phone .vm-tab-l .vm-tab-chev { left: 59px; }
+.vh-phone .vm-tab-r .vm-tab-dot { left: 782.5px; }
+.vh-phone .vm-tab-r .vm-tab-line { left: 786px; }
+.vh-phone .vm-tab-r .vm-tab-label { left: 733px; letter-spacing: 2.1px; }
+.vh-phone .vm-tab-r .vm-tab-chev { left: 778px; }
+
+/* tab lit states */
+.vh-root.vh-phone[data-state='listening'] .vm-tab-l .vm-tab-label,
+.vh-root.vh-phone[data-state='thinking'] .vm-tab-r .vm-tab-label { color: #f3d6a5; text-shadow: 0 0 6px rgba(231, 177, 82, 0.95), 0 0 14px rgba(231, 177, 82, 0.6); }
+.vh-root.vh-phone[data-state='listening'] .vm-tab-l .vm-tab-dot,
+.vh-root.vh-phone[data-state='thinking'] .vm-tab-r .vm-tab-dot { background: #f2e3c5; box-shadow: 0 0 8px 2px rgba(236, 192, 117, 1); }
+.vh-root.vh-phone[data-state='listening'] .vm-tab-l .vm-tab-line,
+.vh-root.vh-phone[data-state='thinking'] .vm-tab-r .vm-tab-line { box-shadow: 0 0 8px 2px rgba(231, 177, 82, 0.9); background: #f3d6a5; }
+.vh-root.vh-phone[data-state='listening'] .vm-tab-l .vm-tab-chev,
+.vh-root.vh-phone[data-state='thinking'] .vm-tab-r .vm-tab-chev { color: #f3d6a5; animation: vm-chev 1.1s ease-in-out infinite; }
+.vh-root.vh-phone[data-state='listening'] .vm-tab-i-l,
+.vh-root.vh-phone[data-state='thinking'] .vm-tab-i-r { stroke: #f3d6a5; filter: drop-shadow(0 0 5px rgba(236, 192, 117, 1)) drop-shadow(0 0 10px rgba(231, 177, 82, 0.7)); }
+@keyframes vm-chev { 0%, 100% { translate: 0 0; opacity: 1; } 50% { translate: 4px 0; opacity: 0.55; } }
+
+/* ---------- bottom cards ---------- */
+.vh-phone .vm-card-fill { fill: url(#vh-g-fill); }
+.vh-phone .vm-weather, .vh-phone .vm-assist { left: 0; top: 0; }
+.vh-phone .vm-weather > *, .vh-phone .vm-assist > * { position: absolute; white-space: nowrap; }
+.vh-phone .vm-sun { left: 58.7px; top: 1484.5px; color: #f8f1e2; filter: drop-shadow(0 0 3px rgba(243, 214, 165, 0.6)); }
+.vh-phone .vm-city { left: 126.5px; top: 1484.8px; font: 500 16px/16px var(--vh-font); letter-spacing: 3.5px; color: #e5bc76; }
+.vh-phone .vm-temp { left: 126px; top: 1510px; font: 400 27px/27px var(--vh-font-jp); letter-spacing: 1px; color: #ecbf73; text-shadow: 0 0 6px rgba(231, 177, 82, 0.4); }
+.vh-phone .vm-cond { left: 202px; top: 1512px; font: 400 19.5px/22px var(--vh-font-jp); letter-spacing: 0.5px; color: #e8c486; }
+.vh-phone .vm-wave { left: 608px; top: 1483px; color: #e9b966; }
+/* The glow is a wider, translucent copy of each bar (cheap path) instead of filter:drop-shadow, which re-blurred the whole icon every time a bar moved. */
+.vh-phone .vm-wglow { stroke-width: 4.6; stroke-opacity: .22; }
+.vh-phone .vm-wbar { transform-box: fill-box; transform-origin: center; }
+.vh-phone .vm-name { left: 700px; top: 1491px; font: 500 17px/17px var(--vh-font); letter-spacing: 3px; color: #eac687; }
+.vh-phone .vm-sdot { left: 700.8px; top: 1524.5px; width: 12.4px; height: 12.4px; border-radius: 50%; background: #e2ae53; box-shadow: 0 0 6px 1px rgba(224, 171, 79, 0.75); }
+.vh-phone .vm-status { left: 722px; top: 1521.3px; font: 600 15px/16px var(--vh-font); letter-spacing: 1.3px; color: #e5c07f; }
+
+/* ---------- input bar ---------- */
+.vh-phone .vm-in-fill { fill: url(#vh-g-input); }
+.vh-phone .vm-in-inner { fill: rgba(33, 25, 17, 0.45); stroke: rgba(209, 162, 83, 0.55); stroke-width: 1.4; }
+.vh-phone .vm-input { left: 40px; top: 1619px; width: 773px; height: 102px; margin: 0; }
+.vh-phone .vm-input > * { position: absolute; }
+.vh-phone .vm-mic { left: 46px; top: 15.5px; width: 71px; height: 71px; border-radius: 50%; border: 2px solid #dcac59; display: grid; place-items: center;
+  color: #f8f1e2; background: radial-gradient(circle, rgba(47, 36, 24, 0.7), rgba(27, 21, 14, 0.9));
+  box-shadow: 0 0 6px rgba(231, 177, 82, 0.7), inset 0 0 7px rgba(231, 177, 82, 0.3); transition: box-shadow .2s, border-color .2s, background .2s; }
+.vh-phone .vm-mic:focus-visible, .vh-phone .vm-send:focus-visible { outline: 1.5px dashed #f3d6a5; outline-offset: 4px; }
+.vh-root.vh-phone[data-state='listening'] .vm-mic,
+.vh-phone .vm-mic.is-on { border-color: #f3d6a5; background: radial-gradient(circle, rgba(231, 177, 82, 0.75), rgba(70, 54, 36, 0.9));
+  box-shadow: 0 0 calc(12px + var(--vh-lvl, 0) * 22px) rgba(231, 177, 82, 0.95), 0 0 0 calc(var(--vh-lvl, 0) * 7px) rgba(231, 177, 82, 0.18), inset 0 0 10px rgba(243, 214, 165, 0.5); }
+.vh-root.vh-phone[data-state='listening'] .vm-mic::after,
+.vh-phone .vm-mic.is-on::after { content: ''; position: absolute; inset: -9px; border-radius: 50%; border: 1.5px solid rgba(231, 177, 82, 0.7);
+  animation: vh-pulse 1.6s ease-out infinite; }
+.vh-phone .vm-field { left: 170px; top: 26px; width: 480px; height: 50px; }
+.vh-phone .vm-text { width: 100%; height: 100%; border: 0; outline: 0; background: transparent; color: #f8f1e2; caret-color: #f3d6a5;
+  font-family: var(--vh-font); font-size: 20.5px; letter-spacing: 1.6px; padding: 0 0 2px 4px; user-select: text; }
+.vh-phone .vm-text::placeholder { color: #e1d2b7; opacity: 1; }
+.vh-phone .vm-transcript { position: absolute; inset: 0; display: none; align-items: center; pointer-events: none; padding: 0 0 2px 4px;
+  font-family: var(--vh-font); font-size: 20.5px; letter-spacing: 1.5px; white-space: nowrap; overflow: hidden; color: #f8f1e2; }
+.vh-phone .vm-transcript.is-model { color: #f3d6a5; text-shadow: 0 0 6px rgba(231, 177, 82, 0.45); }
+.vh-phone .vm-input.has-transcript .vm-transcript { display: flex; }
+.vh-phone .vm-send { left: 672px; top: 26px; width: 52px; height: 52px; display: grid; place-items: center; color: #eec680;
+  filter: drop-shadow(0 0 3px rgba(231, 177, 82, 0.7)); }
+
+/* ---------- states ---------- */
+.vh-root.vh-phone[data-state='connecting'] .vm-sdot { animation: vh-blink 0.9s steps(2) infinite; }
+.vh-root.vh-phone[data-state='error'] .vm-sdot { background: var(--vh-warn); box-shadow: 0 0 6px 1px rgba(255, 170, 70, 0.9); }
+.vh-root.vh-phone[data-state='error'] .vm-status { color: #ffd59a; }
+.vh-root.vh-phone[data-state='error'] .vm-mic { border-color: #ffb347; box-shadow: 0 0 8px rgba(255, 170, 70, 0.7); }
+.vh-root.vh-phone.is-offline .vm-sdot { background: #89785a; box-shadow: none; }
+.vh-root.vh-phone[data-state='speaking'] .vm-wglow { stroke-width: 5.6; stroke-opacity: .34; }
+
+/* ---------- ambient (standby look) ---------- */
+.vh-phone .vm-top > *, .vh-phone .vm-bottom > *, .vh-phone .vm-mid > *, .vh-phone .vm-botchrome { transition: opacity 0.14s ease-out, filter 0.14s ease-out; }
+.vh-root.vh-phone.vh-ambient .vm-top > *, .vh-root.vh-phone.vh-ambient .vm-bottom > *, .vh-root.vh-phone.vh-ambient .vm-mid > *,
+.vh-root.vh-phone.vh-ambient .vm-botchrome { transition: opacity 1.8s ease-in-out, filter 1.8s ease-in-out; }
+.vh-root.vh-phone.vh-ambient .vm-agents, .vh-root.vh-phone.vh-ambient .vm-weather, .vh-root.vh-phone.vh-ambient .vm-assist,
+.vh-root.vh-phone.vh-ambient .vm-date, .vh-root.vh-phone.vh-ambient .vm-tab { opacity: 0.16; }
+.vh-root.vh-phone.vh-ambient .vm-topfx, .vh-root.vh-phone.vh-ambient .vm-brand, .vh-root.vh-phone.vh-ambient .vm-tagline,
+.vh-root.vh-phone.vh-ambient .vm-nav, .vh-root.vh-phone.vh-ambient .vm-vdiv-1 { opacity: 0.45; }
+.vh-root.vh-phone.vh-ambient .vm-midfx, .vh-root.vh-phone.vh-ambient .vm-botchrome { opacity: 0.4; }
+.vh-root.vh-phone.vh-ambient .vm-botfx { opacity: 0.5; }
+.vh-root.vh-phone.vh-ambient .vm-core { opacity: 0.7; filter: brightness(0.7); }
+.vh-root.vh-phone.vh-ambient .vm-input { opacity: 0.55; }
+
+@media (prefers-reduced-motion: reduce) {
+  .vh-root.vh-phone .vm-tab-chev { animation: none !important; }
+  .vh-root.vh-phone[data-state='listening'] .vm-mic::after, .vh-phone .vm-mic.is-on::after { animation-duration: 3.2s; }
+  .vh-root.vh-phone[data-state='connecting'] .vm-sdot { animation-duration: 2s; }
+}
+
+/* an agent that is working right now: its dot pulses */
+.vh-phone .vm-agdot.is-busy { animation: vm-agdot-busy 1.1s ease-in-out infinite; background: #fff; }
+@keyframes vm-agdot-busy { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(1.5); } }
+
+/* wake-up music STOP tab: smaller on a portrait phone */
+@media (orientation: portrait) {
+  body #elvar-bgm-stop { font-size: 11px; padding: 5px 14px 4px; min-width: 0; gap: 12px; }
+}

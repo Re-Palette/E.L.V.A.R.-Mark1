@@ -1,0 +1,13 @@
+{
+  "name": "elvar-desktop",
+  "private": true,
+  "version": "0.0.1",
+  "description": "E.L.V.A.R. Mark1 desktop shell: keeps the HUD alive in the background and brings it to the very front on a double clap",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "45.2.1"
+  }
+}

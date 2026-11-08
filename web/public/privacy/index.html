@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>プライバシーポリシー — E.L.V.A.R.</title>
+<link rel="icon" type="image/png" href="/icons/icon-192.png">
+<style>
+  body { margin:0; background:#000c1d; color:#d9eef9; font:16px/1.85 "Yu Gothic UI","Meiryo","Hiragino Sans",system-ui,sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 18px 80px; }
+  h1 { font-size: 22px; color:#19d3ff; margin: 0 0 4px; } h2 { font-size: 17px; color:#19d3ff; margin: 28px 0 6px; }
+  a { color:#19d3ff; } .note { color:#7fb6d6; font-size: 14px; } li { margin: 4px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>プライバシーポリシー</h1>
+  <p class="note">E.L.V.A.R. Mark1（以下「本アプリ」）　最終更新：2026年11月1日</p>
+
+  <h2>1. 本アプリについて</h2>
+  <p>本アプリ（E.L.V.A.R.）は、オープンソースの個人用AIアシスタントです。このページは<b>テンプレート</b>で、ご自身でデプロイした方（以下「運営者」）が自分自身のためだけに使うことを前提に書かれています。他の方に提供する場合は、運営者が内容を書き換えてください。不特定多数に提供するサービスではなく、会員登録もありません。ここでいう「利用者」は、本アプリを自分で運用している本人（開発者と同一人物）です。</p>
+
+  <h2>2. 扱う情報と、使う目的</h2>
+  <p>利用者がGoogleアカウントの連携を許可した場合に限り、利用者の<b>音声などによる依頼に応じて</b>、次の情報にアクセスします。</p>
+  <ul>
+    <li>Googleカレンダーの予定</li>
+    <li>Gmailのメール（検索・本文の読み取り・下書き・送信・ゴミ箱への移動）</li>
+    <li>Google Drive・ドキュメント・スプレッドシートのファイル</li>
+    <li>Googleタスク、連絡先（読み取りのみ）</li>
+  </ul>
+  <p>目的は、<b>利用者本人の依頼を実行すること</b>（予定の確認、メールの要約、文書の作成など）に限ります。広告、販売、プロファイリング、利用者の依頼のない分析には使いません。</p>
+
+  <h2>3. 保存</h2>
+  <ul>
+    <li>上記のGoogleのデータは、本アプリのサーバーに<b>保存しません</b>（依頼の処理のために一時的に通過するだけです）。</li>
+    <li>サーバーに保存されるのは、Googleへのログイン状態を保つための認証情報（更新トークンなど）で、サーバーの環境変数として、利用者本人だけが管理します。</li>
+    <li>設定や、利用者が任意で選んだ音楽ファイルは、<b>利用者のブラウザ内</b>にだけ保存され、サーバーには送られません。</li>
+  </ul>
+
+  <h2>4. 第三者への提供</h2>
+  <ul>
+    <li>Googleのデータは、依頼の内容を理解・要約・回答するために、会話の一部として<b>Google の Gemini API</b>に送信されます。</li>
+    <li>それ以外の第三者に、情報を提供・販売・共有することはありません。</li>
+    <li>本アプリによる、Google API から受け取った情報の使用および他のアプリへの転送は、限定的な使用の要件を含む <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener">Google API サービスのユーザーデータに関するポリシー</a>に準拠します。</li>
+  </ul>
+
+  <h2>5. 書き込み操作の安全</h2>
+  <p>メールの送信、予定・ファイルの変更や削除などの書き込みは、<b>実行前に必ず画面で利用者本人が承認した場合にのみ</b>実行されます。削除はゴミ箱への移動に限り、完全な削除は行いません。</p>
+
+  <h2>6. 連携の解除とデータの削除</h2>
+  <ul>
+    <li>いつでも、<a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">Googleアカウントの権限の管理</a>から、本アプリのアクセスを取り消せます。</li>
+    <li>サーバーの環境変数から認証情報を削除すれば、本アプリはGoogleのデータにアクセスできなくなります。</li>
+  </ul>
+
+  <h2>7. 変更</h2>
+  <p>本ポリシーは、必要に応じて改定することがあります。改定した場合は、このページの日付を更新します。</p>
+</main>
+</body>
+</html>
