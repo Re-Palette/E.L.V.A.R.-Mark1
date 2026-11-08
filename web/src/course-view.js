@@ -1,4 +1,5 @@
-import { ownerAddress } from './brand.js';
+import { ownerAddress, timeZone } from './brand.js';
+import { localParts } from '../../shared/tz.js';
 // 履修 panel (履修登録サポート): the weekly timetable of a term (月–土 × 時限), credit meters per category and in total against the graduation requirements,
 // the per-term cap (CAP), the course list, the checks ("注意") and course suggestions. Everything is computed by the server (course_summary / course_suggest);
 // this file only draws it and sends the manual edits. The app cannot see the university's registration site or syllabus: the data is what the owner entered.
@@ -12,7 +13,7 @@ export function catColor(name) { let h = 0; for (const ch of String(name || ''))
 /** Pure (tested): 'YYYY-前期' ± n terms. */
 export function shiftTerm(t, d) { const i = Number(t.slice(0, 4)) * 2 + (t.slice(5) === '前期' ? 0 : 1) + d; return `${Math.floor(i / 2)}-${i % 2 ? '後期' : '前期'}`; }
 export const termName = (t) => `${t.slice(0, 4)}年度 ${t.slice(5)}`;
-export function currentTermName(nowMs = Date.now()) { const d = new Date(nowMs + 9 * 3600e3), y = d.getUTCFullYear(), m = d.getUTCMonth() + 1; return `${m >= 4 ? y : y - 1}-${m >= 4 && m <= 9 ? '前期' : '後期'}`; }
+export function currentTermName(nowMs = Date.now()) { const { year: y, month: m } = localParts(nowMs, timeZone()); return `${m >= 4 ? y : y - 1}-${m >= 4 && m <= 9 ? '前期' : '後期'}`; }
 /** Pure (tested): the cells of the timetable as an HTML string (days across, periods down). */
 export function timetableHtml(grid) {
   const days = grid?.days || DAYS, periods = grid?.periods || [], cells = grid?.cells || {};

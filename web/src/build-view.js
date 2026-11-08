@@ -93,7 +93,7 @@ export function hourlySvg(usage, w = 300, h = 84) {
   const lab = (i, t) => `<text x="${(8 + i * bw + (i ? bw / 2 : 0)).toFixed(1)}" y="${h - 3}" text-anchor="${i ? 'middle' : 'start'}" font-size="9.5" fill="#7fb6d6">${t}</text>`;
   return `<svg viewBox="0 0 ${w} ${h}" width="100%" role="img" aria-label="直近24時間の実行回数（1時間ごと）"><rect x="${bx5.toFixed(1)}" y="2" width="${(w - 8 - bx5).toFixed(1)}" height="${base - 1}" fill="#19d3ff" opacity=".1" rx="2"/><line x1="6" y1="${base}" x2="${w - 6}" y2="${base}" stroke="#2a7fa6"/>${bars}<text x="${(bx5 + 3).toFixed(1)}" y="11" font-size="9.5" fill="#8fe3ff">直近5時間</text><text x="8" y="11" font-size="9.5" fill="#7fb6d6">最大 ${max}回/時</text>${lab(0, '24時間前')}${lab(6, '18')}${lab(12, '12')}${lab(18, '6')}${lab(23, 'いま')}</svg>`;
 }
-/** Pure SVG strings (tested). 7 daily bars (runs per day, JST). */
+/** Pure SVG strings (tested). 7 daily bars (runs per day, local days). */
 export function dailySvg(usage, w = 300, h = 84) {
   const ds = usage?.daily?.length ? usage.daily : Array.from({ length: 7 }, () => ({ date: '', runs: 0, minutes: 0 }));
   const max = Math.max(1, ...ds.map((x) => x.runs)), bw = (w - 16) / ds.length, base = h - 16, top = 14;

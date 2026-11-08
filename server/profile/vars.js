@@ -1,9 +1,11 @@
 // Prompt placeholders. Prompt text carries {{U}} / {{A}} ... and is filled from the profile at the point of use.
 import { DEFAULT_PROFILE } from './defaults.js';
 
-const tzLabel = (tz) => (tz === 'Asia/Tokyo' ? '日本時間' : String(tz || ''));
+import { tzLabel, offsetLabel } from '../../shared/tz.js';
 
-/** -> { A, AS, AX, U, UN, UR, TZ, TZ_LABEL, CITY, TODAY } */
+const safeOffset = (tz, now) => { try { return offsetLabel(tz, now); } catch { return '+00:00'; } };
+
+/** -> { A, AS, AX, U, UN, UR, TZ, TZ_LABEL, TZ_OFFSET, CITY, TODAY } */
 export function promptVars(profile = DEFAULT_PROFILE, now = Date.now()) {
   const a = profile.assistant || DEFAULT_PROFILE.assistant;
   const o = profile.owner || DEFAULT_PROFILE.owner;
@@ -14,7 +16,7 @@ export function promptVars(profile = DEFAULT_PROFILE, now = Date.now()) {
   return {
     A: a.displayName, AS: a.spokenName, AX: a.expansion || '',
     U: o.address, UN: o.name, UR: o.addressReading || o.address,
-    TZ: l.timeZone, TZ_LABEL: tzLabel(l.timeZone), CITY: h.city, TODAY: today,
+    TZ: l.timeZone, TZ_LABEL: tzLabel(l.timeZone), TZ_OFFSET: safeOffset(l.timeZone, now), CITY: h.city, TODAY: today,
   };
 }
 

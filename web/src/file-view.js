@@ -8,7 +8,8 @@ import { KINDS, STATUS_JA, LANG_JA, buildIndex, choiceDetail, deviceSpace, findE
 import { startAnalysis } from './file-analyze-client.js';
 import { classifyReply } from './approval.js';
 import { toBase64 } from './doc-card.js';
-import { ownerAddress } from './brand.js';
+import { ownerAddress, timeZone } from './brand.js';
+import { localParts, localDate, localHM } from '../../shared/tz.js';
 
 const ICON = { pdf: '📕', image: '🖼', text: '📄', office: '📎', other: '📄' };
 const SORTS = { new: '新しい順', old: '古い順', name: '名前順', kind: '種類順', size: '大きい順' };
@@ -66,7 +67,7 @@ const CSS = `
 `;
 
 const isNative = () => !!(window.ElvarAndroid && window.ElvarAndroid.saveFile);
-const jst = (t) => { const d = new Date(t + 9 * 3600e3); return `${d.getUTCMonth() + 1}/${d.getUTCDate()}`; };
+const jst = (t) => { const d = localParts(t, timeZone()); return `${d.month}/${d.day}`; };
 const uid = () => (globalThis.crypto?.randomUUID?.() || `f${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const blobToBase64 = (blob) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = () => rej(r.error); r.readAsDataURL(blob); });
@@ -612,7 +613,7 @@ export function initFileView({ approval, store, saveToBrain = null, callAI = nul
     const fs = [...(e.clipboardData?.files || [])]; if (!fs.length) return;
     const tag = (e.target?.tagName || '').toLowerCase(); if (tag === 'input' && e.target.type !== 'file' || tag === 'textarea' || e.target?.isContentEditable) return;   // text fields keep their own paste
     e.preventDefault();
-    const stamp = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 16).replace(/[-:T]/g, '');
+    const stamp = (localDate(Date.now(), timeZone()) + localHM(Date.now(), timeZone())).replace(/[-:]/g, '');
     const named = fs.map((f, i) => (!f.name || /^image\.\w+$/i.test(f.name) ? new File([f], `貼り付け-${stamp}${fs.length > 1 ? '-' + (i + 1) : ''}.${(f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`, { type: f.type }) : f));
     importFiles(named, 'paste').catch((err) => say(String(err?.message || err), true));
   });

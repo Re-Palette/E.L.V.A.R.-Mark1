@@ -5,15 +5,16 @@
 // recorded; they are proposals — nothing is registered until the owner agrees. Pay is an estimate: 深夜割増 (22:00–5:00, +25 %) is added, 休憩 is unpaid.
 import crypto from 'node:crypto';
 import { brainReadRaw, brainWrite, brainRepoIsPrivate, brainConfigured } from './brain.js';
-import { U } from './profile/index.js';
+import { U, TZ } from './profile/index.js';
+import { localDate, startOfLocalDay, tzLabel } from '../shared/tz.js';
 
-const JST = 9 * 3600e3, DAY = 864e5;
+const DAY = 864e5;
 export const NIGHT_RATE = 0.25;
-const jstDate = (ms) => new Date(ms + JST).toISOString().slice(0, 10);
+const tzDate = (ms) => localDate(ms, TZ());
 const cell = (s) => String(s ?? '').replace(/\|/g, '／').replace(/\s+/g, ' ').trim();
 const norm = (s) => cell(s).toLowerCase().replace(/[\s　・\-_（）()]/g, '');
 export const monthOf = (d) => String(d).slice(0, 7);
-const dayMs = (date) => Date.parse(`${date}T00:00:00+09:00`);
+const dayMs = (date) => startOfLocalDay(date, TZ());
 const daysIn = (month) => { const [y, m] = month.split('-').map(Number); return new Date(Date.UTC(y, m, 0)).getUTCDate(); };
 const monthPath = (m) => `シフト/${m}.md`;
 const num = (v) => { const n = Number(String(v ?? '').replace(/[,，円¥￥\s]/g, '')); return Number.isFinite(n) ? n : NaN; };
@@ -34,10 +35,10 @@ export function parseTime(w) {
 export const hhmm = (min) => { const m = ((min % 1440) + 1440) % 1440; return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; };
 /** "今日" "明日" "あさって" "3日後" "11月3日" "11/3" "来週の月曜" is NOT handled (the model resolves weekdays to dates) */
 export function parseDateWord(w, nowMs = Date.now()) {
-  const t = String(w ?? '').trim(); if (!t) return null; const today = jstDate(nowMs);
+  const t = String(w ?? '').trim(); if (!t) return null; const today = tzDate(nowMs);
   const rel = { 今日: 0, きょう: 0, 明日: 1, あした: 1, あす: 1, 明後日: 2, あさって: 2, 昨日: -1, きのう: -1, 一昨日: -2, おととい: -2 };
-  if (t in rel) return jstDate(nowMs + rel[t] * DAY);
-  let m = t.match(/^(\d+)\s*日(後|前)$/); if (m) return jstDate(nowMs + (m[2] === '後' ? 1 : -1) * Number(m[1]) * DAY);
+  if (t in rel) return tzDate(nowMs + rel[t] * DAY);
+  let m = t.match(/^(\d+)\s*日(後|前)$/); if (m) return tzDate(nowMs + (m[2] === '後' ? 1 : -1) * Number(m[1]) * DAY);
   m = t.match(/^(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?$/); if (m) return `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
   m = t.match(/^(\d{1,2})[/月](\d{1,2})日?$/); if (m) { const y = Number(today.slice(0, 4)); return `${y}-${String(m[1]).padStart(2, '0')}-${String(m[2]).padStart(2, '0')}`; }
   m = t.match(/^(\d{1,2})日$/); if (m) return `${today.slice(0, 7)}-${String(m[1]).padStart(2, '0')}`;
@@ -116,7 +117,7 @@ export async function setGoal({ key = '月収目標', value, month }) {
   if (month) (g.monthly[month] ||= {})[key] = v; else g.defaults[key] = v;
   const lines = [...Object.entries(g.defaults).map(([k, x]) => `- ${k}：${x}`), ...Object.entries(g.monthly).sort().flatMap(([mo, o]) => Object.entries(o).map(([k, x]) => `- ${k} ${mo}：${x}`))];
   await brainWrite({ path: 'シフト/目標.md', content: `# シフトの目標と上限\n\n月収目標は円、年収上限は円、週の上限時間・月の目標時間は時間です。「月収目標 2026-12：90000」のように月を付けると、その月だけの目標になります。\n\n${lines.join('\n')}\n`, mode: 'replace' });
-  return { key, value: v, month: month || null, goals: goalFor(g, month || jstDate(Date.now()).slice(0, 7)) };
+  return { key, value: v, month: month || null, goals: goalFor(g, month || tzDate(Date.now()).slice(0, 7)) };
 }
 
 /** Normalizes one shift from loose voice-model input. Throws a plain Japanese message when something is missing. */
@@ -150,13 +151,13 @@ export async function addShifts(list, { nowMs = Date.now() } = {}) {
   for (const [month] of byMonth) {
     const fresh = added.filter((s) => monthOf(s.date) === month); if (!fresh.length) continue;
     const exists = await brainReadRaw(monthPath(month)).catch(() => null);
-    await brainWrite({ path: monthPath(month), content: (exists ? '' : `# シフト ${month}\n\n日付・時刻は日本時間です。休憩が空なら、法定の最低（6時間超で45分、8時間超で60分）として計算します。\n\n${SHIFT_HEAD}\n`) + fresh.map(rowOf).join('\n'), mode: 'append' });
+    await brainWrite({ path: monthPath(month), content: (exists ? '' : `# シフト ${month}\n\n日付・時刻は${tzLabel(TZ())}です。休憩が空なら、法定の最低（6時間超で45分、8時間超で60分）として計算します。\n\n${SHIFT_HEAD}\n`) + fresh.map(rowOf).join('\n'), mode: 'append' });
   }
   return { added, skipped };
 }
 
 async function findShift(id, month, nowMs) {
-  const months = month ? [month] : [jstDate(nowMs).slice(0, 7), jstDate(nowMs + 31 * DAY).slice(0, 7), jstDate(nowMs - 31 * DAY).slice(0, 7)];
+  const months = month ? [month] : [tzDate(nowMs).slice(0, 7), tzDate(nowMs + 31 * DAY).slice(0, 7), tzDate(nowMs - 31 * DAY).slice(0, 7)];
   for (const m of months) { const text = await brainReadRaw(monthPath(m)).catch(() => null); if (!text) continue; const lines = text.split('\n'); const i = lines.findIndex((l) => new RegExp(`^\\|\\s*${id}\\s*\\|`).test(l)); if (i >= 0) return { m, lines, i, shift: parseShifts(lines[i])[0] }; }
   throw new Error(`id ${id} のシフトが見つかりません`);
 }
@@ -187,7 +188,7 @@ const withPay = (s, jobs) => { const j = jobs.find((x) => norm(x.name) === norm(
 
 /** One month: shifts with pay, per-job totals, earned so far / still to come, goal progress and the hours still needed. Pure (tested). */
 export function summarize({ month, shifts = [], jobs = [], goals = { monthly: {}, defaults: {} }, ytd = null, nowMs = Date.now() }) {
-  const today = jstDate(nowMs), g = goalFor(goals, month);
+  const today = tzDate(nowMs), g = goalFor(goals, month);
   const list = shifts.filter((s) => monthOf(s.date) === month).map((s) => withPay(s, jobs)).sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start));
   const sum = (arr, k) => arr.reduce((a, s) => a + s[k], 0);
   const done = list.filter((s) => s.date <= today), ahead = list.filter((s) => s.date > today);
@@ -211,11 +212,11 @@ export function summarize({ month, shifts = [], jobs = [], goals = { monthly: {}
 /** Proposes shifts that reach the remaining goal, avoiding calendar events (busy: [{start,end} ISO or ms]) and recorded shifts, spread evenly over the weeks. Pure (tested).
  *  c: { dayStart=9, dayEnd=22 (hours), minBlock=3, maxBlock=6 (hours), weeklyCap, maxDaysPerWeek, avoidWeekdays:[], onlyWeekdays:[], hoursNeeded (override), from (date) } */
 export function suggestShifts({ month, job, shifts = [], busy = [], hoursNeeded, c = {}, nowMs = Date.now() }) {
-  const today = jstDate(nowMs), dayStart = (c.dayStart ?? 9) * 60, dayEnd = (c.dayEnd ?? 22) * 60, minB = Math.max(1, c.minBlock ?? 3) * 60, maxB = Math.max(minB / 60, c.maxBlock ?? 6) * 60;
+  const today = tzDate(nowMs), dayStart = (c.dayStart ?? 9) * 60, dayEnd = (c.dayEnd ?? 22) * 60, minB = Math.max(1, c.minBlock ?? 3) * 60, maxB = Math.max(minB / 60, c.maxBlock ?? 6) * 60;
   const wantMin = Math.max(0, Math.round((hoursNeeded ?? 0) * 60));
   const avoid = new Set((c.avoidWeekdays || []).map(String)), only = c.onlyWeekdays?.length ? new Set(c.onlyWeekdays.map(String)) : null;
   const busyMs = busy.map((b) => [typeof b.start === 'number' ? b.start : Date.parse(b.start), typeof b.end === 'number' ? b.end : Date.parse(b.end)]).filter(([a, b]) => Number.isFinite(a) && Number.isFinite(b));
-  const first = c.from && validDate(c.from) ? c.from : today > `${month}-01` ? jstDate(nowMs + DAY) : `${month}-01`;
+  const first = c.from && validDate(c.from) ? c.from : today > `${month}-01` ? tzDate(nowMs + DAY) : `${month}-01`;
   const hasShift = new Set(shifts.map((s) => s.date)), weekHours = new Map(), weekDays = new Map();
   for (const s of shifts) { const k = weekKey(s.date), p = shiftPay({ start: toMin(s.start), end: toMin(s.end), breakMin: s.breakMin }, {}); weekHours.set(k, (weekHours.get(k) || 0) + p.workMin / 60); weekDays.set(k, (weekDays.get(k) || 0) + 1); }
   const cands = [];
@@ -249,7 +250,7 @@ export function suggestShifts({ month, job, shifts = [], busy = [], hoursNeeded,
 
 // ---------------------------------------------------------------- composition
 export async function shiftSummary({ month, nowMs = Date.now() } = {}) {
-  const m = /^\d{4}-\d{2}$/.test(month || '') ? month : jstDate(nowMs).slice(0, 7);
+  const m = /^\d{4}-\d{2}$/.test(month || '') ? month : tzDate(nowMs).slice(0, 7);
   if (!brainConfigured()) return { ...summarize({ month: m, nowMs }), unconfigured: true };
   const [jobs, goals, shifts] = await Promise.all([readJobs(), readGoals(), readShifts(m)]);
   const year = m.slice(0, 4); let ytd = 0;
@@ -286,7 +287,7 @@ export function classifyDays({ month, events = [], shifts = [], c = {} }) {
       continue;
     }
     const a = Date.parse(s), b = Date.parse(en || s); if (!Number.isFinite(a)) continue;
-    const date = jstDate(a); if (!date.startsWith(month)) continue;
+    const date = tzDate(a); if (!date.startsWith(month)) continue;
     const st = hhmm(Math.round((a - dayMs(date)) / 60000)), ed = hhmm(Math.round(((Number.isFinite(b) ? b : a) - dayMs(date)) / 60000));
     if (mine.has(`${date}|${st}|${ed}`)) continue;
     const d = get(date); d.timed.push([Math.round((a - dayMs(date)) / 60000), Math.round(((Number.isFinite(b) ? b : a) - dayMs(date)) / 60000)]); d.items.push({ title, time: `${st}-${ed}` });

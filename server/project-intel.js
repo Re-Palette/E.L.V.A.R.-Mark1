@@ -2,9 +2,11 @@
 // health + risks per project, the next action, how recently each was talked about (conversation logs), and which projects are related.
 // Plain code on the actual text (no model guessing); the 統合担当 agent / the voice model turn it into advice and progress entries.
 import { parseProjectNotes } from './brain.js';
+import { localDate } from '../shared/tz.js';
+import { TZ } from './profile/index.js';
 
-const DAY = 864e5, JST = 9 * 3600e3;
-const jstDate = (ms) => new Date(ms + JST).toISOString().slice(0, 10);
+const DAY = 864e5;
+const tzDate = (ms) => localDate(ms, TZ());
 const STOP = new Set(['プロジェクト', 'アイデア', 'メモ', '概要', '進捗', 'ログ', '記録', '作成', '作成日', '状態', '新規', '次にやること', 'やること', 'ノート', 'このフォルダのノート', '関連ノート', 'きっかけ', '一言で', 'これから', '追記', '予定', '確認', '会話', '内容', '今日', '明日', '今回', '全体', '目的', '機能', '必要', '場合', 'こと', 'もの', 'ため', 'それ', 'これ', 'する', 'できる', 'いる', 'ある', 'など', 'について', 'として', 'エルヴァー', 'アプリ', 'システム', 'ページ', '作る']);
 
 /** Distinctive terms of a text: katakana words, kanji runs, latin words (frequency-weighted, stop words removed). Pure (tested). */
@@ -20,11 +22,11 @@ export function termsOf(text, limit = 30) {
 const DEADLINE = /(期限|締切|〆切|締め切り|納期|リリース|公開|提出|完成)\s*[:：は]?\s*(?:(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?|(\d{1,2})月(\d{1,2})日)/g;
 /** Dates the notes themselves name as deadlines/targets (YYYY-MM-DD). */
 export function deadlinesIn(text, nowMs = Date.now()) {
-  const out = []; const y0 = Number(jstDate(nowMs).slice(0, 4));
+  const out = []; const y0 = Number(tzDate(nowMs).slice(0, 4));
   for (const m of String(text || '').matchAll(DEADLINE)) {
     const y = m[2] ? +m[2] : y0, mo = +(m[3] || m[5]), d = +(m[4] || m[6]); if (mo < 1 || mo > 12 || d < 1 || d > 31) continue;
     let date = `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-    if (!m[2] && Date.parse(date + 'T00:00:00Z') < Date.parse(jstDate(nowMs) + 'T00:00:00Z') - 60 * DAY) date = `${y0 + 1}-${date.slice(5)}`;   // "1月5日" written in November means next year
+    if (!m[2] && Date.parse(date + 'T00:00:00Z') < Date.parse(tzDate(nowMs) + 'T00:00:00Z') - 60 * DAY) date = `${y0 + 1}-${date.slice(5)}`;   // "1月5日" written in November means next year
     out.push({ label: m[1], date });
   }
   return out;
@@ -35,7 +37,7 @@ const BLOCKER = /(詰まっ|ブロック|未解決|困って|行き詰|保留|�
  * @param {{projects:{name:string, notes:{path:string,text:string}[], lastUpdated:string|null}[], conversations:{date:string,text:string}[], nowMs:number}} d
  */
 export function analyzeProjects({ projects = [], conversations = [], nowMs = Date.now() } = {}) {
-  const today = jstDate(nowMs), convRecent = conversations.filter((c) => c.date >= jstDate(nowMs - 14 * DAY));
+  const today = tzDate(nowMs), convRecent = conversations.filter((c) => c.date >= tzDate(nowMs - 14 * DAY));
   const out = projects.map((p) => {
     const texts = p.notes.map((n) => n.text), all = texts.join('\n'), parsed = parseProjectNotes(texts);
     const days = p.lastUpdated ? Math.floor((nowMs - Date.parse(p.lastUpdated)) / DAY) : null;

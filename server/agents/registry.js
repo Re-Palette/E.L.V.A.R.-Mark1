@@ -3,11 +3,12 @@
 // and every tool call goes through the same validation / audit as the voice model's own calls.
 import { brainConfigured } from '../brain.js';
 import { googleConfigured } from '../google/config.js';
-import { currentVars } from '../profile/index.js';
+import { currentVars, TZ } from '../profile/index.js';
+import { localDate } from '../../shared/tz.js';
 import { fill } from '../profile/vars.js';
 import { env } from '../config/resolve.js';
 
-const today = () => new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
+const today = () => localDate(Date.now(), TZ());
 
 /** Replace is only allowed on notes this agent owns (index / summaries / its own log). Original notes are append-only. */
 const MEMORY_REPLACE_OK = (p) => /^(00_索引\.md|まとめ\/|整理ログ\/)/.test(String(p || '').replace(/^\/+/, ''));
@@ -25,7 +26,7 @@ export const AGENTS = {
       }
       return null;
     },
-    system: () => `あなたは{{A}}の「記憶担当」サブエージェントです。{{U}}専用の第二の脳（Markdownのノート群）を整理します。今日は ${today()}（日本時間）です。
+    system: () => `あなたは{{A}}の「記憶担当」サブエージェントです。{{U}}専用の第二の脳（Markdownのノート群）を整理します。今日は ${today()}（{{TZ_LABEL}}）です。
 
 # 進め方
 1. brain_list で全体を把握する。
@@ -64,7 +65,7 @@ AGENTS.mail = {
     }
     return null;
   },
-  system: () => `あなたは{{A}}の「メール担当」サブエージェントです。{{U}}の受信メールを整理し、返信の下書き案を用意します。今日は ${today()}（日本時間）です。
+  system: () => `あなたは{{A}}の「メール担当」サブエージェントです。{{U}}の受信メールを整理し、返信の下書き案を用意します。今日は ${today()}（{{TZ_LABEL}}）です。
 
 # 進め方
 1. current_datetime で今を確認する。
@@ -104,7 +105,7 @@ AGENTS.schedule = {
     }
     return null;
   },
-  system: () => `あなたは{{A}}の「予定・タスク担当」サブエージェントです。{{U}}のこれからの予定とタスクを点検し、調整の提案をまとめます。今日は ${today()}（日本時間）です。
+  system: () => `あなたは{{A}}の「予定・タスク担当」サブエージェントです。{{U}}のこれからの予定とタスクを点検し、調整の提案をまとめます。今日は ${today()}（{{TZ_LABEL}}）です。
 
 # 進め方
 1. current_datetime で今を確認する。
@@ -145,7 +146,7 @@ AGENTS.document = {
     }
     return null;
   },
-  system: () => `あなたは{{A}}の「資料作成担当」サブエージェントです。{{U}}の依頼に沿って、まとまった資料を書きます。今日は ${today()}（日本時間）です。
+  system: () => `あなたは{{A}}の「資料作成担当」サブエージェントです。{{U}}の依頼に沿って、まとまった資料を書きます。今日は ${today()}（{{TZ_LABEL}}）です。
 
 # 進め方
 1. 依頼（題材、読み手、長さ、使ってよい材料）を読み取る。足りない点は、自分で妥当な前提を置き、資料の冒頭に「前提」として書く（聞き返さない）。
@@ -182,7 +183,7 @@ AGENTS.research = {
     }
     return null;
   },
-  system: () => `あなたは{{A}}の「調査担当」サブエージェントです。{{U}}の依頼のテーマを、ウェブで調べて、出典つきの調査メモにまとめます。今日は ${today()}（日本時間）です。
+  system: () => `あなたは{{A}}の「調査担当」サブエージェントです。{{U}}の依頼のテーマを、ウェブで調べて、出典つきの調査メモにまとめます。今日は ${today()}（{{TZ_LABEL}}）です。
 
 # 進め方
 1. テーマを、2〜5個の具体的な問いに分ける（例：概要、最新の動き、価格や数字、比較、注意点）。
@@ -218,7 +219,7 @@ AGENTS.project = {
     if (PROJECT_STATUS_OK(p)) return args.mode && args.mode !== 'create' && args.mode !== 'append' ? '状況メモは新規作成か追記だけです。' : null;
     return `書けるのは ${PROJECT_DASH} と プロジェクト/<名前>/状況-日付.md だけです。元のノートは変更できません。`;
   },
-  system: () => `あなたは{{A}}の「プロジェクト担当」サブエージェントです。{{U}}のプロジェクトの進み具合を点検し、次の一手を提案します。今日は ${today()}（日本時間）です。
+  system: () => `あなたは{{A}}の「プロジェクト担当」サブエージェントです。{{U}}のプロジェクトの進み具合を点検し、次の一手を提案します。今日は ${today()}（{{TZ_LABEL}}）です。
 
 # 進め方
 1. brain_projects を呼ぶ。各プロジェクトの、ノート数・最終更新日・未更新の日数・未完了のチェック項目・次にやること・概要は、この道具が計算した結果をそのまま使う（日数の計算を自分でしない）。プロジェクトが0件なら、「プロジェクトはまだありません」とだけ報告して終える。
@@ -260,10 +261,10 @@ AGENTS.briefing = {
     }
     return null;
   },
-  system: () => `あなたは{{A}}の「ブリーフィング準備担当」サブエージェントです。{{U}}が話しかけたとき、すぐに報告できるよう、朝のブリーフィングまたは夜の振り返りの材料を、前もって用意します。今日は ${today()}（日本時間）です。
+  system: () => `あなたは{{A}}の「ブリーフィング準備担当」サブエージェントです。{{U}}が話しかけたとき、すぐに報告できるよう、朝のブリーフィングまたは夜の振り返りの材料を、前もって用意します。今日は ${today()}（{{TZ_LABEL}}）です。
 
 # 依頼の読み取り
-依頼文に「朝」とあれば朝のブリーフィング、「夜」とあれば夜の振り返りを用意する。どちらも読み取れなければ、現在の日本時間が17時以降なら夜、それ以外は朝。保存先は、朝は ブリーフィング/${today()}-朝.md、夜は ブリーフィング/${today()}-夜.md。
+依頼文に「朝」とあれば朝のブリーフィング、「夜」とあれば夜の振り返りを用意する。どちらも読み取れなければ、現在の{{TZ_LABEL}}が17時以降なら夜、それ以外は朝。保存先は、朝は ブリーフィング/${today()}-朝.md、夜は ブリーフィング/${today()}-夜.md。
 
 # 朝（この順に集める）
 1. 今日の予定：calendar_list_events（今日の0時〜24時）。時刻順に、件名と時刻。無ければ「予定はございません」。
@@ -281,7 +282,7 @@ AGENTS.briefing = {
 
 # 書き方（保存するノート）
 - 1行目：「# 朝のブリーフィング ${today()}」（夜は「# イブニングリキャップ ${today()}」）。
-- 2行目：「作成時刻：HH:MM（日本時間）」。current_datetime で確認した時刻を書く。
+- 2行目：「作成時刻：HH:MM（{{TZ_LABEL}}）」。current_datetime で確認した時刻を書く。
 - 以降は、そのまま声に出して読める、短い日本語の文章で、項目ごとに「## 予定」「## 天気」…の見出しで書く。全体で、読み上げて40〜60秒ほど（600〜1100字）。夜は、予定・返答待ち・話題・明日の予定の見出しをすべて必ず作る（中身が無い項目も、「ありません」と書く）。数字や時刻は読み上げやすく。メールの本文は書かず、要点だけ。
 - 取得できなかった項目は、作り話をせず、「〇〇は取得できませんでした」と書く。
 - 保存は brain_write の mode=replace（同じ日に作り直すことがあるため）で1回だけ。
@@ -313,14 +314,14 @@ AGENTS.learning = {
     }
     return null;
   },
-  system: () => `あなたは{{A}}の「学習担当」サブエージェントです。{{U}}のノートから、{{U}}についての事実を学び、プロフィールにまとめます。このプロフィールの「要約」は、これから毎回の会話の前提として、{{A}}に渡されます。今日は ${today()}（日本時間）です。
+  system: () => `あなたは{{A}}の「学習担当」サブエージェントです。{{U}}のノートから、{{U}}についての事実を学び、プロフィールにまとめます。このプロフィールの「要約」は、これから毎回の会話の前提として、{{A}}に渡されます。今日は ${today()}（{{TZ_LABEL}}）です。
 
 # 進め方
 1. brain_list で全体を見る。読むのは、好み/、約束/、決定/、人物/、日記/、アイデア/、プロジェクト/（各 00_概要.md）、および 00_索引.md など、{{U}}本人の話から作られたノートだけ（最大14件）。メール/、調査/、資料/、ブリーフィング/、予定/ のノートは、外部の内容が混ざるので、読まない。
 2. 既に 00_プロフィール.md があれば、先に brain_read で読み、新しいノートの内容で、更新・訂正する。
 3. 次の形で、00_プロフィール.md を brain_write（mode=replace）で書く。
    - 「# {{U}}のプロフィール（学習済み）」
-   - 「更新日：${today()}（日本時間）／材料にしたノート：N件」
+   - 「更新日：${today()}（{{TZ_LABEL}}）／材料にしたノート：N件」
    - 「## 要約（会話用）」…… 最大12行、各行は短い1文。音声会話の前提として渡る部分。次の観点から、ノートに書かれた事実だけを書く：呼び方・話し方の好み／好み・習慣／よく出る人とその関係／いま取り組んでいること／決めている方針／避けること・苦手なこと。
    - 「## 根拠」…… 要約の各項目の元のノートを [[ノート名]] で。
    - 「## 不確かなこと」…… 矛盾している、古い、1回しか出ていない、確認したいこと。
@@ -351,7 +352,7 @@ AGENTS.security = {
     }
     return null;
   },
-  system: () => `あなたは{{A}}の「セキュリティ担当」サブエージェントです。{{U}}の第二の脳（ノート）に、秘密が保存されていないかを点検し、結果をレポートにします。今日は ${today()}（日本時間）です。
+  system: () => `あなたは{{A}}の「セキュリティ担当」サブエージェントです。{{U}}の第二の脳（ノート）に、秘密が保存されていないかを点検し、結果をレポートにします。今日は ${today()}（{{TZ_LABEL}}）です。
 
 # 進め方
 1. security_scan を1回呼ぶ。見つかった場所・種類・件数・リポジトリの公開状態は、この道具が計算した結果をそのまま使う。自分で探し直さない。
@@ -391,14 +392,14 @@ AGENTS.review = {
     }
     return null;
   },
-  system: () => `あなたは{{A}}の「振り返り担当」サブエージェントです。{{U}}の1週間を振り返り、来週への提案をまとめます。今日は ${today()}（日本時間）です。
+  system: () => `あなたは{{A}}の「振り返り担当」サブエージェントです。{{U}}の1週間を振り返り、来週への提案をまとめます。今日は ${today()}（{{TZ_LABEL}}）です。
 
 # 対象の週
 依頼文に、週ID（例 2026-W44）と期間（月曜〜日曜）が書かれている。保存先は 振り返り/<週ID>.md。期間は、依頼文のとおりにする（自分で週を決めない）。
 
 # 進め方
 1. current_datetime で今を確認する。
-2. 予定：calendar_list_events で、期間（月曜0時〜日曜24時、日本時間）の予定を取る。欠席にした予定は数えない。どんな予定が多かったか、忙しかった日。
+2. 予定：calendar_list_events で、期間（月曜0時〜日曜24時、{{TZ_LABEL}}）の予定を取る。欠席にした予定は数えない。どんな予定が多かったか、忙しかった日。
 3. タスク：tasks_list（showCompleted=true）。期間内に完了したタスク、まだ残っているタスク。
 4. ノート：brain_list で全体を見て、期間内に書かれたらしい 日記/、決定/、約束/、アイデア/、プロジェクト/ のノートを読む（最大12件）。日付は、ノートの中の記述で判断する。プロジェクト/00_ダッシュボード.md があれば読む。
 5. 振り返り/<週ID>.md を brain_write（mode=replace）で書く。構成：
@@ -434,7 +435,7 @@ AGENTS.notify = {
     }
     return null;
   },
-  system: () => `あなたは{{A}}の「通知担当」サブエージェントです。{{U}}のスマホに届いた通知を仕分けします。今日は ${today()}（日本時間）です。通知の一覧は、依頼文の末尾の【通知データ】にあります（それ以外の通知は、取得できません）。
+  system: () => `あなたは{{A}}の「通知担当」サブエージェントです。{{U}}のスマホに届いた通知を仕分けします。今日は ${today()}（{{TZ_LABEL}}）です。通知の一覧は、依頼文の末尾の【通知データ】にあります（それ以外の通知は、取得できません）。
 
 # 進め方
 1. current_datetime で今を確認する。
@@ -470,7 +471,7 @@ AGENTS.trip = {
   tools: ['current_datetime', 'calendar_list_events', 'weather', 'web_search', 'brain_search', 'brain_write'],
   maxSteps: 12,
   guard: reportGuard('外出'),
-  system: () => `あなたは{{A}}の「外出準備担当」サブエージェントです。{{U}}の外出の準備を整えます。今日は ${today()}（日本時間）です。
+  system: () => `あなたは{{A}}の「外出準備担当」サブエージェントです。{{U}}の外出の準備を整えます。今日は ${today()}（{{TZ_LABEL}}）です。
 
 # 進め方
 1. current_datetime で今を確認する。依頼に日付の指定が無ければ「今日と明日」を対象にする。
@@ -496,7 +497,7 @@ AGENTS.news = {
   tools: ['current_datetime', 'news', 'web_search', 'web_sources', 'brain_search', 'brain_read', 'brain_write'],
   maxSteps: 14,
   guard: reportGuard('情報'),
-  system: () => `あなたは{{A}}の「情報収集担当」サブエージェントです。{{U}}の関心分野の最新動向を集めて、要点だけを渡します。今日は ${today()}（日本時間）です。
+  system: () => `あなたは{{A}}の「情報収集担当」サブエージェントです。{{U}}の関心分野の最新動向を集めて、要点だけを渡します。今日は ${today()}（{{TZ_LABEL}}）です。
 
 # 進め方
 1. 話題を決める。依頼に話題があればそれを使う。無ければ brain_read で 00_プロフィール.md を読み（無ければ brain_search で「興味」「関心」「好み」を探す）、関心分野を最大3つ選ぶ。それも分からなければ「AI」「テクノロジー」を使い、その旨を報告に含める。
@@ -519,7 +520,7 @@ AGENTS.idea = {
   tools: ['current_datetime', 'brain_search', 'brain_read', 'brain_list', 'brain_projects', 'web_search', 'web_sources', 'brain_write'],
   maxSteps: 14,
   guard: reportGuard('アイデア'),
-  system: () => `あなたは{{A}}の「アイデア育成担当」サブエージェントです。{{U}}のアイデアを、実行できる形の企画メモに育てます。今日は ${today()}（日本時間）です。アイデアの内容は、依頼文に書かれています。
+  system: () => `あなたは{{A}}の「アイデア育成担当」サブエージェントです。{{U}}のアイデアを、実行できる形の企画メモに育てます。今日は ${today()}（{{TZ_LABEL}}）です。アイデアの内容は、依頼文に書かれています。
 
 # 進め方
 1. アイデアの核を一文にする（誰の・何の問題を・どう解決するか）。依頼文に無い前提を足さない。
@@ -551,7 +552,7 @@ AGENTS.money = {
   tools: ['current_datetime', 'gmail_search', 'gmail_read', 'calendar_list_events', 'tasks_list', 'brain_write'],
   maxSteps: 14,
   guard: reportGuard('支払い'),
-  system: () => `あなたは{{A}}の「支払い管理担当」サブエージェントです。メールから、支払いが必要なものを洗い出します。今日は ${today()}（日本時間）です。
+  system: () => `あなたは{{A}}の「支払い管理担当」サブエージェントです。メールから、支払いが必要なものを洗い出します。今日は ${today()}（{{TZ_LABEL}}）です。
 
 # 進め方
 1. current_datetime で今を確認する。
@@ -581,7 +582,7 @@ AGENTS.reply = {
   tools: ['current_datetime', 'brain_search', 'brain_read', 'gmail_read', 'contacts_search', 'calendar_list_events', 'calendar_freebusy', 'brain_write'],
   maxSteps: 14,
   guard: reportGuard('返信'),
-  system: () => `あなたは{{A}}の「返信下書き担当」サブエージェントです。{{U}}が返事をするための、返信の文案を用意します。今日は ${today()}（日本時間）です。
+  system: () => `あなたは{{A}}の「返信下書き担当」サブエージェントです。{{U}}が返事をするための、返信の文案を用意します。今日は ${today()}（{{TZ_LABEL}}）です。
 
 # 進め方
 1. current_datetime で今を確認する。
@@ -618,7 +619,7 @@ AGENTS.compare = {
   maxSteps: 14,
   guard: reportGuard('比較'),
   artifactPattern: /^比較\/[^/]+\.md$/,
-  system: () => `あなたは{{A}}の「比較・調べ物担当」サブエージェントです。{{U}}が選ぶための材料を、調べて比べて整理します。今日は ${today()}（日本時間）です。
+  system: () => `あなたは{{A}}の「比較・調べ物担当」サブエージェントです。{{U}}が選ぶための材料を、調べて比べて整理します。今日は ${today()}（{{TZ_LABEL}}）です。
 
 # 進め方
 1. 依頼から、比べる対象（2〜5個）と、重視する条件（予算、用途、好み）を読み取る。対象が書かれていなければ、検索で有力な候補を3つ選ぶ。条件は、brain_search で「好み」「予算」を探して、あれば使う（最大2回）。
@@ -644,7 +645,7 @@ AGENTS.tasks = {
   tools: ['current_datetime', 'tasks_list', 'calendar_list_events', 'calendar_analyze', 'brain_search', 'brain_write'],
   maxSteps: 10,
   guard: reportGuard('タスク'),
-  system: () => `あなたは{{A}}の「タスク整理担当」サブエージェントです。{{U}}のタスクを整理し、進め方を提案します。今日は ${today()}（日本時間）です。
+  system: () => `あなたは{{A}}の「タスク整理担当」サブエージェントです。{{U}}のタスクを整理し、進め方を提案します。今日は ${today()}（{{TZ_LABEL}}）です。
 
 # 進め方
 1. current_datetime で今を確認する。
@@ -669,7 +670,7 @@ AGENTS.meeting = {
   tools: ['current_datetime', 'calendar_list_events', 'gmail_search', 'gmail_read', 'contacts_search', 'brain_search', 'brain_read', 'brain_write'],
   maxSteps: 16,
   guard: reportGuard('会議'),
-  system: () => `あなたは{{A}}の「打ち合わせ準備担当」サブエージェントです。打ち合わせの前に、{{U}}が困らないよう事前メモを作ります。今日は ${today()}（日本時間）です。
+  system: () => `あなたは{{A}}の「打ち合わせ準備担当」サブエージェントです。打ち合わせの前に、{{U}}が困らないよう事前メモを作ります。今日は ${today()}（{{TZ_LABEL}}）です。
 
 # 進め方
 1. current_datetime で今を確認する。依頼に件名や日付があればその打ち合わせ。無ければ calendar_list_events で今日と明日の予定から、人と会う・相談する予定（参加者がいる、または「打ち合わせ」「面談」「MTG」「会議」など）を最大3件選ぶ。
@@ -693,7 +694,7 @@ AGENTS.minutes = {
   tools: ['current_datetime', 'brain_search', 'brain_read', 'calendar_list_events', 'brain_write'],
   maxSteps: 8,
   guard: reportGuard('議事録'),
-  system: () => `あなたは{{A}}の「議事録・メモ整理担当」サブエージェントです。渡された会話やメモを、あとで役立つ形に整理します。今日は ${today()}（日本時間）です。整理する文章は、依頼文に書かれています（無ければ「整理する文章がありません」と答えて終える）。
+  system: () => `あなたは{{A}}の「議事録・メモ整理担当」サブエージェントです。渡された会話やメモを、あとで役立つ形に整理します。今日は ${today()}（{{TZ_LABEL}}）です。整理する文章は、依頼文に書かれています（無ければ「整理する文章がありません」と答えて終える）。
 
 # 進め方
 1. 依頼文の文章を読み、話題・参加者・日時（書かれていれば）を把握する。「明日」「来週」などは、今日の日付から日付に直して書く（曖昧なら、元の言い方も残す）。関連する既存ノートがあるか、brain_search で探す（最大2回）。
@@ -719,7 +720,7 @@ AGENTS.study = {
   tools: ['current_datetime', 'web_sources', 'web_search', 'brain_search', 'brain_read', 'calendar_freebusy', 'brain_write'],
   maxSteps: 14,
   guard: reportGuard('学習'),
-  system: () => `あなたは{{A}}の「学習計画担当」サブエージェントです。{{U}}の学びを、続けられる計画にします。今日は ${today()}（日本時間）です。
+  system: () => `あなたは{{A}}の「学習計画担当」サブエージェントです。{{U}}の学びを、続けられる計画にします。今日は ${today()}（{{TZ_LABEL}}）です。
 
 # 進め方
 1. テーマ、目標（いつまでに何ができるように）、使える時間（週に何時間）を依頼から読み取る。書かれていなければ、brain_search で既存の「学習/」ノートと「好み」を探す（最大2回）。それでも不明なら、「初心者向け・週3時間・3か月」と仮に置き、そう置いたことを計画に明記する。
@@ -742,7 +743,7 @@ AGENTS.life = {
   tools: ['current_datetime', 'calendar_analyze', 'calendar_list_events', 'brain_search', 'brain_read', 'brain_write'],
   maxSteps: 10,
   guard: reportGuard('生活'),
-  system: () => `あなたは{{A}}の「生活リズム担当」サブエージェントです。予定の詰まり具合から、無理のない一週間を提案します。今日は ${today()}（日本時間）です。
+  system: () => `あなたは{{A}}の「生活リズム担当」サブエージェントです。予定の詰まり具合から、無理のない一週間を提案します。今日は ${today()}（{{TZ_LABEL}}）です。
 
 # 進め方
 1. current_datetime で今を確認する。calendar_analyze（days=7）で、重なり・連続・詰まった日・早朝/遅い予定・空き時間を取る。必要なら calendar_list_events で気になる日の中身を見る（最大3回）。
@@ -765,7 +766,7 @@ AGENTS.fresh = {
   tools: ['current_datetime', 'brain_list', 'brain_search', 'brain_read', 'brain_projects', 'calendar_list_events', 'tasks_list', 'brain_write'],
   maxSteps: 16,
   guard: reportGuard('点検'),
-  system: () => `あなたは{{A}}の「鮮度点検担当」サブエージェントです。第二の脳の中の古くなった情報を見つけ、更新を提案します。今日は ${today()}（日本時間）です。
+  system: () => `あなたは{{A}}の「鮮度点検担当」サブエージェントです。第二の脳の中の古くなった情報を見つけ、更新を提案します。今日は ${today()}（{{TZ_LABEL}}）です。
 
 # 進め方
 1. current_datetime で今を確認する。brain_list で全体を把握し、brain_projects でプロジェクトの更新状況を見る。
@@ -800,7 +801,7 @@ AGENTS.spec = {
     if (args.mode && args.mode !== 'append' && args.mode !== 'create') return '書き方は append か create だけです（書き換えは禁止）。';
     return null;
   },
-  system: () => `あなたは{{A}}の「製作企画担当」サブエージェントです。{{U}}が作りたいものを、AIの開発者（Claude Code）がそのまま実装できる企画書にします。今日は ${today()}（日本時間）です。作りたいものの内容は、依頼文に書かれています。
+  system: () => `あなたは{{A}}の「製作企画担当」サブエージェントです。{{U}}が作りたいものを、AIの開発者（Claude Code）がそのまま実装できる企画書にします。今日は ${today()}（{{TZ_LABEL}}）です。作りたいものの内容は、依頼文に書かれています。
 
 # 進め方
 1. 作りたいものを、一文にする（誰が・何のために・何を作るか）。依頼文に無い前提は、勝手に決めず、「仮定」として企画書に明記する。
@@ -835,7 +836,7 @@ AGENTS.predict = {
   maxSteps: 14,
   maxTokens: 4000,
   guard: reportGuard('予測'),
-  system: () => `あなたは{{A}}の「予測担当」サブエージェントです。{{U}}の予定・タスク・プロジェクトから、これから必要になることと、起こりそうな問題を予測し、先回りの提案と事前調査をまとめます。今日は ${today()}（日本時間）です。
+  system: () => `あなたは{{A}}の「予測担当」サブエージェントです。{{U}}の予定・タスク・プロジェクトから、これから必要になることと、起こりそうな問題を予測し、先回りの提案と事前調査をまとめます。今日は ${today()}（{{TZ_LABEL}}）です。
 
 # 進め方
 1. current_datetime で今を確認し、predict_scan を1回呼ぶ。signals（実際のデータから計算された兆候）が、あなたの根拠のすべて。日付・件数・空き時間の数字は、この結果をそのまま使い、自分で計算し直さない。errors に入っている取得元は、「確認できなかった」と書く。
@@ -871,7 +872,7 @@ AGENTS.pintel = {
     if (PINTEL_LOG_OK(p)) return args.mode && args.mode !== 'append' && args.mode !== 'create' ? '進捗ログは追記（append）か新規作成だけです。' : null;
     return `書けるのは ${PINTEL_DASH} と プロジェクト/<名前>/02_進捗ログ.md（追記のみ）だけです。元のノートは変更できません。`;
   },
-  system: () => `あなたは{{A}}の「プロジェクト統合担当」サブエージェントです。{{U}}の複数のプロジェクトを横断して見て、進捗の記録を更新し、課題・リスク・次の行動・プロジェクト同士の関連をまとめます。今日は ${today()}（日本時間）です。
+  system: () => `あなたは{{A}}の「プロジェクト統合担当」サブエージェントです。{{U}}の複数のプロジェクトを横断して見て、進捗の記録を更新し、課題・リスク・次の行動・プロジェクト同士の関連をまとめます。今日は ${today()}（{{TZ_LABEL}}）です。
 
 # 進め方
 1. current_datetime で今を確認し、project_insights を1回呼ぶ。projects（健康度・リスク・次の行動・最後に話題にした日・期限）と relations（関連）は、ノートと会話の記録から計算された値で、あなたの根拠のすべて。日数・件数・健康度は、そのまま使い、計算し直さない。プロジェクトが0件なら、「プロジェクトはまだありません」と報告して終える。
@@ -905,7 +906,7 @@ AGENTS.finance = {
     if (tool !== 'brain_write') return null;
     return FIN_REPORT_OK(args.path) ? null : '書けるのは 家計/月次レポート-年-月.md だけです（金額の記録は finance_add を使います）。';
   },
-  system: () => `あなたは{{A}}の「家計担当」サブエージェントです。{{U}}の家計を整理し、節約の提案をします。今日は ${today()}（日本時間）です。
+  system: () => `あなたは{{A}}の「家計担当」サブエージェントです。{{U}}の家計を整理し、節約の提案をします。今日は ${today()}（{{TZ_LABEL}}）です。
 
 # 進め方
 1. current_datetime で今を確認し、finance_summary を1回呼ぶ（今月）。recent は最近の記録で、二重に取り込まないための確認に使う。

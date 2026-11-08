@@ -6,10 +6,11 @@
 // course catalogue: the data is only what the owner tells / types in, and nothing is registered anywhere by this module.
 import crypto from 'node:crypto';
 import { brainReadRaw, brainWrite, brainRepoIsPrivate, brainConfigured, brainList } from './brain.js';
-import { U } from './profile/index.js';
+import { U, TZ } from './profile/index.js';
+import { localDate, isoAt, tzLabel } from '../shared/tz.js';
 
-const JST = 9 * 3600e3, DAY = 864e5;
-const jstDate = (ms) => new Date(ms + JST).toISOString().slice(0, 10);
+const DAY = 864e5;
+const tzDate = (ms) => localDate(ms, TZ());
 const cell = (s) => String(s ?? '').replace(/\|/g, '／').replace(/\s+/g, ' ').trim();
 const norm = (s) => cell(s).toLowerCase().replace(/[\s　・\-_（）()「」『』]/g, '');
 const num = (v) => { if (v == null || String(v).trim() === '') return NaN; const n = Number(String(v ?? '').replace(/[,，単位\s]/g, '')); return Number.isFinite(n) ? n : NaN; };
@@ -26,9 +27,9 @@ export const DEFAULT_PERIODS = { 1: ['09:00', '10:30'], 2: ['10:40', '12:10'], 3
 export const DEFAULT_RANGES = { 前期: { from: '04-01', to: '07-31' }, 後期: { from: '10-01', to: '01-31' } };
 
 // ---------------------------------------------------------------- terms (pure)
-export const fiscalYear = (nowMs = Date.now()) => { const d = jstDate(nowMs), y = Number(d.slice(0, 4)); return Number(d.slice(5, 7)) >= 4 ? y : y - 1; };
+export const fiscalYear = (nowMs = Date.now()) => { const d = tzDate(nowMs), y = Number(d.slice(0, 4)); return Number(d.slice(5, 7)) >= 4 ? y : y - 1; };
 /** The term that is "now" (4–9月 = 前期, 10月〜翌3月 = 後期; YYYY is the 年度). */
-export const currentTerm = (nowMs = Date.now()) => { const m = Number(jstDate(nowMs).slice(5, 7)); return `${fiscalYear(nowMs)}-${m >= 4 && m <= 9 ? '前期' : '後期'}`; };
+export const currentTerm = (nowMs = Date.now()) => { const m = Number(tzDate(nowMs).slice(5, 7)); return `${fiscalYear(nowMs)}-${m >= 4 && m <= 9 ? '前期' : '後期'}`; };
 export const termLabel = (t) => `${t.slice(0, 4)}年度 ${t.slice(5)}`;
 export const validTerm = (t) => /^\d{4}-(前期|後期)$/.test(String(t || ''));
 export const shiftTerm = (t, d) => { let y = Number(t.slice(0, 4)), h = t.slice(5) === '前期' ? 0 : 1, i = y * 2 + h + d; return `${Math.floor(i / 2)}-${i % 2 ? '後期' : '前期'}`; };
@@ -104,7 +105,7 @@ export function parseSettings(text) {
   for (const m of String(text || '').matchAll(/^\s*[-*]\s*(前期|後期)の授業期間\s*[：:]\s*(\d{1,2})[-/](\d{1,2})\s*[-~〜ー－–]\s*(\d{1,2})[-/](\d{1,2})/gm)) { const p = (a, b) => `${String(a).padStart(2, '0')}-${String(b).padStart(2, '0')}`; ranges[m[1]] = { from: p(m[2], m[3]), to: p(m[4], m[5]) }; }
   return { periods: { ...DEFAULT_PERIODS, ...periods }, ranges: { ...DEFAULT_RANGES, ...ranges }, custom: { periods: Object.keys(periods).length > 0, ranges: Object.keys(ranges).length > 0 } };
 }
-const serializeSettings = (s) => `# 履修の設定\n\n大学ごとの時限の時刻（日本時間）と、学期の授業期間です。変更したいときは、話しかけるか、画面から直せます。授業期間は、シフトの提案で「授業の時間」を避けるときに使います（長期休暇や休講は見ていません）。\n\n${Object.entries(s.periods).sort(([a], [b]) => a - b).map(([n, [a, b]]) => `- ${n}限：${a}-${b}`).join('\n')}\n${['前期', '後期'].map((h) => `- ${h}の授業期間：${s.ranges[h].from}〜${s.ranges[h].to}`).join('\n')}\n`;
+const serializeSettings = (s) => `# 履修の設定\n\n大学ごとの時限の時刻（${tzLabel(TZ())}）と、学期の授業期間です。変更したいときは、話しかけるか、画面から直せます。授業期間は、シフトの提案で「授業の時間」を避けるときに使います（長期休暇や休講は見ていません）。\n\n${Object.entries(s.periods).sort(([a], [b]) => a - b).map(([n, [a, b]]) => `- ${n}限：${a}-${b}`).join('\n')}\n${['前期', '後期'].map((h) => `- ${h}の授業期間：${s.ranges[h].from}〜${s.ranges[h].to}`).join('\n')}\n`;
 
 export function parseRequirements(text) {
   const r = { total: null, cap: null, capByTerm: {}, categories: {}, required: [] }, t = String(text || '');
@@ -296,7 +297,7 @@ export function classOccurrences({ month, byTerm = {}, settings = parseSettings(
     const wd = WD[new Date(`${date}T00:00:00Z`).getUTCDay()];
     for (const c of list) for (const s of c.slots) if (s.day === wd) for (const run of runs(s.periods)) {
       const a = settings.periods[run[0]], b = settings.periods[run[run.length - 1]]; if (!a || !b) continue;
-      out.push({ summary: `授業：${c.name}`, start: `${date}T${a[0]}:00+09:00`, end: `${date}T${b[1]}:00+09:00`, course: c.id });
+      out.push({ summary: `授業：${c.name}`, start: isoAt(date, a[0], TZ()), end: isoAt(date, b[1], TZ()), course: c.id });
     }
   }
   return out;

@@ -1,13 +1,15 @@
 // Predictive Intelligence: looks ahead from the owner's calendar, tasks, projects and builds and returns concrete signals (deadline at risk, a day that is
 // too full, a double booking, what tomorrow needs, a project that is going cold). All arithmetic is plain code on real data (no model guessing); the
 // predict sub-agent / the voice model only turn the signals into advice. Dependencies are injected, so this file imports nothing from the tools.
-const JST = 9 * 3600e3, DAY = 864e5;
-const jstDate = (ms) => new Date(ms + JST).toISOString().slice(0, 10);
-const dayStartMs = (d) => Date.parse(d + 'T00:00:00Z') - JST;
+import { localDate, localHM, localWeekday, startOfLocalDay } from '../shared/tz.js';
+import { TZ } from './profile/index.js';
+const DAY = 864e5;
+const tzDate = (ms) => localDate(ms, TZ());
+const dayStartMs = (d) => startOfLocalDay(d, TZ());
 const daysBetween = (a, b) => Math.round((dayStartMs(b) - dayStartMs(a)) / DAY);
-const hhmm = (ms) => { const d = new Date(ms + JST); return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0'); };
+const hhmm = (ms) => localHM(ms, TZ());
 const WD = ['日', '月', '火', '水', '木', '金', '土'];
-const wd = (d) => WD[new Date(dayStartMs(d) + JST).getUTCDay()];
+const wd = (d) => WD[localWeekday(dayStartMs(d), TZ())];
 const rel = (n) => (n < 0 ? `${-n}日前` : n === 0 ? '今日' : n === 1 ? '明日' : n === 2 ? '明後日' : `${n}日後`);
 export const SEV = { high: 0, med: 1, low: 2 };
 const KEY_EVENT = /(面接|面談|プレゼン|発表|登壇|商談|契約|試験|テスト|手術|通院|診察|フライト|飛行機|新幹線|出張|締切|〆切|提出|納期|審査|撮影|本番|ライブ|イベント)/;
@@ -27,7 +29,7 @@ const idOf = (kind, date, title) => `${kind}:${date || ''}:${String(title).repla
  * @returns {{id:string, kind:string, severity:'high'|'med'|'low', title:string, detail:string, date?:string, suggestion:string}[]}
  */
 export function computeSignals({ events = [], analysis = null, tasks = [], projects = [], builds = [], nowMs = Date.now() } = {}) {
-  const today = jstDate(nowMs), out = [];
+  const today = tzDate(nowMs), out = [];
   const add = (kind, severity, title, detail, suggestion, date) => out.push({ id: idOf(kind, date, title), kind, severity, title, detail, suggestion, ...(date ? { date } : {}) });
   const free = analysis?.freeSlots || [];
   const freeHoursUntil = (date) => Math.round(free.filter((s) => s.date <= date).reduce((a, s) => a + s.minutes, 0) / 6) / 10;
@@ -57,10 +59,10 @@ export function computeSignals({ events = [], analysis = null, tasks = [], proje
     else if (day.busyMinutes >= 360) add('overload', 'low', `${rel(left)}（${wd(day.date)}）は予定が多めです`, `予定が合計 約${Math.round(day.busyMinutes / 6) / 10}時間`, '食事と休憩の時間を確保してください', day.date);
   }
   // ---- tomorrow's preparation (also today's later events)
-  const tomorrow = jstDate(nowMs + DAY);
+  const tomorrow = tzDate(nowMs + DAY);
   for (const e of events) {
     if (!e.start || String(e.start).length <= 10) continue;   // all-day items are not prepared for here
-    const s = Date.parse(e.start); if (!Number.isFinite(s)) continue; const d = jstDate(s);
+    const s = Date.parse(e.start); if (!Number.isFinite(s)) continue; const d = tzDate(s);
     if (d !== tomorrow && !(d === today && s > nowMs)) continue;
     const why = [], tips = []; const title = e.summary || '(無題)';
     const hour = Number(hhmm(s).slice(0, 2));
@@ -87,7 +89,7 @@ const withTimeout = (p, ms = 9000) => Promise.race([p, new Promise((_, rej) => s
 
 /** Collects the data (in parallel; a missing source only drops its own signals) and computes the signals. */
 export async function predictScan(deps, { nowMs = Date.now() } = {}) {
-  const today = jstDate(nowMs), t0 = dayStartMs(today), errors = {};
+  const today = tzDate(nowMs), t0 = dayStartMs(today), errors = {};
   const get = async (key, fn) => { if (!fn) return null; try { return await withTimeout(fn()); } catch (e) { errors[key] = String(e?.message || e).slice(0, 100); return null; } };
   const [ev, an, tk, pj, bd] = await Promise.all([
     get('events', deps.events && (() => deps.events({ timeMin: new Date(t0).toISOString(), timeMax: new Date(t0 + 8 * DAY).toISOString(), maxResults: 50 }))),

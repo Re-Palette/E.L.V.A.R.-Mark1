@@ -13,7 +13,8 @@ import { createFileStore } from './file-store.js';
 import { initFileView } from './file-view.js';
 import { choiceLabels, clampCopies, fmtSize, classify, parseCopies } from './file-lib.js';
 import { searchResultForModel } from './file-index.js';
-import { ownerAddress } from './brand.js';
+import { ownerAddress, timeZone } from './brand.js';
+import { localDate } from '../../shared/tz.js';
 
 /** Which finished tool calls are worth a line in RECENT ACTIVITY. */
 const ACTIVITY = {
@@ -98,7 +99,7 @@ export function initGoogleTools({ live, approval, authHeaders, agents, systemChe
   const choice = createChoiceCard({ onPick: (label) => live.sendText(label), onView: (path) => openNote(path) });   // a button = the owner's typed answer
   setInterval(() => { if (choice.open && live.userSpoke) choice.answeredByVoice(); }, 600);
   let fontBytes = null;
-  const jstDate = () => new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
+  const jstDate = () => localDate(Date.now(), timeZone());
 
   /** Save the PDF to Drive through the normal approval card. */
   async function saveToDrive(call, name, bytes) {
@@ -167,7 +168,7 @@ export function initGoogleTools({ live, approval, authHeaders, agents, systemChe
       }
       if (tool === 'file_list') {
         await fileView.open(); const all = await fileView.candidates(); autoClose.arm({ close: fileView.close, el: fileView.el });
-        return { output: { count: all.length, files: all.slice(0, 30).map((f) => ({ name: f.name, type: classify(f.name, f.type).label, size: fmtSize(f.size), addedAt: new Date(f.addedAt + 9 * 3600e3).toISOString().slice(0, 10) })), shown: 'ファイルの一覧を画面に表示しました。件数と、いくつかの名前だけを短く伝えてください' } };
+        return { output: { count: all.length, files: all.slice(0, 30).map((f) => ({ name: f.name, type: classify(f.name, f.type).label, size: fmtSize(f.size), addedAt: localDate(f.addedAt, timeZone()) })), shown: 'ファイルの一覧を画面に表示しました。件数と、いくつかの名前だけを短く伝えてください' } };
       }
       if (tool === 'file_show') {
         const r = await pickFile(args.name, { what: '見せますか' }); if (r.out) return r.out;

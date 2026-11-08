@@ -1,4 +1,5 @@
-import { ownerAddress } from './brand.js';
+import { ownerAddress, timeZone } from './brand.js';
+import { localDate, localHM } from '../../shared/tz.js';
 // Watches the build requests handed to Claude Code (tool build_status): when one changes state (picked up / PR opened / finished) or Claude Code
 // posts a new report, ELVAR logs it on the HUD, shows a notification, saves finished results to the vault, and queues a spoken report.
 // Polling only runs while this page is open (a closed page cannot poll); GitHub's own mobile / e-mail notifications cover the rest.
@@ -44,7 +45,7 @@ export function initBuilds({ run, hudLive, queueNote, inbox = null, locked = () 
         try { inbox?.add({ kind: b.state === 'done' || b.state === 'review' ? 'deliverable' : 'build', key: `build:${b.key ?? b.number}`, title: `${b.self ? '自己改造' : '製作'}：${b.title}（${b.stateLabel}）`, body: b.summary || '', url: b.pr?.url || b.url || '' }); } catch {}
         queueNote(noteForBuild(b));
         if (b.state === 'done' || b.state === 'review') {   // keep the result in the vault, next to the 企画書
-          run('brain_write', { path: `製作/${b.title}/結果.md`, mode: 'append', content: `- ${new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 16).replace('T', ' ')} ${b.stateLabel}${b.pr ? ` PR #${b.pr.number} ${b.pr.url}` : ''}\n  ${b.summary || ''}` }).catch(() => {});
+          run('brain_write', { path: `製作/${b.title}/結果.md`, mode: 'append', content: `- ${`${localDate(Date.now(), timeZone())} ${localHM(Date.now(), timeZone())}`} ${b.stateLabel}${b.pr ? ` PR #${b.pr.number} ${b.pr.url}` : ''}\n  ${b.summary || ''}` }).catch(() => {});
         }
       }
       for (const b of r.builds) next[b.key ?? b.number] = b.signature;

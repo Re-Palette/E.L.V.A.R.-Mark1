@@ -14,6 +14,13 @@ export function brand() {
   return { name: a.displayName || DEFAULTS.name, spokenName: a.spokenName || DEFAULTS.spokenName, ownerAddress: ownerAddress() };
 }
 
+/** The owner's IANA time zone (profile cache), 'Asia/Tokyo' before setup. */
+export function timeZone() {
+  const z = cached()?.locale?.timeZone;
+  try { if (z) { new Intl.DateTimeFormat('en', { timeZone: z }); return z; } } catch { /* fall through */ }
+  return 'Asia/Tokyo';
+}
+
 export function ownerAddress() {
   return cached()?.owner?.address || DEFAULTS.ownerAddress;
 }

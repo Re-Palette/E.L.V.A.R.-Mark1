@@ -5,24 +5,27 @@ import { googleConfigured } from './google/config.js';
 import { AGENTS } from './agents/registry.js';
 import { pickProvider } from './agents/provider.js';
 import { env } from './config/resolve.js';
+import { localDate, localHM, localWeekday, startOfLocalDay } from '../shared/tz.js';
+import { TZ, currentProfile } from './profile/index.js';
 
-const JST = 9 * 3600e3, DAY = 864e5, WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const EN = { 東京: 'TOKYO', 大阪: 'OSAKA', 名古屋: 'NAGOYA', 札幌: 'SAPPORO', 福岡: 'FUKUOKA', 仙台: 'SENDAI', 横浜: 'YOKOHAMA', 京都: 'KYOTO', 神戸: 'KOBE', 広島: 'HIROSHIMA', 那覇: 'NAHA', 新潟: 'NIIGATA', 千葉: 'CHIBA', さいたま: 'SAITAMA', 川崎: 'KAWASAKI' };
-const jdate = (ms) => new Date(ms + JST).toISOString().slice(0, 10);
-const jhm = (iso) => { const d = new Date(Date.parse(iso) + JST); return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0'); };
+const DAY = 864e5, WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const jdate = (ms) => localDate(ms, TZ());
+const jhm = (iso) => localHM(Date.parse(iso), TZ());
+// The weather card's city: the profile's English label for the home city, otherwise the place the weather tool resolved, upper-cased.
+const cityLabel = (city) => { const h = currentProfile().home || {}; return h.labelEn && (!city || city === h.city) ? h.labelEn : String(city || h.labelEn || '').toUpperCase(); };
 const cut = (s, n) => { s = String(s ?? ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
 const msg = (e) => cut(String(e?.message || e).replace(/^.*?：/, ''), 40);
 
 export async function buildHudData({ now = Date.now() } = {}) {
   const out = { at: new Date(now).toISOString(), google: googleConfigured(), agentsAvailable: Object.fromEntries(Object.entries(AGENTS).map(([id, a]) => [id, !!pickProvider() && (!a.available || !!a.available())])), budgets: { geminiLiveMinutesPerDay: Number(env('GEMINI_LIVE_DAILY_MINUTES')) > 0 ? Number(env('GEMINI_LIVE_DAILY_MINUTES')) : 60 } };
-  const today = jdate(now), t0 = Date.parse(today + 'T00:00:00Z') - JST;
+  const today = jdate(now), t0 = startOfLocalDay(today, TZ());
   const jobs = [];
 
   jobs.push((async () => {
     try {
       const w = await TOOL_MAP.weather.run({ days: 1 });
       const city = String(w.place || '').split(' / ')[0];
-      out.weather = { city: EN[city] || city.toUpperCase(), temp: Number.isFinite(w.now?.tempC) ? `${Math.round(w.now.tempC)}°` : '--°', condition: w.now?.condition || '' };
+      out.weather = { city: cityLabel(city), temp: Number.isFinite(w.now?.tempC) ? `${Math.round(w.now.tempC)}°` : '--°', condition: w.now?.condition || '' };
       if (w.note) out.weather.note = w.note;
     } catch (e) { out.weatherError = msg(e); }
   })());
@@ -37,7 +40,7 @@ export async function buildHudData({ now = Date.now() } = {}) {
         const rows = todays.slice(0, 5).map((e) => ({ time: isAll(e) ? '終日' : jhm(e.start), title: cut(e.summary, 22), sub: cut(e.location || '', 24), accent: !isAll(e) && Number(jhm(e.start).slice(0, 2)) >= 18 ? 'blue' : 'cyan' }));
         out.schedule = rows.length ? rows : [{ time: '--:--', title: '今日の予定はありません', sub: '', accent: 'cyan' }];
         const up = ev.find((e) => !isAll(e) && Date.parse(e.start) > now);
-        if (up) { const d = jdate(Date.parse(up.start)); out.nextEvent = { title: cut(up.summary, 20), sub: cut(up.location || '', 22), time: jhm(up.start), when: d === today ? 'Today' : d === jdate(now + DAY) ? 'Tomorrow' : WD[new Date(Date.parse(up.start) + JST).getUTCDay()] }; }
+        if (up) { const d = jdate(Date.parse(up.start)); out.nextEvent = { title: cut(up.summary, 20), sub: cut(up.location || '', 22), time: jhm(up.start), when: d === today ? 'Today' : d === jdate(now + DAY) ? 'Tomorrow' : WD[localWeekday(Date.parse(up.start), TZ())] }; }
         else out.nextEvent = { title: '直近の予定なし', sub: '今後7日間', time: '--:--', when: '' };
       } catch (e) {
         out.schedule = [{ time: '--:--', title: '取得できませんでした', sub: msg(e), accent: 'cyan' }];

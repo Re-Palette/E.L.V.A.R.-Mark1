@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { buildHudData } from '../server/hud-data.js';
 import { agoText, todayParts, neutralData, ringArcs } from '../web/src/hud-live.js';
 
-const KEYS = ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REFRESH_TOKEN', 'GOOGLE_API_MOCK_ORIGIN', 'EXA_API_KEY', 'GEMINI_API_KEY', 'GROQ_API_KEY', 'WEATHER_PLACE'];
+const KEYS = ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REFRESH_TOKEN', 'GOOGLE_API_MOCK_ORIGIN', 'EXA_API_KEY', 'GEMINI_API_KEY', 'GROQ_API_KEY', 'WEATHER_PLACE', 'ELVAR_PROFILE'];
 async function withEnv(env, fn) { const old = Object.fromEntries(KEYS.map((k) => [k, process.env[k]])); for (const k of KEYS) delete process.env[k]; Object.assign(process.env, env); const real = globalThis.fetch; try { return await fn(); } finally { globalThis.fetch = real; for (const k of KEYS) old[k] === undefined ? delete process.env[k] : (process.env[k] = old[k]); } }
 const NOW = Date.parse('2026-11-02T08:30:00+09:00');   // Monday 08:30 JST
 
@@ -17,8 +17,8 @@ test('hud data: without Google the cards say 未連携 (no invented content); we
   });
 });
 
-test('hud data: with Google, today rows / next event / tasks come from the calendar and task list (JST, declined events skipped)', async () => {
-  await withEnv({ GOOGLE_CLIENT_ID: 'x', GOOGLE_CLIENT_SECRET: 'x', GOOGLE_REFRESH_TOKEN: 'x', WEATHER_PLACE: '大阪' }, async () => {
+test('hud data: with Google, today rows / next event / tasks come from the calendar and task list (local time zone, declined events skipped)', async () => {
+  await withEnv({ GOOGLE_CLIENT_ID: 'x', GOOGLE_CLIENT_SECRET: 'x', GOOGLE_REFRESH_TOKEN: 'x', WEATHER_PLACE: '大阪', ELVAR_PROFILE: JSON.stringify({ home: { city: '大阪', labelEn: 'OSAKA' } }) }, async () => {
     const ev = (id, summary, s, e, extra = {}) => ({ id, summary, start: { dateTime: s }, end: { dateTime: e }, ...extra });
     globalThis.fetch = async (u) => {
       u = String(u); const j = (b) => ({ ok: true, status: 200, text: async () => JSON.stringify(b), json: async () => b });

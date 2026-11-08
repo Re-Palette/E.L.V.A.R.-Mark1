@@ -1,6 +1,8 @@
 // シフト panel (バイト・インターン): this month's shifts on a calendar grid, expected income vs. the goal, jobs and hourly wages, and shift suggestions that
 // avoid the Google Calendar. Everything is computed by the server (shift_summary / shift_suggest); this file only draws it and sends the manual edits.
 // It reuses the .vf-* look injected by finance-view.js (same family of screens).
+import { timeZone } from './brand.js';
+import { localDate } from '../../shared/tz.js';
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const yen = (n) => `${n < 0 ? '-' : ''}¥${Math.round(Math.abs(n || 0)).toLocaleString('ja-JP')}`;
 const CSS = `
@@ -34,7 +36,7 @@ export function initShiftView({ call }) {
   document.body.appendChild(back);
   const body = back.querySelector('#vsh-body'), label = back.querySelector('#vsh-month');
   let month = '', data = null, sug = null, mode = 'shift';
-  const today = () => new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
+  const today = () => localDate(Date.now(), timeZone());
   const shiftMonth = (m, d) => { const [y, mo] = m.split('-').map(Number); return new Date(Date.UTC(y, mo - 1 + d, 1)).toISOString().slice(0, 7); };
 
   function render(d) {

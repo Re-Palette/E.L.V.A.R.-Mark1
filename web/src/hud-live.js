@@ -1,7 +1,9 @@
 // Connects the HUD cards to the finished systems: weather, Google calendar/tasks (via /api/hud/data), the sub-agents' real state, a real
 // activity log of what E.L.V.A.R. did, and real device/usage gauges. Nothing here is invented: when a source is missing the card says so.
+import { timeZone } from './brand.js';
+import { localParts, localDate } from '../../shared/tz.js';
 const ACT_KEY = 'elvar_activity';
-const JST = 9 * 3600e3, WD_EN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], MON_EN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const WD_EN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], MON_EN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const NAMES = { memory: '記憶担当', mail: 'メール担当', schedule: '予定・タスク担当', document: '資料作成担当', research: '調査担当', project: 'プロジェクト担当', briefing: 'ブリーフィング準備', learning: '学習担当', security: 'セキュリティ担当', review: '振り返り担当' };
 const ROW_ICON = { memory: 'nodes', mail: 'mailFilled', schedule: 'calendar', document: 'clipboard', research: 'sparkle', project: 'folder', briefing: 'sun', learning: 'user', security: 'shield', review: 'checkCircle' };
 const PHONE_ORDER = ['research', 'document', 'mail', 'schedule', 'memory'];    // the phone's five round icons (design: search, code, mail, home, shield)
@@ -11,7 +13,7 @@ export function pickRows(ids, state, now = Date.now()) { const rank = (id) => (s
 
 /** The task ring: bright arc = share of today's tasks done. */
 export const ringArcs = (done, total) => [[0, Math.min(358, Math.max(2, total > 0 ? (done / total) * 360 : 0))]];
-export function todayParts(nowMs = Date.now()) { const d = new Date(nowMs + JST); return { day: String(d.getUTCDate()).padStart(2, '0'), weekday: WD_EN[d.getUTCDay()], month: MON_EN[d.getUTCMonth()] }; }
+export function todayParts(nowMs = Date.now()) { const d = localParts(nowMs, timeZone()); return { day: String(d.day).padStart(2, '0'), weekday: WD_EN[d.weekday], month: MON_EN[d.month - 1] }; }
 export function agoText(ms, now = Date.now()) { const m = Math.max(0, Math.round((now - ms) / 60000)); return m < 1 ? '今' : m < 60 ? `${m}分前` : m < 1440 ? `${Math.floor(m / 60)}時間前` : `${Math.floor(m / 1440)}日前`; }
 
 /** What the cards show before the first real data arrives: honest "loading", not sample content. */
@@ -49,7 +51,7 @@ export function initHudLive({ hud, live, authHeaders, usage }) {
     });
   };
   const renderSystem = async () => {
-    const day = new Date(Date.now() + JST).toISOString().slice(0, 10), u = usage.raw().days?.[day] || { liveSeconds: 0, tools: {} };
+    const day = localDate(Date.now(), timeZone()), u = usage.raw().days?.[day] || { liveSeconds: 0, tools: {} };
     const budget = server?.budgets?.geminiLiveMinutesPerDay || 60, livePct = Math.min(100, Math.round(u.liveSeconds / 60 / budget * 100));
     const calls = Object.values(u.tools || {}).reduce((a, c) => a + c, 0);
     let st = null; try { const e = await navigator.storage?.estimate?.(); if (e?.quota) st = Math.min(100, Math.round(e.usage / e.quota * 100)); } catch {}

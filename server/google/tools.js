@@ -19,8 +19,9 @@ import { withGeminiModel, geminiModel } from '../gemini-models.js';
 import { buildRequest, buildStatus, buildConfigured, selfConfigured } from '../build.js';
 import { predictScan } from '../predict.js';
 import { completeText } from '../llm.js';
-import { U, A, currentVars } from '../profile/index.js';
+import { U, A, currentVars, currentProfile } from '../profile/index.js';
 import { fill } from '../profile/vars.js';
+import { localDate, localParts, startOfLocalDay, isoAt, addDays } from '../../shared/tz.js';
 import { isUp, noteFailure, noteSuccess, retryAfterSec } from '../llm-health.js';
 import { jpText, sarashinaConfigured, sarashinaChat, sarashinaModel, JP_TASKS } from '../sarashina.js';
 import { env, cfgEnv } from '../config/resolve.js';
@@ -77,7 +78,7 @@ const S = (properties, required = []) => ({ type: 'object', properties, required
 const str = (description) => ({ type: 'string', description });
 const num = (description) => ({ type: 'number', description });
 const bool = (description) => ({ type: 'boolean', description });
-const ISO = 'ISO 8601。日本時間なら 2026-11-02T14:00:00+09:00 のように、終日なら 2026-11-02 のように指定';
+const ISO = 'ISO 8601。{{TZ_LABEL}}なら 2026-11-02T14:00:00{{TZ_OFFSET}} のように、終日なら 2026-11-02 のように指定';
 
 
 const exaHeaders = () => ({ 'x-api-key': env('EXA_API_KEY'), 'content-type': 'application/json', accept: 'application/json' });
@@ -135,7 +136,7 @@ async function exaSources({ query, numResults, recencyDays, category }) {
 }
 
 async function weatherOpenMeteo({ place, days }) {
-  const name = String(place || env('WEATHER_PLACE') || '東京').trim().slice(0, 80);
+  const name = String(place || env('WEATHER_PLACE') || currentProfile().home?.city || '東京').trim().slice(0, 80);
   const getJson = async (url) => {
     let r;
     try { r = await fetch(url, { signal: AbortSignal.timeout(8000), headers: { accept: 'application/json' } }); }
@@ -173,7 +174,7 @@ const METNO_JA = (c) => { c = String(c || ''); return /thunder/.test(c) ? '雷�
 export function parseMetNo(j, g, n) {
   const ts = j?.properties?.timeseries || [];
   if (!ts.length) throw new Error('MET Norwayの応答が空です');
-  const jst = (t) => new Date(Date.parse(t) + 9 * 3600e3), day = (t) => jst(t).toISOString().slice(0, 10);
+  const day = (t) => localDate(Date.parse(t), tz());
   const first = ts[0], fd = first.data?.instant?.details || {};
   const days = new Map();
   for (const e of ts) {
@@ -182,7 +183,7 @@ export function parseMetNo(j, g, n) {
     const h1 = e.data?.next_1_hours, h6 = e.data?.next_6_hours;
     const amt = h1?.details?.precipitation_amount ?? (!h1 && new Date(e.time).getUTCHours() % 6 === 0 ? h6?.details?.precipitation_amount : undefined);
     if (Number.isFinite(amt)) r.rain += amt;
-    const sym = (h1 || h6)?.summary?.symbol_code; const hr = jst(e.time).getUTCHours(); if (sym && hr >= 7 && hr <= 19) r.sym.push(sym);
+    const sym = (h1 || h6)?.summary?.symbol_code; const hr = localParts(Date.parse(e.time), tz()).hour; if (sym && hr >= 7 && hr <= 19) r.sym.push(sym);
     days.set(d, r);
   }
   const daily = [...days.entries()].slice(0, n).map(([date, r]) => ({ date, condition: METNO_JA(r.sym[Math.floor(r.sym.length / 2)] || ''), maxC: r.temps.length ? Math.round(Math.max(...r.temps) * 10) / 10 : undefined, minC: r.temps.length ? Math.round(Math.min(...r.temps) * 10) / 10 : undefined, rainMm: Math.round(r.rain * 10) / 10 }));
@@ -236,7 +237,7 @@ const REASONING_WARNING = 'これは推論（考え方の整理）であり、�
 
 export const TOOLS = [
   // ============================ Utility ============================
-  { name: 'current_datetime', kind: 'read', description: '現在の日付・曜日・時刻（日本時間）を返す。「今日」「明日」「来週」などを予定や期限に変換する前に呼ぶ。',
+  { name: 'current_datetime', kind: 'read', description: '現在の日付・曜日・時刻（{{TZ_LABEL}}）を返す。「今日」「明日」「来週」などを予定や期限に変換する前に呼ぶ。',
     schema: S({}),
     async run() {
       const z = tz(), d = new Date();
@@ -248,7 +249,7 @@ export const TOOLS = [
   { name: 'weather', kind: 'read', description: '天気予報（現在と日ごとの予報）を返す。Open-Meteoが主で、使えないときは MET Norway、それも駄目ならウェブ検索で代わりに取得する。場所を省略すると既定の場所（環境変数 WEATHER_PLACE、未設定なら東京）。',
     schema: S({ place: str('地名（例: 東京、大阪、札幌）。省略可'), days: num('予報の日数（1〜7、既定3）') }),
     async run(a) {
-      const name = String(a.place || env('WEATHER_PLACE') || '東京').trim().slice(0, 80);
+      const name = String(a.place || env('WEATHER_PLACE') || currentProfile().home?.city || '東京').trim().slice(0, 80);
       return runRoute('weather', {
         'open-meteo': () => weatherOpenMeteo({ place: name, days: a.days }),
         'met-no': () => weatherMetNo({ place: name, days: a.days }),
@@ -385,7 +386,7 @@ export const TOOLS = [
     async run({ kind = 'morning', query }) {
       const T = (name, args, ms = 7000) => Promise.race([TOOL_MAP[name].run(args), new Promise((_, rej) => setTimeout(() => rej(new Error('時間切れ')), ms))]);
       const now = await TOOL_MAP.current_datetime.run({});
-      const d0 = Date.parse(now.date + 'T00:00:00+09:00'), day = 864e5, iso = (t) => new Date(t).toISOString();
+      const d0 = startOfLocalDay(now.date, tz()), day = 864e5, iso = (t) => new Date(t).toISOString();
       const jobs = { today: T('calendar_list_events', { timeMin: iso(d0), timeMax: iso(d0 + day), maxResults: 20 }), weather: T('weather', { days: 1 }), news: T('news', { maxResults: 4, ...(query ? { query } : {}) }, 9000), drafts: T('gmail_search', { query: 'in:drafts', maxResults: 5 }) };
       jobs.predict = predictScan(predictDeps()).then((r) => r.signals.slice(0, 6));   // what to watch out for today / tomorrow
       if (kind === 'morning') { jobs.unread = T('gmail_search', { query: 'is:unread newer_than:1d in:inbox', maxResults: 8 }); jobs.tasks = T('tasks_list', { maxResults: 20 }); }
@@ -642,8 +643,8 @@ export const TOOLS = [
       const r = await addShifts(list, {});
       const cal = a.calendar !== false && googleConfigured(), calendar = { added: 0, failed: 0 };
       if (cal) for (const s of r.added) {
-        try { const endMin = parseTime(s.end), startMin = parseTime(s.start), endDate = endMin <= startMin ? new Date(Date.parse(`${s.date}T00:00:00+09:00`) + 864e5 + 9 * 3600e3).toISOString().slice(0, 10) : s.date;
-          const ev = await TOOL_MAP.calendar_create_event.run({ summary: `バイト：${s.job}`, start: `${s.date}T${s.start}:00+09:00`, end: `${endDate}T${s.end}:00+09:00`, description: `${A()}のシフト ${s.id}${s.note ? '／' + s.note : ''}` });
+        try { const endMin = parseTime(s.end), startMin = parseTime(s.start), endDate = endMin <= startMin ? addDays(s.date, 1) : s.date;
+          const ev = await TOOL_MAP.calendar_create_event.run({ summary: `バイト：${s.job}`, start: isoAt(s.date, s.start, tz()), end: isoAt(endDate, s.end, tz()), description: `${A()}のシフト ${s.id}${s.note ? '／' + s.note : ''}` });
           await updateShift({ id: s.id, patch: { eventId: ev.id }, month: s.date.slice(0, 7) }); s.eventId = ev.id; calendar.added++; } catch { calendar.failed++; } }
       const jobs = await readJobs();
       return { added: r.added.map((s) => ({ id: s.id, date: s.date, start: s.start, end: s.end, job: s.job, onCalendar: !!s.eventId })), skipped: r.skipped, calendar: cal ? calendar : 'Googleカレンダーには入れていません', message: `${r.added.length}件のシフトを記録しました${r.skipped ? `（同じ内容の${r.skipped}件は記録済み）` : ''}` , jobs: jobs.length };
@@ -655,7 +656,7 @@ export const TOOLS = [
     run: async (a) => {
       const { id, ...patch } = a; const r = await updateShift({ id, patch });
       let calendar = 'カレンダーの予定はありません';
-      if (r.after.eventId && googleConfigured()) { try { const endMin = parseTime(r.after.end), startMin = parseTime(r.after.start), endDate = endMin <= startMin ? new Date(Date.parse(`${r.after.date}T00:00:00+09:00`) + 864e5 + 9 * 3600e3).toISOString().slice(0, 10) : r.after.date; await TOOL_MAP.calendar_update_event.run({ eventId: r.after.eventId, summary: `バイト：${r.after.job}`, start: `${r.after.date}T${r.after.start}:00+09:00`, end: `${endDate}T${r.after.end}:00+09:00` }); calendar = 'カレンダーも直しました'; } catch { calendar = 'カレンダーの予定は直せませんでした（手で直してください）'; } }
+      if (r.after.eventId && googleConfigured()) { try { const endMin = parseTime(r.after.end), startMin = parseTime(r.after.start), endDate = endMin <= startMin ? addDays(r.after.date, 1) : r.after.date; await TOOL_MAP.calendar_update_event.run({ eventId: r.after.eventId, summary: `バイト：${r.after.job}`, start: isoAt(r.after.date, r.after.start, tz()), end: isoAt(endDate, r.after.end, tz()) }); calendar = 'カレンダーも直しました'; } catch { calendar = 'カレンダーの予定は直せませんでした（手で直してください）'; } }
       return { ...r, calendar };
     } },
   { name: 'shift_cancel', kind: 'write', danger: 'normal', auto: (a) => a.confirmed === true, enabled: brainConfigured,   // by voice: an approval card; the screen's own ✕ button (confirmed:true, after its own confirm dialog) needs none
@@ -676,7 +677,7 @@ export const TOOLS = [
       const classes = await classEvents(sum.month), classNote = classes.length ? `履修の授業（${classes.length}コマ分）も予定として扱っています` : '';
       if (!googleConfigured()) return { ...sum, calendarDays: classes.length ? classifyDays({ month: sum.month, events: classes, shifts: sum.shifts }) : {}, calendarNote: ['Googleカレンダーが未接続のため、予定の色分けはできません', classNote].filter(Boolean).join('／') };
       try {
-        const [y, m] = sum.month.split('-').map(Number), t0 = Date.parse(`${sum.month}-01T00:00:00+09:00`), t1 = Date.parse(`${m === 12 ? y + 1 : y}-${String(m === 12 ? 1 : m + 1).padStart(2, '0')}-01T00:00:00+09:00`), step = 7 * 864e5, parts = [];
+        const [y, m] = sum.month.split('-').map(Number), t0 = startOfLocalDay(`${sum.month}-01`, tz()), t1 = startOfLocalDay(`${m === 12 ? y + 1 : y}-${String(m === 12 ? 1 : m + 1).padStart(2, '0')}-01`, tz()), step = 7 * 864e5, parts = [];
         for (let t = t0; t < t1; t += step) parts.push(TOOL_MAP.calendar_list_events.run({ timeMin: new Date(t).toISOString(), timeMax: new Date(Math.min(t + step, t1)).toISOString(), maxResults: 50 }));
         const events = (await Promise.all(parts)).flatMap((r) => r.events || []);
         const uniq = [...new Map(events.map((e) => [`${e.id}|${e.start}`, e])).values()];
@@ -697,7 +698,7 @@ export const TOOLS = [
       if (need == null) throw new Error('目標が決まっていません（「今月は〇円稼ぎたい」のように目標を教えてください。時間で言ってもよいです）');
       const shifts = await readShifts(month); let busy = [], calendarUsed = false, calendarNote = '';
       if (googleConfigured()) {
-        try { const t0 = Date.parse(`${month}-01T00:00:00+09:00`), [y, m] = month.split('-').map(Number), t1 = Date.parse(`${m === 12 ? y + 1 : y}-${String(m === 12 ? 1 : m + 1).padStart(2, '0')}-01T00:00:00+09:00`);
+        try { const t0 = startOfLocalDay(`${month}-01`, tz()), [y, m] = month.split('-').map(Number), t1 = startOfLocalDay(`${m === 12 ? y + 1 : y}-${String(m === 12 ? 1 : m + 1).padStart(2, '0')}-01`, tz());
           const r = await TOOL_MAP.calendar_list_events.run({ timeMin: new Date(t0).toISOString(), timeMax: new Date(t1).toISOString(), maxResults: 50 });
           busy = (r.events || []).filter((e) => e.start && String(e.start).includes('T')).map((e) => ({ start: e.start, end: e.end })); calendarUsed = true;
           if ((r.events || []).length >= 50) calendarNote = 'カレンダーの予定が多いため、先頭50件までを見て作りました'; } catch (e) { calendarNote = `カレンダーを読めなかったため、予定を考慮していません（${String(e.message || e).slice(0, 60)}）`; }
@@ -762,7 +763,7 @@ export const TOOLS = [
     schema: S({ days: num('日数（1〜14、既定7）'), dayStart: num('空き時間を探す開始時刻（時、既定9）'), dayEnd: num('終了時刻（時、既定19）'), minSlotMinutes: num('空き枠の最小の長さ（分、既定60）') }),
     async run({ days, dayStart, dayEnd, minSlotMinutes }) {
       const n = Math.max(1, Math.min(14, Math.round(days || 7))), now = Date.now();
-      const today0 = Date.parse(new Date(now + 9 * 3600e3).toISOString().slice(0, 10) + 'T00:00:00Z') - 9 * 3600e3;
+      const today0 = startOfLocalDay(localDate(now, tz()), tz());
       const r = await gfetch('calendar', '/calendars/primary/events', { query: { timeMin: new Date(today0).toISOString(), timeMax: new Date(today0 + n * 864e5).toISOString(), singleEvents: true, orderBy: 'startTime', maxResults: 250, timeZone: tz() } });
       return analyzeSchedule(r.items || [], { nowMs: now, days: n, dayStart: dayStart ?? 9, dayEnd: dayEnd ?? 19, minSlot: minSlotMinutes ?? 60 });
     } },

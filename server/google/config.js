@@ -1,14 +1,15 @@
 // Google integration config. Secrets only from the environment (never in Git, never sent to the browser).
 //   GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN   (see docs/GOOGLE_INTEGRATION.md)
-//   GOOGLE_TIMEZONE   default Asia/Tokyo
+//   GOOGLE_TIMEZONE   default: the profile's time zone
 //   GOOGLE_API_MOCK_ORIGIN  (tests only) send every Google call to this origin instead
 import { cfgEnv } from '../config/resolve.js';
+import { TZ } from '../profile/index.js';
 export function googleConfig(env = cfgEnv) {
   return {
     clientId: env.GOOGLE_CLIENT_ID || '',
     clientSecret: env.GOOGLE_CLIENT_SECRET || '',
     refreshToken: env.GOOGLE_REFRESH_TOKEN || '',
-    timeZone: env.GOOGLE_TIMEZONE || 'Asia/Tokyo',
+    timeZone: env.GOOGLE_TIMEZONE || TZ(),
     mock: env.GOOGLE_API_MOCK_ORIGIN || '',
   };
 }

@@ -4,10 +4,11 @@
 // on the phone, and pasted card/bank CSV text.
 import crypto from 'node:crypto';
 import { brainReadRaw, brainWrite, brainRepoIsPrivate, brainConfigured } from './brain.js';
-import { U } from './profile/index.js';
+import { U, TZ } from './profile/index.js';
+import { localDate } from '../shared/tz.js';
 
-const JST = 9 * 3600e3, DAY = 864e5;
-const jstDate = (ms) => new Date(ms + JST).toISOString().slice(0, 10);
+const DAY = 864e5;
+const tzDate = (ms) => localDate(ms, TZ());
 const yen = (n) => `¥${Math.round(Math.abs(n)).toLocaleString('ja-JP')}`;
 export const CATEGORIES = ['食費', '日用品', '交通', '住居', '光熱費', '通信', 'サブスク', '医療', '衣服・美容', '趣味・娯楽', '交際費', '教育', '保険・税金', '貯蓄・投資', 'その他', '収入'];
 
@@ -56,10 +57,10 @@ const idFor = (e, n) => crypto.createHash('sha1').update(`${e.date}|${e.amount}|
 const rowOf = (e) => `| ${e.id} | ${e.date} | ${e.amount} | ${cell(e.category)} | ${cell(e.description)} | ${cell(e.method)} | ${cell(e.source)} | ${cell(e.note)} |`;
 
 const pick = (o, keys) => { for (const k of keys) if (o && o[k] !== undefined && o[k] !== null && o[k] !== '') return o[k]; return undefined; };
-/** "今日" / "昨日" / "一昨日" / "3日前" / "11月3日" / "11/3" / "2026年11月3日" / "2026-11-03" → YYYY-MM-DD (JST), or null. Pure (tested). */
+/** "今日" / "昨日" / "一昨日" / "3日前" / "11月3日" / "11/3" / "2026年11月3日" / "2026-11-03" → YYYY-MM-DD (owner's time zone), or null. Pure (tested). */
 export function parseDateWord(w, nowMs = Date.now()) {
   const t = String(w ?? '').trim(); if (!t) return null;
-  const today = jstDate(nowMs), back = (n) => jstDate(nowMs - n * DAY);
+  const today = tzDate(nowMs), back = (n) => tzDate(nowMs - n * DAY);
   if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
   if (/^(今日|きょう|本日)$/.test(t)) return today; if (/^(昨日|きのう)$/.test(t)) return back(1); if (/^(一昨日|おととい)$/.test(t)) return back(2);
   let m = t.match(/^(\d{1,2})日前$/); if (m) return back(Number(m[1]));
@@ -67,13 +68,13 @@ export function parseDateWord(w, nowMs = Date.now()) {
   return null;
 }
 
-/** Normalises what the owner / a parser / a voice model gave (several key spellings are accepted): sign (expense = negative), date (JST today if missing), category (classified if missing). Pure (tested). */
+/** Normalises what the owner / a parser / a voice model gave (several key spellings are accepted): sign (expense = negative), date (today in the owner's time zone if missing), category (classified if missing). Pure (tested). */
 export function normalizeEntry(raw, { nowMs = Date.now(), learned = [], source = '声' } = {}) {
   const description = cell(pick(raw, ['description', 'desc', '内容', 'name', 'item', 'store', 'shop', 'merchant', 'memo', 'title', '店', '用途']) || '').slice(0, 80);
   let amount = Math.round(Number(String(pick(raw, ['amount', 'price', '金額', 'cost', 'yen', '円']) ?? '').replace(/[,，円¥￥\s]/g, '')));
   if (!Number.isFinite(amount) || amount === 0) throw new Error('金額が分かりません');
   if (!description) throw new Error('内容（何に使ったか）が分かりません');
-  const dw = pick(raw, ['date', '日付']), date = parseDateWord(dw, nowMs) || jstDate(nowMs);
+  const dw = pick(raw, ['date', '日付']), date = parseDateWord(dw, nowMs) || tzDate(nowMs);
   const catIn = pick(raw, ['category', 'カテゴリ']);
   let category = CATEGORIES.includes(catIn) ? catIn : classify(description, learned);
   const income = category === '収入' || raw?.income === true || raw?.income === 'true';
@@ -112,7 +113,7 @@ export async function addEntries(list, { nowMs = Date.now(), source = '声', ded
 /** Removes one entry by id (the file is rewritten; git history keeps the old version). */
 export async function cancelEntry(id, month) {
   await guardPrivate();
-  const months = month ? [month] : [jstDate(Date.now()).slice(0, 7), jstDate(Date.now() - 31 * DAY).slice(0, 7)];
+  const months = month ? [month] : [tzDate(Date.now()).slice(0, 7), tzDate(Date.now() - 31 * DAY).slice(0, 7)];
   for (const m of months) {
     const text = await brainReadRaw(pathOf(m)).catch(() => null); if (!text) continue;
     const lines = text.split('\n'); const i = lines.findIndex((l) => new RegExp(`^\\|\\s*${id}\\s*\\|`).test(l));
@@ -125,7 +126,7 @@ export async function cancelEntry(id, month) {
 /** Changes one entry (by id; with no id, the most recent one). Only the given fields change; the month file is rewritten (git history keeps the old version). */
 export async function updateEntry({ id, patch = {}, nowMs = Date.now() }) {
   await guardPrivate();
-  const months = [jstDate(nowMs).slice(0, 7), jstDate(nowMs - 31 * DAY).slice(0, 7)];
+  const months = [tzDate(nowMs).slice(0, 7), tzDate(nowMs - 31 * DAY).slice(0, 7)];
   let found = null;
   for (const m of months) {
     const text = await brainReadRaw(pathOf(m)).catch(() => null); if (!text) continue;
@@ -160,7 +161,7 @@ export async function addAsset({ name, amount, kind = '資産', date, nowMs = Da
   await guardPrivate();
   const n = Math.round(Number(String(amount).replace(/[,，円¥￥\s]/g, ''))); if (!Number.isFinite(n)) throw new Error('金額が分かりません');
   const nm = cell(name).slice(0, 40); if (!nm) throw new Error('名前（預金・現金・投資など）が分かりません');
-  const k = kind === '負債' ? '負債' : '資産', d = /^\d{4}-\d{2}-\d{2}$/.test(String(date || '')) ? date : jstDate(nowMs);
+  const k = kind === '負債' ? '負債' : '資産', d = /^\d{4}-\d{2}-\d{2}$/.test(String(date || '')) ? date : tzDate(nowMs);
   const exists = await brainReadRaw('家計/資産.md').catch(() => null);
   await brainWrite({ path: '家計/資産.md', content: (exists ? '' : '# 資産の記録\n\n残高を記録した日ごとの値です（円）。負債はプラスの金額で、種別を「負債」にします。\n\n| 日付 | 名前 | 種別 | 金額 |\n|---|---|---|---|\n') + `| ${d} | ${nm} | ${k} | ${Math.abs(n)} |`, mode: 'append' });
   return { name: nm, kind: k, amount: Math.abs(n), date: d };
@@ -190,7 +191,7 @@ export async function setSubscription({ name, monthly, day, action = 'add', nowM
   let m = Math.round(Number(String(monthly ?? '').replace(/[,，円¥￥\s]/g, '')));
   if (action === 'cancel') m = old?.monthly || (Number.isFinite(m) && m > 0 ? m : 0);
   else if (!Number.isFinite(m) || m <= 0) throw new Error('月額が分かりません');
-  const d = Math.max(1, Math.min(31, Math.round(Number(day) || old?.day || Number(jstDate(nowMs).slice(8)))));
+  const d = Math.max(1, Math.min(31, Math.round(Number(day) || old?.day || Number(tzDate(nowMs).slice(8)))));
   const exists = await brainReadRaw('家計/サブスク.md').catch(() => null);
   await brainWrite({ path: '家計/サブスク.md', content: (exists ? '' : '# サブスクリプション\n\n' + U() + 'が登録したサブスクです（月額は円、支払日は毎月の日にち）。同じ名前の最後の行が有効で、「解約」にすると一覧から消えます。\n\n| 名前 | 月額 | 支払日 | 状態 |\n|---|---|---|---|\n') + `| ${nm} | ${m} | ${d} | ${action === 'cancel' ? '解約' : '契約中'} |`, mode: 'append' });
   return { name: nm, monthly: m, day: d, status: action === 'cancel' ? '解約' : '契約中', changed: !!old };
@@ -212,8 +213,8 @@ export function findSubscriptions(entries, nowMs = Date.now()) {
     const days = similar.map((e) => Number(e.date.slice(8))), spread = Math.max(...days) - Math.min(...days);
     const recurring = sm.length >= 2 && spread <= 4, tagged = list.some((e) => e.category === 'サブスク');
     if (!recurring && !(tagged && sm.length >= 1)) continue;
-    const day = Math.round(days.reduce((a, b) => a + b, 0) / days.length), ym = jstDate(nowMs).slice(0, 7);
-    let next = `${ym}-${String(Math.min(day, daysIn(ym))).padStart(2, '0')}`; if (next < jstDate(nowMs)) { const d = new Date(Date.UTC(+ym.slice(0, 4), +ym.slice(5) , 1)); const nm = d.toISOString().slice(0, 7); next = `${nm}-${String(Math.min(day, daysIn(nm))).padStart(2, '0')}`; }
+    const day = Math.round(days.reduce((a, b) => a + b, 0) / days.length), ym = tzDate(nowMs).slice(0, 7);
+    let next = `${ym}-${String(Math.min(day, daysIn(ym))).padStart(2, '0')}`; if (next < tzDate(nowMs)) { const d = new Date(Date.UTC(+ym.slice(0, 4), +ym.slice(5) , 1)); const nm = d.toISOString().slice(0, 7); next = `${nm}-${String(Math.min(day, daysIn(nm))).padStart(2, '0')}`; }
     subs.push({ name: last.description, monthly: amt, annual: amt * 12, day, nextDate: next, months: sm.length, category: last.category, group: (SERVICE_GROUP.find(([, re]) => re.test(last.description)) || [])[0] || null });
   }
   return subs.sort((a, b) => b.monthly - a.monthly);
@@ -224,21 +225,21 @@ export function summarize({ month, entries = [], history = [], budget = {}, asse
   const exp = entries.filter((e) => e.amount < 0), income = entries.filter((e) => e.amount > 0).reduce((a, e) => a + e.amount, 0);
   const spent = exp.reduce((a, e) => a - e.amount, 0), byCat = {}; for (const e of exp) byCat[e.category] = (byCat[e.category] || 0) + -e.amount;
   const cats = Object.entries(byCat).sort((a, b) => b[1] - a[1]).map(([category, amount]) => ({ category, amount, share: spent ? Math.round((amount / spent) * 100) : 0 }));
-  const cur = month === jstDate(nowMs).slice(0, 7), dim = daysIn(month), elapsed = cur ? Math.max(1, Number(jstDate(nowMs).slice(8))) : dim;
+  const cur = month === tzDate(nowMs).slice(0, 7), dim = daysIn(month), elapsed = cur ? Math.max(1, Number(tzDate(nowMs).slice(8))) : dim;
   const projected = cur ? Math.round((spent / elapsed) * dim) : spent;
   const bStatus = (spentX, b) => ({ budget: b, spent: spentX, remaining: b - spentX, pct: b ? Math.round((spentX / b) * 100) : null, state: !b ? '予算なし' : spentX >= b ? '超過' : spentX >= b * 0.8 ? '注意' : '順調' });
   const budgets = Object.entries(budget).filter(([k]) => k !== '合計').map(([category, b]) => ({ category, ...bStatus(byCat[category] || 0, b) })).sort((a, b) => (b.pct ?? 0) - (a.pct ?? 0));
   const total = budget['合計'] != null ? { ...bStatus(spent, budget['合計']), projected, projectedOver: cur && projected > budget['合計'], dailyAllowance: cur ? Math.max(0, Math.round((budget['合計'] - spent) / Math.max(1, dim - elapsed + 1))) : null } : null;
   // subscriptions (this month + history)
   const manualKey = new Set(manualSubs.map((m) => normDesc(m.name)));
-  const nextOf = (day) => { const ym = jstDate(nowMs).slice(0, 7); let n = `${ym}-${String(Math.min(day, daysIn(ym))).padStart(2, '0')}`; if (n < jstDate(nowMs)) { const nm = new Date(Date.UTC(+ym.slice(0, 4), +ym.slice(5), 1)).toISOString().slice(0, 7); n = `${nm}-${String(Math.min(day, daysIn(nm))).padStart(2, '0')}`; } return n; };
+  const nextOf = (day) => { const ym = tzDate(nowMs).slice(0, 7); let n = `${ym}-${String(Math.min(day, daysIn(ym))).padStart(2, '0')}`; if (n < tzDate(nowMs)) { const nm = new Date(Date.UTC(+ym.slice(0, 4), +ym.slice(5), 1)).toISOString().slice(0, 7); n = `${nm}-${String(Math.min(day, daysIn(nm))).padStart(2, '0')}`; } return n; };
   const subs = [...findSubscriptions([...history, ...entries], nowMs).filter((x) => !manualKey.has(normDesc(x.name))),
     ...manualSubs.filter((m) => m.status === '契約中').map((m) => ({ name: m.name, monthly: m.monthly, annual: m.monthly * 12, day: m.day, nextDate: nextOf(m.day), months: 0, category: 'サブスク', group: (SERVICE_GROUP.find(([, re]) => re.test(m.name)) || [])[0] || null, manual: true }))].sort((a, b) => b.monthly - a.monthly);
   const subTotal = subs.reduce((a, s) => a + s.monthly, 0);
   // assets: latest balance per name
   const latest = new Map(); for (const a of [...assets].sort((x, y) => x.date.localeCompare(y.date))) latest.set(`${a.kind}:${a.name}`, a);
   const assetList = [...latest.values()], assetTotal = assetList.filter((a) => a.kind === '資産').reduce((s, a) => s + a.amount, 0), debtTotal = assetList.filter((a) => a.kind === '負債').reduce((s, a) => s + a.amount, 0);
-  const netNow = assetTotal - debtTotal, cutoff = jstDate(nowMs - 25 * DAY), older = new Map(); for (const a of [...assets].sort((x, y) => x.date.localeCompare(y.date))) if (a.date <= cutoff) older.set(`${a.kind}:${a.name}`, a);
+  const netNow = assetTotal - debtTotal, cutoff = tzDate(nowMs - 25 * DAY), older = new Map(); for (const a of [...assets].sort((x, y) => x.date.localeCompare(y.date))) if (a.date <= cutoff) older.set(`${a.kind}:${a.name}`, a);
   const olderList = [...older.values()], netBefore = olderList.length ? olderList.filter((a) => a.kind === '資産').reduce((s, a) => s + a.amount, 0) - olderList.filter((a) => a.kind === '負債').reduce((s, a) => s + a.amount, 0) : null;
   // suggestions (deterministic; each with a rough monthly yen where it can be stated)
   const suggestions = [];
@@ -253,7 +254,7 @@ export function summarize({ month, entries = [], history = [], budget = {}, asse
   for (const b of budgets) if (b.state === '超過') suggestions.push({ text: `${b.category}が予算を${yen(-b.remaining)}超えています（${yen(b.spent)} / ${yen(b.budget)}）`, monthlyYen: -b.remaining, kind: 'over-budget' });
   suggestions.sort((a, b) => b.monthlyYen - a.monthlyYen);
   return {
-    month, today: jstDate(nowMs), spent, income, balance: income - spent, count: exp.length, categories: cats, budgetTotal: total, budgets, projected, subscriptions: subs, subscriptionMonthly: subTotal,
+    month, today: tzDate(nowMs), spent, income, balance: income - spent, count: exp.length, categories: cats, budgetTotal: total, budgets, projected, subscriptions: subs, subscriptionMonthly: subTotal,
     assets: { list: assetList, assetTotal, debtTotal, net: netNow, netBefore, change: netBefore == null ? null : netNow - netBefore }, suggestions: suggestions.slice(0, 8),
     note: '金額・割合・予測は、記録された支出から計算した値です。月末の予測は、これまでの1日あたりの支出を月の日数に延ばした目安です。記録が少ないほど、不正確になります',
   };
@@ -263,13 +264,13 @@ const lastMonths = (m, n) => { const [y, mo] = m.split('-').map(Number); return 
 
 /** The same shape as a real summary, with nothing in it: the screen can always draw every card and chart (also before anything is set up). */
 export function emptySummary({ month, nowMs = Date.now(), unconfigured = false } = {}) {
-  const m = /^\d{4}-\d{2}$/.test(String(month || '')) ? month : jstDate(nowMs).slice(0, 7);
+  const m = /^\d{4}-\d{2}$/.test(String(month || '')) ? month : tzDate(nowMs).slice(0, 7);
   return { ...summarize({ month: m, nowMs }), recent: [], monthly: lastMonths(m, 6).reverse().map((mm) => ({ month: mm, spent: 0 })), empty: true, unconfigured };
 }
 
 /** Reads the notes and builds the summary for `month` (default: this month). Never throws just because nothing is recorded or the vault is not set up. */
 export async function financeSummary({ month, nowMs = Date.now() } = {}) {
-  const m = /^\d{4}-\d{2}$/.test(String(month || '')) ? month : jstDate(nowMs).slice(0, 7);
+  const m = /^\d{4}-\d{2}$/.test(String(month || '')) ? month : tzDate(nowMs).slice(0, 7);
   if (!brainConfigured()) return emptySummary({ month: m, nowMs, unconfigured: true });
   const prior = lastMonths(m, 6).slice(1);
   let entries, hist, budgetText, assetText, subText;
@@ -289,7 +290,7 @@ export function splitCsvLine(line) {
   out.push(cur.trim()); return out;
 }
 export function parseCsv(text, { nowMs = Date.now() } = {}) {
-  const rows = []; const y0 = Number(jstDate(nowMs).slice(0, 4));
+  const rows = []; const y0 = Number(tzDate(nowMs).slice(0, 4));
   for (const line of String(text || '').split(/\r?\n/)) {
     const cols = splitCsvLine(line); if (cols.length < 2) continue;
     const dm = cols.map((c) => c.match(/^(\d{4})[/.-](\d{1,2})[/.-](\d{1,2})$/) || c.match(/^(\d{1,2})[/月](\d{1,2})日?$/)).find(Boolean); if (!dm) continue;

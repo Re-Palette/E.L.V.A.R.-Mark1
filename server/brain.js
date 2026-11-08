@@ -1,7 +1,8 @@
 // "Second brain": a Markdown vault (Obsidian-compatible) stored in a private GitHub repo, read/written through the GitHub Contents API.
 // Env: BRAIN_GITHUB_TOKEN (fine-grained PAT, Contents: read/write on that one repo), BRAIN_REPO ("owner/name"), BRAIN_BRANCH (default main), BRAIN_DIR (optional subfolder).
 // Safety: only .md files inside the vault, no path tricks, no delete operation exists, every change is a git commit (full history, nothing is lost).
-import { U, AS } from './profile/index.js';
+import { U, AS, TZ } from './profile/index.js';
+import { localDate, localHM } from '../shared/tz.js';
 import { env } from './config/resolve.js';
 const API = 'https://api.github.com';
 const trunc = (s, n) => { s = String(s ?? ''); return s.length > n ? s.slice(0, n) + '…' : s; };
@@ -313,11 +314,11 @@ export function projectName(name) {
   if (!n) throw new Error('プロジェクト名が空です');
   return n;
 }
-const todayJst = () => new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
+const todayLocal = () => localDate(Date.now(), TZ());
 
 /** Creates プロジェクト/<名前>/ with three starter notes (overview, idea memo, progress log) and links it from the index. Refuses to overwrite. */
 export async function brainCreateProject({ name, summary = '', idea = '', trigger = '', nextSteps = [], related = [] }) {
-  const n = projectName(name), dir = `プロジェクト/${n}`, d = todayJst();
+  const n = projectName(name), dir = `プロジェクト/${n}`, d = todayLocal();
   const overviewPath = `${dir}/00_概要.md`;
   if (await getFile(cleanPath(overviewPath))) return { created: false, exists: true, folder: dir, path: overviewPath, message: `「${n}」というプロジェクトは、すでにあります。そこに追記します` };
   const bullets = (arr) => (arr || []).map((x) => String(x).trim()).filter(Boolean).slice(0, 12);
@@ -355,7 +356,7 @@ export async function brainAppendConversation({ turns }) {
   if (!(await repoIsPrivate())) throw new Error('第二の脳のリポジトリが公開になっているため、会話は記録しません（プライベートにしてください）');
   const byDate = new Map();
   for (const t of turns.slice(0, 60)) {
-    const at = Number.isFinite(+t?.at) ? +t.at : Date.now(), d = new Date(at + 9 * 3600e3), date = d.toISOString().slice(0, 10), hm = d.toISOString().slice(11, 16);
+    const at = Number.isFinite(+t?.at) ? +t.at : Date.now(), date = localDate(at, TZ()), hm = localHM(at, TZ());
     const user = redactSecrets(String(t?.user || '').trim().slice(0, 1500)), model = redactSecrets(String(t?.model || '').trim().slice(0, 2500));
     if (!user && !model) continue;
     const lines = [`### ${hm}`]; if (user) lines.push(`- **${U()}**：${user.replace(/\n+/g, ' ')}`); if (model) lines.push(`- **${AS()}**：${model.replace(/\n+/g, ' ')}`);
@@ -401,7 +402,7 @@ export async function brainProjectAdd({ project, kind = 'やること', text }) 
   const name = projectName(project), t = String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, 500); if (t.length < 2) throw new Error('内容が分かりません');
   const dir = `プロジェクト/${name}`;
   if (!(await getFile(cleanPath(`${dir}/00_概要.md`)))) throw new Error(`プロジェクト「${name}」が見つかりません（新しく作る場合は、プロジェクトの作成から）`);
-  const d = todayJst(), K = { アイデア: ['01_アイデアメモ.md', `- ${d} ${t}`, '# アイデアメモ'], 進捗: ['02_進捗ログ.md', `- ${d} ${t}`, '# 進捗ログ'], やること: ['03_やること.md', `- [ ] ${t}`, '# やること'] }[kind];
+  const d = todayLocal(), K = { アイデア: ['01_アイデアメモ.md', `- ${d} ${t}`, '# アイデアメモ'], 進捗: ['02_進捗ログ.md', `- ${d} ${t}`, '# 進捗ログ'], やること: ['03_やること.md', `- [ ] ${t}`, '# やること'] }[kind];
   if (!K) throw new Error('種類は アイデア / 進捗 / やること のどれかです');
   const path = `${dir}/${K[0]}`, exists = await getFile(cleanPath(path));
   await brainWrite({ path, content: (exists ? '' : `${K[2]}\n\n`) + K[1], mode: 'append' });

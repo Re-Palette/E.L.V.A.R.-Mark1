@@ -1,8 +1,10 @@
 // Local API-usage ledger (this device only): Gemini Live time, tool calls per day, and the real quotas some APIs report back (Groq).
-// Stored in localStorage, JST days, last 14 days kept. Nothing here is sent anywhere except what the owner asks the assistant to report.
+// Stored in localStorage, local-time days, last 14 days kept. Nothing here is sent anywhere except what the owner asks the assistant to report.
+import { timeZone } from './brand.js';
+import { localDate, localParts } from '../../shared/tz.js';
 const KEY = 'elvar_usage_v1';
-const jstDay = (d = new Date()) => new Date(d.getTime() + 9 * 3600e3).toISOString().slice(0, 10);
-const jstFracOfDay = (d = new Date()) => { const t = new Date(d.getTime() + 9 * 3600e3); return (t.getUTCHours() * 3600 + t.getUTCMinutes() * 60 + t.getUTCSeconds()) / 86400; };
+const jstDay = (d = new Date()) => localDate(d.getTime(), timeZone());
+const jstFracOfDay = (d = new Date()) => { const t = localParts(d.getTime(), timeZone()); return (t.hour * 3600 + t.minute * 60 + t.second) / 86400; };
 
 function load() { try { const j = JSON.parse(localStorage.getItem(KEY) || '{}'); return j && typeof j === 'object' ? j : {}; } catch { return {}; } }
 function save(j) { try { localStorage.setItem(KEY, JSON.stringify(j)); } catch {} }

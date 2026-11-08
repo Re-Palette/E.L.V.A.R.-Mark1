@@ -57,6 +57,7 @@ export default defineConfig({
   worker: { format: 'es' },   // the file-reading worker lazy-loads pdfjs (code splitting needs ES workers)
   server: {
     port: 5173,
+    fs: { allow: ['..'] },   // ../shared (tz, profile schema) is imported by the app
     proxy: { '/api': 'http://localhost:8787' },
   },
   build: { outDir: 'dist', emptyOutDir: true },

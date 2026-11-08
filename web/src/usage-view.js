@@ -3,6 +3,8 @@
 // Data = the local ledger (usage.js) + the budgets the server reports (usage_report). Honest: the limits are the app's own estimates except Groq's,
 // and the PC and the phone are counted separately. Same look as the other screens (.vf-* styles come from finance-view.js).
 import { usage, buildReport } from './usage.js';
+import { timeZone } from './brand.js';
+import { localDate } from '../../shared/tz.js';
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const GREEN = '#5ee08a', AMBER = '#ffb347', RED = '#ff6b6b', CYAN = '#19d3ff';
 const CSS = `
@@ -22,7 +24,7 @@ const CSS = `
 `;
 const lvlColor = (pct) => (pct >= 90 ? RED : pct >= 70 ? AMBER : GREEN);
 const lvlText = (pct) => (pct >= 90 ? '危険' : pct >= 70 ? '注意' : '余裕あり');
-const jstDay = (ms) => new Date(ms + 9 * 3600e3).toISOString().slice(0, 10);
+const jstDay = (ms) => localDate(ms, timeZone());
 
 /** Pure (tested): the last `n` days (oldest first, today last) from the ledger → [{ day, liveMinutes, liveSessions, calls, tools }]. Missing days are zeros. */
 export function dayRows(raw, n = 14, nowMs = Date.now()) {

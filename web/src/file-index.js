@@ -1,4 +1,5 @@
-import { ownerAddress } from './brand.js';
+import { ownerAddress, timeZone } from './brand.js';
+import { localDate, localParts, localWeekday, startOfLocalDay, addDays } from '../../shared/tz.js';
 // ファイルの「記憶」: the pure logic that turns extracted text into an index (keywords, snippet, kind guess, dates, amounts), tells files apart
 // (exact duplicates by SHA-256, near-duplicates / new versions by name + keyword similarity), searches them and hands text to the model in
 // approved chunks. No DOM, no IndexedDB, no network: everything here runs on this device (tested in test/files-memory.test.mjs).
@@ -218,27 +219,30 @@ export function findNearDuplicate({ name, keywords, sha256 }, files, indexes) {
   return best;
 }
 
-// ---------------------------------------------------------------- date words in a request (JST)
-const JST = 9 * 3600e3;
-const dayStart = (ms) => Math.floor((ms + JST) / 86400e3) * 86400e3 - JST;
+// ---------------------------------------------------------------- date words in a request (owner's time zone)
+const dayStart = (ms) => startOfLocalDay(localDate(ms, timeZone()), timeZone());
+// First instant of month `mm` (0-based, may overflow into neighbouring years) of year `yy` in the owner's time zone.
+const monthStart = (yy, mm) => { const d = new Date(Date.UTC(yy, mm, 1)); return startOfLocalDay(`${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-01`, timeZone()); };
+const mondayOf = (todayMs) => startOfLocalDay(addDays(localDate(todayMs, timeZone()), -((localWeekday(todayMs, timeZone()) + 6) % 7)), timeZone());
+const plusDays = (ms, n) => startOfLocalDay(addDays(localDate(ms, timeZone()), n), timeZone());
 /** 「先月のレポート」 -> { range:{from,to,label}, rest:'レポート' }; no date word -> range null. `to` is exclusive. */
 export function parseDateQuery(q, now = Date.now()) {
   let t = String(q ?? '').normalize('NFKC'), range = null;
-  const today = dayStart(now), d = new Date(now + JST), y = d.getUTCFullYear(), mo = d.getUTCMonth();
-  const monthRange = (yy, mm, label) => ({ from: Date.UTC(yy, mm, 1) - JST, to: Date.UTC(yy, mm + 1, 1) - JST, label });
+  const today = dayStart(now), lp = localParts(now, timeZone()), y = lp.year, mo = lp.month - 1;
+  const monthRange = (yy, mm, label) => ({ from: monthStart(yy, mm), to: monthStart(yy, mm + 1), label });
   const take = (re, f) => { const m = re.exec(t); if (m && !range) { range = f(m); t = t.replace(re, ' '); } };
   take(/(先々月|せんせんげつ)(の)?/, () => monthRange(y, mo - 2, '先々月'));
   take(/(先月|せんげつ)(の)?/, () => monthRange(y, mo - 1, '先月'));
   take(/(今月|こんげつ)(の)?/, () => monthRange(y, mo, '今月'));
-  take(/(昨日|きのう)(の)?/, () => ({ from: today - 86400e3, to: today, label: '昨日' }));
-  take(/(今日|きょう)(の)?/, () => ({ from: today, to: today + 86400e3, label: '今日' }));
-  take(/(先週|せんしゅう)(の)?/, () => { const dow = new Date(today + JST).getUTCDay(), mon = today - ((dow + 6) % 7) * 86400e3; return { from: mon - 7 * 86400e3, to: mon, label: '先週' }; });
-  take(/(今週|こんしゅう)(の)?/, () => { const dow = new Date(today + JST).getUTCDay(), mon = today - ((dow + 6) % 7) * 86400e3; return { from: mon, to: mon + 7 * 86400e3, label: '今週' }; });
-  take(/(去年|昨年)(の)?/, () => ({ from: Date.UTC(y - 1, 0, 1) - JST, to: Date.UTC(y, 0, 1) - JST, label: '去年' }));
+  take(/(昨日|きのう)(の)?/, () => ({ from: plusDays(today, -1), to: today, label: '昨日' }));
+  take(/(今日|きょう)(の)?/, () => ({ from: today, to: plusDays(today, 1), label: '今日' }));
+  take(/(先週|せんしゅう)(の)?/, () => { const mon = mondayOf(today); return { from: plusDays(mon, -7), to: mon, label: '先週' }; });
+  take(/(今週|こんしゅう)(の)?/, () => { const mon = mondayOf(today); return { from: mon, to: plusDays(mon, 7), label: '今週' }; });
+  take(/(去年|昨年)(の)?/, () => ({ from: monthStart(y - 1, 0), to: monthStart(y, 0), label: '去年' }));
   take(/(?<![\d年])(\d{1,2})月(?!\d*日)(の|分)?/, (m) => { const mm = Number(m[1]) - 1; if (mm < 0 || mm > 11) return null; const yy = mm > mo ? y - 1 : y; return monthRange(yy, mm, `${m[1]}月`); });
   return { range, rest: t.replace(/\s+/g, ' ').trim() };
 }
-const isoMs = (iso) => { const m = /^(\d{4})-(\d{2})(?:-(\d{2}))?$/.exec(iso); return m ? Date.UTC(+m[1], +m[2] - 1, +(m[3] || 1)) - JST : NaN; };
+const isoMs = (iso) => { const m = /^(\d{4})-(\d{2})(?:-(\d{2}))?$/.exec(iso); return m ? startOfLocalDay(`${m[1]}-${m[2]}-${m[3] || '01'}`, timeZone()) : NaN; };
 /** Is the file "from" that period? Counts the day it was added and dates written in it. */
 export function fileInRange(file, ix, range) {
   if (!range) return true;
@@ -356,7 +360,7 @@ export async function gatedRead({ file, ix, part = 1, granted, ask, load, size =
 
 // ---------------------------------------------------------------- the second-brain note (summary + metadata, NOT the full text)
 export function indexNote(file, ix, { text = '', fullTextMax = 12000, now = Date.now() } = {}) {
-  const d = new Date(now + JST).toISOString().slice(0, 10);
+  const d = localDate(now, timeZone());
   const base = String(file.name).replace(/\.[A-Za-z0-9]{1,8}$/, '').replace(/[/\\#[\]^|:*?"<>]/g, '_').replace(/\.{2,}/g, '_').trim().slice(0, 60) || 'ファイル';
   const kind = kindOf(ix), L = [`# ${base}`, '', `- ファイル：${file.name}（この端末のファイル一覧にあります）`, `- 種類：${kind}`, `- 保存日：${d}`];
   if (ix?.tags?.length) L.push(`- タグ：${ix.tags.map((t) => '#' + t).join(' ')}`);

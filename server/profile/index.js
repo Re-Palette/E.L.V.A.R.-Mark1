@@ -10,3 +10,5 @@ export const U = () => currentVars().U;
 export const UR = () => currentVars().UR;
 export const A = () => currentVars().A;
 export const AS = () => currentVars().AS;
+/** The owner's time zone (IANA id) for the current request. */
+export const TZ = () => currentProfile().locale?.timeZone || 'Asia/Tokyo';

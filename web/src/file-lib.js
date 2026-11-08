@@ -7,6 +7,8 @@ export const LIMITS = { perFile: 60 * MB, total: 600 * MB, previewText: 200 * 10
 /** How much of a big file is read for the "memory" (index). Beyond these caps the text is cut and the screen says so. */
 export const EXTRACT = { textBytes: 2 * MB, textChars: 2 * MB, pdfPages: 300, xlsxRows: 500, xlsxSheets: 20, pptxSlides: 300, entryBytes: 24 * MB, imageHead: 256 * 1024 };
 import { searchFiles, parseDateQuery, fileInRange, kindFromQuery } from './file-index.js';
+import { timeZone } from './brand.js';
+import { localParts, localDate, localHM } from '../../shared/tz.js';
 
 const EXT = {
   pdf: { kind: 'pdf', mime: 'application/pdf', label: 'PDF' },
@@ -136,7 +138,7 @@ export function matchFiles(files, query, { lastDocId = null, minScore = 0.45, in
 /** Short, distinct button labels for the choice card (the label comes back as the owner's answer, so duplicates get the date). */
 export function choiceLabels(items) {
   const names = items.map((x) => x.file.name), dup = (n) => names.filter((m) => m === n).length > 1;
-  return items.map((x) => { let l = x.file.name; if (dup(l)) { const d = new Date((x.file.addedAt || 0) + 9 * 3600e3); l = `${l.slice(0, 16)}(${d.getUTCMonth() + 1}/${d.getUTCDate()})`; } return l.length > 24 ? l.slice(0, 11) + '…' + l.slice(-12) : l; });
+  return items.map((x) => { let l = x.file.name; if (dup(l)) { const d = localParts(x.file.addedAt || 0, timeZone()); l = `${l.slice(0, 16)}(${d.month}/${d.day})`; } return l.length > 24 ? l.slice(0, 11) + '…' + l.slice(-12) : l; });
 }
 
 // ---------------------------------------------------------------- print job
@@ -199,8 +201,8 @@ export function addLog(log, entry, max = LIMITS.maxLog) {
 }
 export const OUTCOME_JA = { printed: '印刷できた', failed: '印刷できなかった', unknown: '結果は未確認', saved: 'ダウンロードに保存' };
 export function formatLogEntry(e) {
-  const d = new Date((e.at || 0) + 9 * 3600e3), p = (n) => String(n).padStart(2, '0');
-  return `${d.getUTCMonth() + 1}/${d.getUTCDate()} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}　${e.file}　${e.copies > 1 ? e.copies + '部　' : ''}${OUTCOME_JA[e.outcome] || e.outcome}`;
+  const d = localParts(e.at || 0, timeZone());
+  return `${d.month}/${d.day} ${localHM(e.at || 0, timeZone())}　${e.file}　${e.copies > 1 ? e.copies + '部　' : ''}${OUTCOME_JA[e.outcome] || e.outcome}`;
 }
 
 // ---------------------------------------------------------------- text / html helpers
@@ -236,7 +238,7 @@ export function countPdfPagesRough(bytes) {
 
 /** The markdown note for "第二の脳にも保存" (text files only). */
 export function brainNote(file, text, { now = Date.now() } = {}) {
-  const d = new Date(now + 9 * 3600e3).toISOString().slice(0, 10), ext = extOf(file.name);
+  const d = localDate(now, timeZone()), ext = extOf(file.name);
   const base = safeName(file.name).replace(/\.[A-Za-z0-9]{1,8}$/, '').replace(/[/\\#[\]^|]/g, '_') || 'ファイル';
   const fence = text.includes('```') ? '~~~~' : '```';
   const body = ['md', 'markdown', 'txt', 'log'].includes(ext) ? text.trim() : `${fence}${ext}\n${text.trim()}\n${fence}`;

@@ -1,5 +1,7 @@
 // 家計 panel: this month at a glance (spending, budget gauges, projection), category bars, a 6-month trend, subscriptions, assets, savings suggestions,
 // recent entries and a paste-in box for card / bank statements. All numbers come from the server (finance_summary); this file only draws them.
+import { timeZone } from './brand.js';
+import { localDate } from '../../shared/tz.js';
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 export const yen = (n) => `${n < 0 ? '-' : ''}¥${Math.round(Math.abs(n)).toLocaleString('ja-JP')}`;
 const COLORS = ['#19d3ff', '#1ee8c0', '#ffb347', '#a78bfa', '#ff6b9d', '#7fb6d6', '#f5e663', '#5ee08a', '#ff8a5c', '#6ea8fe'];
@@ -97,7 +99,7 @@ export function initFinanceView({ call }) {
       <div class="vf-foot"><span class="vf-muted">最近</span><div class="r">${recentC}</div><button class="vf-btn" data-showimport type="button">＋ 追加</button></div>`;
   }
   const CATS = ['食費', '日用品', '交通', '住居', '光熱費', '通信', 'サブスク', '医療', '衣服・美容', '趣味・娯楽', '交際費', '教育', '保険・税金', '貯蓄・投資', 'その他'];
-  const today = () => new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
+  const today = () => localDate(Date.now(), timeZone());
   const MODES = { 支出: 'expense', 収入: 'income', サブスク: 'sub', 予算: 'budget', 資産: 'asset', 明細: 'paste' };
   const inp = (id, label, extra = '') => `<label class="vf-fl"><span>${label}</span><input id="vf-f-${id}" ${extra}></label>`;
   const FORMS = {
@@ -117,7 +119,7 @@ export function initFinanceView({ call }) {
   async function load(m) {
     body.textContent = '読み込み中…';
     try { const d = await call('finance_summary', m ? { month: m } : {}); month = d.month; render(d); }
-    catch (e) { const m2 = m || new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 7); month = m2; render({ ...emptyData(m2), error: e.message }); }
+    catch (e) { const m2 = m || localDate(Date.now(), timeZone()).slice(0, 7); month = m2; render({ ...emptyData(m2), error: e.message }); }
   }
   back.addEventListener('click', async (e) => {
     if (e.target === back || e.target.closest('[data-x]')) back.classList.remove('on');

@@ -5,7 +5,8 @@
 // Issues R/W, Pull requests R, Contents R, Metadata R; BRAIN_GITHUB_TOKEN is used if it is the same account and has these).
 import { brainRead } from './brain.js';
 import { jpText } from './sarashina.js';
-import { P, A } from './profile/index.js';
+import { P, A, TZ } from './profile/index.js';
+import { localDate } from '../shared/tz.js';
 import { env } from './config/resolve.js';
 
 export const LABEL = 'elvar-build';
@@ -124,7 +125,7 @@ export function runMinutes(r, now = Date.now()) {
   const s = runStart(r), e = r.status === 'completed' ? Date.parse(r.updated_at) : now;
   return Number.isFinite(s) && Number.isFinite(e) ? Math.max(0, (e - s) / 60000) : 0;
 }
-const jstDay = (ms) => new Date(ms + 9 * H).toISOString().slice(0, 10);
+const jstDay = (ms) => localDate(ms, TZ());   // the owner's local day
 const r1 = (n) => Math.round(n * 10) / 10;
 /** Pure (tested): what ELVAR can see of Claude Code Action usage. Minutes are counted on the hour/day the run STARTED. */
 export function aggregateUsage(runs, now = Date.now(), runLimit = null) {
