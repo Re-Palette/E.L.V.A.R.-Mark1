@@ -7,6 +7,7 @@ import { _setKdfForTests } from '../server/config/auth.js';
 import { _clearWarmCache } from '../server/config/resolve.js';
 import { DEFAULT_PROFILE } from '../server/profile/defaults.js';
 import handler from '../api/elvar.js';
+import { startFlow } from '../server/oauth/flow.js';
 
 _setKdfForTests({ N: 2 ** 10, r: 8, p: 1 });
 const PW = 'correct horse battery';
@@ -191,4 +192,27 @@ test('SARASHINA_BASE_URL and other endpoint settings cannot be set from the app 
     assert.equal((await patch({ [k]: v })).status, 400, `${k}=${v}`);
   }
   assert.equal((await patch({ BRAIN_REPO: 'owner-1/notes.repo', GROQ_MODEL: 'openai/gpt-oss-120b' })).status, 200);
+}));
+
+test('Vercel: /api/google/callback is rewritten into the single router function and answers an HTML page with its own strict CSP (no token needed)', () => fresh(async () => {
+  const rewrites = JSON.parse((await import('node:fs')).readFileSync(new URL('../vercel.json', import.meta.url), 'utf8')).rewrites;
+  assert.ok(rewrites.some((r) => r.source === '/api/google/callback' && r.destination === '/api/elvar?p=connect/google/callback'));
+  assert.ok(rewrites.some((r) => r.source === '/api/google/status' && r.destination === '/api/elvar?p=connect/google/status'));
+  const store = getStore();
+  const flow = () => startFlow({ store, provider: 'google', authUrl: 'https://a.example/auth', tokenUrl: 'http://127.0.0.1:1/oauth', clientId: 'c', clientSecret: 's', redirectUri: 'https://x.example/api/google/callback', scopes: ['a'] });
+  const mockRes = () => { const r = { headers: {}, statusCode: 0, body: '', setHeader(k, v) { r.headers[k.toLowerCase()] = v; }, end(b) { r.body = String(b ?? ''); } }; return r; };
+  const f = await flow(), res = mockRes();
+  await handler({ method: 'GET', url: `/api/elvar?p=connect/google/callback&error=access_denied&state=${f.state}`, headers: { host: 'x.example' }, socket: { remoteAddress: '203.0.113.9' } }, res);
+  assert.equal(res.statusCode, 400); assert.match(res.headers['content-type'], /text\/html/); assert.match(res.body, /許可されませんでした/);
+  assert.match(res.headers['content-security-policy'], /default-src 'none'/); assert.equal(res.headers['cache-control'], 'no-store'); assert.equal(res.headers['referrer-policy'], 'no-referrer');
+  // the local server reaches the same handler through the alias; an unknown state is refused with a page, never a redirect
+  const r2 = await routeElvar(mk('GET', undefined, '203.0.113.9'), { pathname: '/api/google/callback', query: { code: 'c', state: f.state } });
+  assert.equal(r2.status, 403); assert.ok(r2.html.includes('<html') && !('location' in (r2.headers || {})));
+  const r3 = await routeElvar(mk('GET', undefined, '203.0.113.9'), { pathname: '/api/google/callback/', query: { state: 'x' } }); assert.equal(r3.status, 403);
+  // 30 callbacks per 10 minutes per address
+  let last; for (let i = 0; i < 32; i++) last = await routeElvar(mk('GET', undefined, '198.51.100.7'), { pathname: '/api/google/callback', query: { state: 'x' } });
+  assert.equal(last.status, 429);
+  // the function budget: the three Google endpoints no longer have a function of their own
+  const api = (await import('node:fs')).readdirSync(new URL('../api/', import.meta.url)).filter((x) => x.endsWith('.js'));
+  assert.ok(api.length <= 12 && !api.some((x) => /^google-(connect|status|callback)/.test(x)), api.join(','));
 }));
