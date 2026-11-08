@@ -5,14 +5,15 @@ import { buildInstruction } from './persona.js';
 import { googleConfigured, declarations } from './google/index.js';
 import { promptVars } from './profile/vars.js';
 import { currentVars, currentProfile } from './profile/index.js';
-import { cfgEnv } from './config/resolve.js';
+import { cfgEnv, currentConfig } from './config/resolve.js';
+import { listConnectorDeclarations } from './connectors/index.js';
 import { getStore } from './store/index.js';
 export { sendHtml, sendJson } from './http.js';
 import { brainProfileSummary, profileBlock, brainCatalog, catalogBlock } from './brain.js';
 
 // Changes only when the voice or the greeting wording changes (NOT with every persona / model edit: the saved greeting must survive redeploys) -> clients drop their cached greeting audio.
 const GREETING_PROMPT_VERSION = 'g4';
-const instructionFor = () => buildInstruction({ google: googleConfigured(), features: currentProfile().features });
+const instructionFor = () => buildInstruction({ google: googleConfigured(), features: currentProfile().features, connectors: currentConfig().connectors });
 // The saved greeting audio is valid only for the same voice, wording, address and language: change any of them and clients record it again.
 export function cacheKeyFor(cfg, profile = currentProfile()) {
   return crypto.createHash('sha256').update([cfg.voice, GREETING_PROMPT_VERSION, profile.greeting?.template, profile.owner?.address, profile.locale?.language].join('\u0001')).digest('hex').slice(0, 12);
@@ -74,7 +75,7 @@ export async function mintLiveToken(cfg, { useFallback = false, plain = false } 
         config: {
           responseModalities: [Modality.AUDIO],
           systemInstruction: instruction,
-          tools: [{ functionDeclarations: declarations({ alwaysOnly: !googleConfigured(), features: currentProfile().features }) }],   // without Google only the self-check tool is offered
+          tools: [{ functionDeclarations: [...declarations({ alwaysOnly: !googleConfigured(), features: currentProfile().features }), ...listConnectorDeclarations(currentConfig(), { forVoice: true })] }],   // + the owner's connector tools (<= 24 pinned, the rest via connector_call)   // without Google only the self-check tool is offered
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: cfg.voice } } },
           ...(plain ? {} : { outputAudioTranscription: {} }),   // the assistant's own words as text too (for the conversation log in the second brain; no on-screen transcript of them)
           inputAudioTranscription: plain ? {} : { ...(cfg.inputLangs?.length ? { languageCodes: cfg.inputLangs } : {}), customVocabulary: vocabFor(currentVars(), currentProfile()) },   // plain=1: the client's safe retry if the server rejects the language hints

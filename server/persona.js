@@ -2,6 +2,7 @@ import { HONESTY_BODY, nameRule } from './honesty.js';
 import { AGENT_IDS } from './agents/registry.js';
 import { currentVars, currentProfile } from './profile/index.js';
 import { fill } from './profile/vars.js';
+import { connectorsSection } from './persona/connectors.js';
 // E.L.V.A.R. core persona (Phase 1: voice conversation only).
 // Source: owner's persona brief — intelligent, calm gentleman-butler in the spirit of J.A.R.V.I.S.
 // NOT implemented yet (future phases): internal emotion-state model driving voice/HUD, experience learning.
@@ -284,12 +285,13 @@ export function personalityBlock(profile) {
 }
 
 /** The Live-session system prompt. `google:true` when the Google tools are available. `features` (profile.features) drops the parts of switched-off features. */
-export function buildInstruction({ google = false, vars, profile, features } = {}) {
+export function buildInstruction({ google = false, vars, profile, features, connectors } = {}) {
   const v = vars || currentVars();
   const p = profile || currentProfile();
   // Self-introduction: the long form is only spoken when the profile has one; otherwise just the name.
   const intro = v.AX ? '私は {{AX}}、通称「{{AS}}」です。' : '私は {{A}}、{{U}}専属のAIです。';
   let text = BASE.replace('@@NAME_RULE@@', () => nameRule(p)).replace('@@INTRO_NAME@@', intro).replace('@@RULE7@@', google ? RULE7_GOOGLE : RULE7_CHAT_ONLY).replaceAll('@@AGENTS@@', String(AGENT_IDS.length)) + (google ? GOOGLE : '');
   text = applyFeatures(text, features) + personalityBlock(p) + (p.locale?.language === 'en' ? '\n\n## Language\n- Reply in English. (The rules above are written in Japanese; follow them in English.)\n' : '');
+  text += connectorsSection(connectors);   // the owner's connected apps (names the owner typed + the untrusted-data rules); remote descriptions never enter the prompt
   return fill(text, v);
 }

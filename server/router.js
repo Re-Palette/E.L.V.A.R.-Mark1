@@ -7,6 +7,7 @@ import { getConfig, runWithConfig, envConfig } from './config/resolve.js';
 import * as A from './config/auth.js';
 import * as API from './elvar-api.js';
 import * as G from './google/connect.js';
+import * as CX from './connectors/api.js';
 
 const bad = (status, error) => ({ status, body: { error } });
 
@@ -29,6 +30,15 @@ export const ROUTES = [
   { method: 'POST', path: '/api/elvar/connect/google/claim', auth: 'owner', handler: G.connectClaim },
   { method: 'POST', path: '/api/elvar/connect/google/disconnect', auth: 'owner', handler: G.connectDisconnect },
   { method: 'GET', path: '/api/elvar/connect/google/callback', auth: 'state', handler: G.connectCallback },
+  { method: 'GET', path: '/api/elvar/connectors', auth: 'owner', handler: CX.listConnectors },
+  { method: 'POST', path: '/api/elvar/connectors', auth: 'owner', handler: CX.createConnector },
+  { method: 'GET', path: '/api/elvar/connectors/:id', auth: 'owner', handler: CX.getConnector },
+  { method: 'PATCH', path: '/api/elvar/connectors/:id', auth: 'owner', handler: CX.patchConnector },
+  { method: 'DELETE', path: '/api/elvar/connectors/:id', auth: 'owner', handler: CX.deleteConnector },
+  { method: 'POST', path: '/api/elvar/connectors/:id/sync', auth: 'owner', handler: CX.syncConnector },
+  { method: 'POST', path: '/api/elvar/connectors/:id/oauth/start', auth: 'owner', handler: CX.oauthStart },
+  { method: 'POST', path: '/api/elvar/connectors/:id/oauth/claim', auth: 'owner', handler: CX.oauthClaim },
+  { method: 'GET', path: '/api/elvar/oauth/callback', auth: 'state', handler: CX.oauthCallback },
 ];
 
 // Paths that existed before the router (the callback URL is what the owner registers at Google, so it must not change). Vercel rewrites them

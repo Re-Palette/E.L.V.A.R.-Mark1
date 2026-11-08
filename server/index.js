@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readConfig, handleLiveToken, handleHealth, sendJson } from './live-token-core.js';
-import { executeGoogle } from './google/index.js';
+import { executeTool } from './tools/execute.js';
 import { runAgent } from './agents/runner.js';
 import { runServerChecks } from './system-check.js';
 import { buildHudData } from './hud-data.js';
@@ -82,7 +82,7 @@ async function api(req, res, pathname, q, g) {
   if (pathname === '/api/live-token') return sendJson(res, await handleLiveToken(req, readConfig()));
   if (pathname === '/api/google/execute') {
     if (req.method !== 'POST') return sendJson(res, { status: 405, body: { error: 'method_not_allowed' } });
-    return sendJson(res, await executeGoogle(await readJson(req)));
+    return sendJson(res, await executeTool(await readJson(req)));
   }
   if (pathname === '/api/system/check') return sendJson(res, { status: 200, body: await runServerChecks({ deep: q.get('deep') === '1' }) });
   if (pathname === '/api/chat') return sendJson(res, await handleChat({ method: req.method, body: req.method === 'POST' ? await readJson(req) : {} }));
