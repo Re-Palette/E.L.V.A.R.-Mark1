@@ -3,13 +3,28 @@
 // locally the instant they are due, so they cost no network time. They are queued before the real answer, never on top of it.
 import { generateGreeting, phrasePrompt } from './greeting-gen.js';
 import { getGreeting, putGreeting } from './greeting-cache.js';
+import { profileCache } from '../brand.js';
 
-export const PHRASES = {
-  ack: ['かしこまりました。', '承知いたしました。'],
-  doc: ['作成いたします。', '作成中です。'],
-  wait: ['少々お待ちください。', '確認いたします。'],
+// Per language and speaking style (profile.locale.language / assistant.personaPreset). Japanese butler = the original wording.
+export const PHRASE_SETS = {
+  ja: {
+    butler: { ack: ['かしこまりました。', '承知いたしました。'], doc: ['作成いたします。', '作成中です。'], wait: ['少々お待ちください。', '確認いたします。'] },
+    friendly: { ack: ['了解です。', 'わかりました。'], doc: ['作りますね。', '作っています。'], wait: ['ちょっと待ってくださいね。', '確認しますね。'] },
+    concise: { ack: ['了解。', '承知しました。'], doc: ['作成します。', '作成中。'], wait: ['お待ちください。', '確認中。'] },
+  },
+  en: {
+    butler: { ack: ['Certainly.', 'Very well.'], doc: ['I will prepare it.', 'Working on it.'], wait: ['One moment, please.', 'Let me check.'] },
+    friendly: { ack: ['Sure thing.', 'Got it.'], doc: ['On it.', 'Working on it.'], wait: ['Just a sec.', 'Checking now.'] },
+    concise: { ack: ['Okay.', 'Understood.'], doc: ['Preparing.', 'Working.'], wait: ['One moment.', 'Checking.'] },
+  },
 };
+export function phrasesFor(p = profileCache()) {
+  const lang = PHRASE_SETS[p?.locale?.language] ? p.locale.language : 'ja';
+  return PHRASE_SETS[lang][p?.assistant?.personaPreset] || PHRASE_SETS[lang].butler;
+}
+export const PHRASES = PHRASE_SETS.ja.butler;
 export const ALL_PHRASES = [...new Set(Object.values(PHRASES).flat())];
+const allPhrases = () => [...new Set(Object.values(phrasesFor()).flat())];
 const DOC_WORDS = /資料|ＰＤＦ|PDF|pdf|企画書|レポート|報告書|議事録|提案書|スライド|まとめ.*(作|書)|(作|書)って|作成|ドキュメント/;
 export const kindFor = (text) => (DOC_WORDS.test(String(text || '')) ? 'doc' : 'ack');
 
@@ -18,7 +33,8 @@ export const kindFor = (text) => (DOC_WORDS.test(String(text || '')) ? 'doc' : '
  * turn: { n: fillers played so far, lastAt, spoke: the model already answered in this turn, last: last phrase }
  * @returns {string|null}
  */
-export function nextFiller({ turn, now, silentMs, userText, rnd = Math.random }) {
+export function nextFiller({ turn, now, silentMs, userText, rnd = Math.random, phrases = phrasesFor() }) {
+  const PHRASES = phrases;
   const kind = kindFor(userText);
   const pick = (arr) => { const c = arr.filter((p) => p !== turn.last); return c[Math.floor(rnd() * c.length)] ?? arr[0]; };
   if (turn.n === 0) {
@@ -37,7 +53,7 @@ export function initFillers({ live, store }) {
   const enabled = () => store.get('elvar_fillers') !== '0';
 
   async function load() {
-    for (const p of ALL_PHRASES) {
+    for (const p of allPhrases()) {
       if (clips.has(p)) continue;
       const rec = await getGreeting(KEY(p));
       if (rec && (!live.cacheKey || !rec.key || rec.key === live.cacheKey)) clips.set(p, rec);
@@ -47,7 +63,7 @@ export function initFillers({ live, store }) {
   async function ensureCached() {
     if (busy || live.session || Date.now() < retryAt || !enabled()) return;
     await load();
-    const missing = ALL_PHRASES.filter((p) => !clips.has(p));
+    const missing = allPhrases().filter((p) => !clips.has(p));
     if (!missing.length) return;
     busy = true;
     try {
@@ -78,5 +94,5 @@ export function initFillers({ live, store }) {
     live.playGreetingRecord({ pcm: rec.pcm }).catch(() => {});                           // queued in the same player: the real answer follows it
   }
   load().catch(() => {});
-  return { tick, ensureCached, load, _inject: (p, rec) => clips.set(p, rec), get ready() { return ALL_PHRASES.every((p) => clips.has(p)); } };
+  return { tick, ensureCached, load, _inject: (p, rec) => clips.set(p, rec), get ready() { return allPhrases().every((p) => clips.has(p)); } };
 }

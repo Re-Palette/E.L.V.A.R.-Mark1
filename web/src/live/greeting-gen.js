@@ -1,9 +1,15 @@
 // The greeting prompt, plus a background generator that records the greeting once (no playback, no HUD changes).
 import { GoogleGenAI } from '@google/genai';
-import { ownerAddress } from '../brand.js';
+import { ownerAddress, profileCache } from '../brand.js';
 
-export function greetingPrompt(line) {
-  return `システム起動の挨拶です。次の英文を、一字一句そのまま、ネイティブのように早口で、歯切れよくテンポよく、一度だけ読み上げてください。ゆっくり話したり、間を空けたり、前置きや追加の言葉を足したりしないでください。文末の「sir」は、英語の「sir」（サー）のまま読み、「${ownerAddress()}」などに言い換えないでください（この挨拶だけの例外です）：「${line}」`;
+/** The recording prompt for the wake greeting. `vars` = { honorific, ownerAddress, language } (default: the cached profile). */
+export function greetingPrompt(line, vars = greetingVars()) {
+  const lang = vars.language === 'ja' ? '日本語' : '英文';
+  const hon = vars.honorific ? `文中の「${vars.honorific}」は、そのまま読み、「${vars.ownerAddress}」などに言い換えないでください（この挨拶だけの例外です）。` : '';
+  return `システム起動の挨拶です。次の${lang}を、一字一句そのまま、ネイティブのように早口で、歯切れよくテンポよく、一度だけ読み上げてください。ゆっくり話したり、間を空けたり、前置きや追加の言葉を足したりしないでください。${hon}：「${line}」`;
+}
+export function greetingVars(p = profileCache()) {
+  return { honorific: p?.greeting?.honorific ?? 'sir', ownerAddress: ownerAddress(), language: p?.greeting?.language || 'en' };
 }
 
 export function phrasePrompt(text) {

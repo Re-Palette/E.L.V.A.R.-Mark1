@@ -1,4 +1,4 @@
-import { ownerAddress } from './brand.js';
+import { ownerAddress, ownerAddressHtml } from './brand.js';
 // 製作の進捗 panel: how far each Claude Code build has come (a 7-stage meter per build), how much Claude Code ran through E.L.V.A.R. (24 h / 7 day charts),
 // and whether the session limit seems to have been hit. Everything comes from the server (build_status: read from GitHub); this file only draws it.
 // Honest by design: the remaining session quota is NOT readable by E.L.V.A.R., so only measured runs are drawn and the page says where the exact value is.
@@ -107,11 +107,12 @@ const GUIDE_LINES = [
   ['色', '水色＝進行中、橙＝確認待ち、緑＝完成・成功、赤＝失敗や上限の疑い。'],
   ['上限', 'セッションの正確な残りは、E.L.V.A.R.からは読めません。claude.ai の 設定→使用状況、またはPCのClaude Codeで /usage を見てください。'],
 ];
-const GUIDE_FULL = `<h3>この画面でわかること</h3><p>${ownerAddress()}がClaude Codeに頼んだ製作（新規製作・E.L.V.A.R.の自己改造）が、いまどこまで進んでいるかを、GitHubの記録から読み取って表示します。</p>
-<h3>7つの段階の読み方</h3><ul><li><b>依頼受付</b>：依頼（GitHubのIssue）ができた。まだ誰も着手していません。</li><li><b>作業開始</b>：Claude Codeの実行が始まった。</li><li><b>実装中</b>：Claude Codeが進み具合をコメントしている。まだPull Request（変更案）はありません。</li><li><b>PR作成</b>：PRが下書きでできた。仕上げの最中です。</li><li><b>テスト/チェック</b>：PRの自動チェックを実行中、または失敗している（赤）。</li><li><b>確認待ち</b>：PRができて、チェックも通った（またはチェックなし）。${ownerAddress()}の確認を待っています。</li><li><b>完成</b>：PRがマージされた、または依頼が完了（クローズ）になった。</li></ul>
+// Built on every open (the owner's address can change in the settings); every inserted value is escaped.
+const guideFull = () => `<h3>この画面でわかること</h3><p>${ownerAddressHtml()}がClaude Codeに頼んだ製作（新規製作・E.L.V.A.R.の自己改造）が、いまどこまで進んでいるかを、GitHubの記録から読み取って表示します。</p>
+<h3>7つの段階の読み方</h3><ul><li><b>依頼受付</b>：依頼（GitHubのIssue）ができた。まだ誰も着手していません。</li><li><b>作業開始</b>：Claude Codeの実行が始まった。</li><li><b>実装中</b>：Claude Codeが進み具合をコメントしている。まだPull Request（変更案）はありません。</li><li><b>PR作成</b>：PRが下書きでできた。仕上げの最中です。</li><li><b>テスト/チェック</b>：PRの自動チェックを実行中、または失敗している（赤）。</li><li><b>確認待ち</b>：PRができて、チェックも通った（またはチェックなし）。${ownerAddressHtml()}の確認を待っています。</li><li><b>完成</b>：PRがマージされた、または依頼が完了（クローズ）になった。</li></ul>
 <h3>％（進み具合）について</h3><p>％は、上の段階に一定の数字を割り当てただけの目安です（例：実装中は40%、確認待ちは90%）。かかる時間の予測ではなく、「あと何分」とは言えません。</p>
 <h3>実行回数・分数</h3><p>製作用のリポジトリで、Claude Code（GitHub Actions）が動いた回数と、その実行時間の合計です。直近24時間は1時間ごと、直近7日は1日ごと（日本時間）に集計しています。分数は、その実行が始まった時間帯に数えています。</p>
-<h3>セッションの上限について（大切）</h3><ul><li>Claudeの「5時間のセッション上限」「週の上限」の<b>正確な残りは、E.L.V.A.R.からは読み取れません</b>（Anthropicが外部に公開していないためです）。</li><li>正確な残りは、${ownerAddress()}ご自身が <b>claude.ai の 設定→使用状況</b>、またはPCのClaude Codeで <b>/usage</b> を実行すると確認できます。</li><li>ここに出るのは「E.L.V.A.R.経由で動いた分」だけです。同じアカウントでの claude.ai、他のリポジトリ、PCでの利用は含みません。</li><li>「上限の状態」は、Claude Codeのコメントに上限らしい文言があったときだけ「達した可能性」と出ます。確実ではありません。</li><li>環境変数 CLAUDE_SESSION_RUN_LIMIT に、ご自分で決めた「5時間あたりの回数の目安」を入れると、5時間の実行回数を、その目安に対する割合のメーターで表示します（公式の上限ではありません）。</li></ul>
+<h3>セッションの上限について（大切）</h3><ul><li>Claudeの「5時間のセッション上限」「週の上限」の<b>正確な残りは、E.L.V.A.R.からは読み取れません</b>（Anthropicが外部に公開していないためです）。</li><li>正確な残りは、${ownerAddressHtml()}ご自身が <b>claude.ai の 設定→使用状況</b>、またはPCのClaude Codeで <b>/usage</b> を実行すると確認できます。</li><li>ここに出るのは「E.L.V.A.R.経由で動いた分」だけです。同じアカウントでの claude.ai、他のリポジトリ、PCでの利用は含みません。</li><li>「上限の状態」は、Claude Codeのコメントに上限らしい文言があったときだけ「達した可能性」と出ます。確実ではありません。</li><li>環境変数 CLAUDE_SESSION_RUN_LIMIT に、ご自分で決めた「5時間あたりの回数の目安」を入れると、5時間の実行回数を、その目安に対する割合のメーターで表示します（公式の上限ではありません）。</li></ul>
 <h3>色</h3><p>水色＝進行中／橙＝確認待ち・注意／緑＝完成・成功／赤＝失敗・上限の疑い／灰色＝まだ（または取得できない）。</p>`;
 
 export function initBuildView({ call }) {
@@ -120,7 +121,8 @@ export function initBuildView({ call }) {
   back.innerHTML = `<div class="vf"><div class="vf-top"><i></i><h2>BUILD</h2><span class="vf-muted" id="vbd-sub">製作の進捗</span><span class="sp"></span><button class="vf-btn" data-reload type="button" title="GitHubから読み直します">更新 ↻</button><button class="vf-btn" data-x type="button">閉じる</button></div><div class="vf-body" id="vbd-body">読み込み中…</div><div class="vbd-pop" id="vbd-pop" hidden></div></div>`;
   document.body.appendChild(back);
   const body = back.querySelector('#vbd-body'), pop = back.querySelector('#vbd-pop'), sub = back.querySelector('#vbd-sub');
-  pop.innerHTML = `<div style="display:flex;align-items:center"><b style="color:#fff;flex:1">この画面の見方・説明</b><button class="vf-btn" data-closepop type="button">閉じる</button></div>${GUIDE_FULL}`;
+  const fillPop = () => { pop.innerHTML = `<div style="display:flex;align-items:center"><b style="color:#fff;flex:1">この画面の見方・説明</b><button class="vf-btn" data-closepop type="button">閉じる</button></div>${guideFull()}`; };
+  fillPop();
   let data = null;
   const SHOW = 4;
 
@@ -168,7 +170,7 @@ export function initBuildView({ call }) {
     const t = e.target;
     if (t === back || t.closest('[data-x]')) { pop.hidden = true; back.classList.remove('on'); }
     else if (t.closest('[data-reload]')) load();
-    else if (t.closest('[data-pop]')) pop.hidden = !pop.hidden;
+    else if (t.closest('[data-pop]')) { if (pop.hidden) fillPop(); pop.hidden = !pop.hidden; }
     else if (t.closest('[data-closepop]')) pop.hidden = true;
   });
   addEventListener('keydown', (e) => { if (e.key === 'Escape' && back.classList.contains('on')) { e.stopImmediatePropagation(); if (!pop.hidden) pop.hidden = true; else back.classList.remove('on'); } }, true);

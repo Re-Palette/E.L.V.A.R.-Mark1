@@ -8,7 +8,7 @@ import { KINDS, STATUS_JA, LANG_JA, buildIndex, choiceDetail, deviceSpace, findE
 import { startAnalysis } from './file-analyze-client.js';
 import { classifyReply } from './approval.js';
 import { toBase64 } from './doc-card.js';
-import { ownerAddress, timeZone } from './brand.js';
+import { ownerAddress, ownerAddressHtml, timeZone } from './brand.js';
 import { localParts, localDate, localHM } from '../../shared/tz.js';
 
 const ICON = { pdf: '📕', image: '🖼', text: '📄', office: '📎', other: '📄' };
@@ -285,7 +285,7 @@ export function initFileView({ approval, store, saveToBrain = null, callAI = nul
     const c = classify(sel.name, sel.type), hasText = (ix.chars || 0) >= 20;
     const status = STATUS_JA[ix.status] || ix.status;
     return `<div class="vfl-info">
-      <div class="r"><b>種類</b><select id="vfl-kind" aria-label="種類の名前">${KINDS.map((k) => `<option${k === kindOf(ix) ? ' selected' : ''}>${esc(k)}</option>`).join('')}</select><span class="hint">${ix.kind ? '（' + ownerAddress() + 'が変更）自動判定：' + esc(ix.docKind) : '自動判定（推測です）'}</span></div>
+      <div class="r"><b>種類</b><select id="vfl-kind" aria-label="種類の名前">${KINDS.map((k) => `<option${k === kindOf(ix) ? ' selected' : ''}>${esc(k)}</option>`).join('')}</select><span class="hint">${ix.kind ? '（' + ownerAddressHtml() + 'が変更）自動判定：' + esc(ix.docKind) : '自動判定（推測です）'}</span></div>
       <div class="r"><b>タグ</b><input type="text" id="vfl-tags" value="${esc((ix.tags || []).join(', '))}" placeholder="カンマ区切り（例：経費, 2026）" aria-label="タグ"></div>
       <div class="r"><b>メモ</b><textarea id="vfl-memo" rows="2" placeholder="自由にメモ" aria-label="メモ">${esc(ix.memo || '')}</textarea></div>
       <div class="r"><b></b><button class="vf-btn pri" data-saveinfo="${esc(sel.id)}" type="button">タグ・メモ・種類を保存</button></div>
@@ -307,7 +307,7 @@ export function initFileView({ approval, store, saveToBrain = null, callAI = nul
   async function renderMain() {
     if (showLog) {
       const log = store.readLog();
-      mainEl.innerHTML = `<div class="vfl-h"><b>印刷ログ</b><span>この端末に残る、印刷の記録です（${ownerAddress()}の答えを記録します）</span></div><div class="vfl-log">${log.length ? log.map((e) => `<div>${esc(formatLogEntry(e))}</div>`).join('') : '<div class="vf-muted">まだ記録がありません。</div>'}</div><div class="vfl-act"><button class="vf-btn" data-closelog type="button">ファイルに戻る</button>${log.length ? '<button class="vf-btn" data-clearlog type="button">ログを消す</button>' : ''}</div>`;
+      mainEl.innerHTML = `<div class="vfl-h"><b>印刷ログ</b><span>この端末に残る、印刷の記録です（${ownerAddressHtml()}の答えを記録します）</span></div><div class="vfl-log">${log.length ? log.map((e) => `<div>${esc(formatLogEntry(e))}</div>`).join('') : '<div class="vf-muted">まだ記録がありません。</div>'}</div><div class="vfl-act"><button class="vf-btn" data-closelog type="button">ファイルに戻る</button>${log.length ? '<button class="vf-btn" data-clearlog type="button">ログを消す</button>' : ''}</div>`;
       return;
     }
     const sel = files.find((f) => f.id === selectedId);

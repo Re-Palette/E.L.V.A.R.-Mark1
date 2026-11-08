@@ -20,7 +20,9 @@ import { createApproval } from './approval.js';
 import { initGoogleTools } from './google-tools.js';
 import { initBrainViewer } from './brain-viewer.js';
 import { detectProtocolCommand, detectHandCommand, createTranscriptWatcher } from './human-protocol.js';
-import { ownerAddress } from './brand.js';
+import { ownerAddress, brand, features, profileCache, timeZone } from './brand.js';
+import { bootAuth } from './elvar/auth.js';
+import { localDate, localMinutes } from '../../shared/tz.js';
 
 const STANDBY_KEY = 'elvar_standby'; // '1' = on, '0' = opted out, unset = on automatically once the mic permission is granted
 const SENS_KEY = 'elvar_clap_sensitivity';
@@ -40,11 +42,18 @@ if (qs.get('standby') === '1') store.set(STANDBY_KEY, '1');
 window.__elvarDeviceLocked = qs.get('locked') === '1';
 window.__elvarLocked = (v) => { window.__elvarDeviceLocked = !!v; if (!v) maybeBrief?.(); };
 
+// Before anything talks to the server: setup wizard (first run), or the sign-in screen (new device / revoked token). Loads the profile (brand, time zone,
+// greeting, features) into the cache that brand.js reads. ?mockhud=1 (design review) skips it.
+const session = qs.get('mockhud') === '1' ? null : await bootAuth();
+
 // The cards show real data (hud-live.js). ?mockhud=1 keeps the design-review sample content.
 const hud = mountHud(document.getElementById('hud-root'), qs.get('mockhud') === '1' ? {} : { data: neutralData() });
 // Voice speed (pitch preserved): default 1.2x. Override with ?speed=1.5 (saved) or localStorage.elvar_speech_rate; 1 = as generated.
 const DEFAULT_SPEECH_RATE = 1.2;
 if (qs.get('speed')) store.set('elvar_speech_rate', String(Number(qs.get('speed')) || DEFAULT_SPEECH_RATE));
+hud.setBrand?.(brand());          // the HUD's own contract (§8): optional until the HUD implements it
+hud.setFeatures?.(features());
+if (session?.missing?.length) hud.setSetupRequired?.({ missing: session.missing });
 const live = new GeminiLiveSession(hud, { speechRate: Number(store.get('elvar_speech_rate')) || DEFAULT_SPEECH_RATE });
 const DEBUG = qs.get('clapdebug') === '1';
 const bgm = new Bgm();
@@ -235,15 +244,22 @@ setInterval(() => {
   hud.setAmbient(idle && standby.active && !live.session && !waking && !humanProtocol.active);
 }, 1000);
 
-// ---- scheduled briefings: the first conversation in 05:30-08:00 (morning) or in the evening (18:00-24:00), once per period
+// ---- scheduled briefings: the first conversation in the profile's morning window (default 05:30-08:00) or evening window (18:00-24:00), once per period
 function jstNow() {
-  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date()).map((x) => [x.type, x.value]));
-  return { date: `${p.year}-${p.month}-${p.day}`, min: Number(p.hour) * 60 + Number(p.minute) };
+  const now = Date.now(), tz = timeZone();
+  return { date: localDate(now, tz), min: localMinutes(now, tz) };
+}
+const hmMin = (s, d) => { const m = /^(\d{2}):(\d{2})$/.exec(String(s || '')); return m ? Number(m[1]) * 60 + Number(m[2]) : d; };
+function briefingWindows() {
+  const b = profileCache()?.briefing || {};
+  const w = (x, f, t) => ({ on: x?.enabled !== false, from: hmMin(x?.from, f), to: hmMin(x?.to, t) });
+  return { morning: w(b.morning, 330, 480), evening: w(b.evening, 1080, 1440) };
 }
 function briefingDue() {
   const forced = qs.get('briefing');                                       // ?briefing=morning|evening forces one (for testing)
   const { date, min } = jstNow();
-  const kind = forced === 'morning' || forced === 'evening' ? forced : min >= 330 && min < 480 ? 'morning' : min >= 1080 ? 'evening' : null;
+  const W = briefingWindows(), inW = (x) => x.on && min >= x.from && min <= (x.to >= 1439 ? 1440 : x.to);
+  const kind = forced === 'morning' || forced === 'evening' ? forced : inW(W.morning) ? 'morning' : inW(W.evening) ? 'evening' : null;
   if (!kind) return null;
   const mark = `${date}-${kind}`;
   if (!forced && store.get('elvar_briefed') === mark) return null;

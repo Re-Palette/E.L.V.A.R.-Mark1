@@ -1,6 +1,8 @@
 // Standby listener: keeps the mic open LOCALLY and fires onDoubleClap() when a double clap is heard.
 // Privacy: audio is analysed on the audio thread only — nothing is recorded, stored or sent anywhere.
 // Browser processing (echo cancel / noise suppression / AGC) is turned OFF because it would erase claps.
+import { profileCache, timeZone } from '../brand.js';
+import { localParts } from '../../../shared/tz.js';
 export class ClapStandby {
   constructor({ onDoubleClap, onChange, onEvent, sensitivity = 1, debug = false, level = 0 } = {}) {
     this.level = level;
@@ -83,8 +85,13 @@ export class ClapStandby {
 }
 
 /** "All systems online. Good Morning, sir." with the part of day from the local clock. */
-export function greetingLine(now = new Date()) {
-  const h = now.getHours();
+/** The wake greeting from the profile's template ({partOfDay}, {honorific}); the hour is taken in the owner's time zone. */
+export function greetingLine(now = new Date(), profile = profileCache()) {
+  let h = now.getHours();
+  try { h = localParts(now.getTime(), profile?.locale?.timeZone || timeZone()).hour; } catch { /* keep the device hour */ }
   const part = h >= 5 && h < 12 ? 'Morning' : h >= 12 && h < 18 ? 'Afternoon' : 'Evening';
-  return `All systems online. Good ${part}, sir.`;
+  const g = profile?.greeting || {};
+  const tpl = typeof g.template === 'string' && g.template.trim() ? g.template : 'All systems online. Good {partOfDay}, {honorific}.';
+  const honorific = typeof g.honorific === 'string' ? g.honorific : 'sir';
+  return tpl.replace(/\{partOfDay\}/g, part).replace(/\{honorific\}/g, honorific).replace(/\s+([,.!?])/g, '$1').replace(/,\s*\./g, '.').trim();
 }
