@@ -21,8 +21,9 @@ export class LocalStore {
     this._persist(); return true;
   }
   async del(key) { const had = Boolean(this._live(key)); delete this.data[key]; this._persist(); return had; }
-  async incr(key, ttlSec) {
-    const e = this._live(key); const n = (e && e.t === 's' ? Number(JSON.parse(e.v)) || 0 : 0) + 1;
+  /** Atomic add (default +1, may be negative). The TTL is set when the key is created. */
+  async incr(key, ttlSec, by = 1) {
+    const e = this._live(key); const n = (e && e.t === 's' ? Number(JSON.parse(e.v)) || 0 : 0) + (Number(by) || 0);
     this.data[key] = { t: 's', v: JSON.stringify(n), x: e ? e.x : ttlSec ? Date.now() + ttlSec * 1000 : null };
     this._persist(); return n;
   }

@@ -66,7 +66,7 @@ test('UpstashStore: sends the right REST commands (auth header, SET EX NX, Lua f
       if (op === 'GET') return { result: kv.get(key) ?? null };
       if (op === 'SET') { if (a.includes('NX') && kv.has(key)) return { result: null }; kv.set(key, a[0]); return { result: 'OK' }; }
       if (op === 'DEL') return { result: kv.delete(c[1]) ? 1 : 0 };
-      if (op === 'EVAL') { const [, k, ...r] = c; if (String(c[1]).includes('cjson')) { const cur = kv.get(c[3]); const v = cur ? JSON.parse(cur).ver || 0 : 0; if (v === Number(c[4])) { kv.set(c[3], c[5]); return { result: 1 }; } return { result: 0 }; } void k; void r; const n = (Number(kv.get(c[3])) || 0) + 1; kv.set(c[3], String(n)); return { result: n }; }
+      if (op === 'EVAL') { const [, k, ...r] = c; if (String(c[1]).includes('cjson')) { const cur = kv.get(c[3]); const v = cur ? JSON.parse(cur).ver || 0 : 0; if (v === Number(c[4])) { kv.set(c[3], c[5]); return { result: 1 }; } return { result: 0 }; } void k; void r; const n = (Number(kv.get(c[3])) || 0) + Number(c[5] ?? 1); kv.set(c[3], String(n)); return { result: n }; }
       return { result: null };
     }) };
   };
@@ -91,4 +91,24 @@ test('store selection: memory > upstash > file > none', () => {
   assert.equal(storeKind({ VERCEL: '1' }), 'none');
   assert.equal(getStore({ VERCEL: '1' }), null);
   resetStore();
+});
+
+test('FileStore hardening: a corrupt file is moved aside (not silently overwritten), a symlink is refused, only ENOENT means first run', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'elvar-store-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'store.json'), '{corrupt');
+    const s = new FileStore(dir); await s.set('a', 1);
+    const files = fs.readdirSync(dir).sort();
+    assert.ok(files.some((f) => /^store\.json\.corrupt-\d+$/.test(f)), 'kept for inspection'); assert.ok(files.includes('store.json'));
+    assert.ok(!files.some((f) => f.endsWith('.tmp')), 'no temp file left');
+    const target = path.join(dir, 'elsewhere.json'); fs.writeFileSync(target, '{}');
+    const d2 = path.join(dir, 'd2'); fs.mkdirSync(d2); fs.symlinkSync(target, path.join(d2, 'store.json'));
+    assert.throws(() => new FileStore(d2), /not a regular file/);
+    const d3 = path.join(dir, 'd3'); fs.mkdirSync(path.join(d3, 'store.json'), { recursive: true });
+    assert.throws(() => new FileStore(d3), 'a directory in its place is an error, not an empty store');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('incr accepts a negative step (a successful login gives its attempt back)', async () => {
+  const s = new MemoryStore(); await s.incr('n', 60); await s.incr('n', 60); assert.equal(await s.incr('n', 60, -1), 1);
 });

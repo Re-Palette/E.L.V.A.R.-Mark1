@@ -64,16 +64,16 @@ test('devices: add (a second token works), list (no secrets), revoke (that token
   assert.ok(!/<|>|\n/.test(list.find((d) => d.id === phone.deviceId).name), 'names are cleaned');
   assert.equal(list.find((d) => d.id === deviceId).current, true);
   assert.ok(!JSON.stringify(list).includes('wrap') && !JSON.stringify(list).includes(V.parseToken(phone.token).secret));
-  assert.equal(await V.revokeDevice(store, phone.deviceId), true);
+  assert.equal(await V.revokeDevice(store, dek, phone.deviceId), true);
   assert.equal(await V.unlockWithToken(store, phone.token), null, 'revoked');
   assert.deepEqual((await V.unlockWithToken(store, token)).dek, dek, 'the other device is unaffected');
-  assert.equal(await V.revokeDevice(store, phone.deviceId), false);
+  assert.equal(await V.revokeDevice(store, dek, phone.deviceId), false);
 });
 
 test('a revoked token cannot come back by replaying an old meta unless the store itself is rolled back', async () => {
   const { store, dek } = await fresh(); const phone = await V.addDevice(store, dek, 'p');
   const before = structuredClone(await store.get(V.META_KEY));
-  await V.revokeDevice(store, phone.deviceId);
+  await V.revokeDevice(store, dek, phone.deviceId);
   assert.equal(await V.unlockWithToken(store, phone.token), null);
   assert.ok(before.devices[phone.deviceId], 'sanity: the old meta did contain it (rollback of the store is outside the threat model: Redis access = vault ciphertext only)');
 });
@@ -131,4 +131,48 @@ test('production KDF parameters work (scrypt N=2^15 under the memory limit) and 
   const store = new MemoryStore(); const v = await V.createVault(store, { password: PW });
   assert.equal((await V.loadMeta(store)).kdf.N, 32768);
   assert.deepEqual((await V.unlockWithPassword(store, PW)).dek, v.dek);
+});
+
+test('rollback: an older doc record (replayed from a snapshot) is refused, even though its own AAD is valid', async () => {
+  const { store, dek } = await fresh();
+  await V.updateDoc(store, dek, (d) => { d.secrets.GEMINI_API_KEY = 'AIzaOLD-revoked-key'; return d; });
+  const snapshot = structuredClone(await store.get(V.DOC_KEY));            // attacker with store access keeps a copy
+  await V.updateDoc(store, dek, (d) => { d.secrets.GEMINI_API_KEY = 'AIzaNEW-current-key'; return d; });
+  await V.updateDoc(store, dek, (d) => { d.settings.X = '1'; return d; });
+  await store.set(V.DOC_KEY, snapshot);                                   // replay the old (genuine) record
+  await assert.rejects(() => V.readDoc(store, dek), (e) => e.code === 'vault_rollback');
+  await assert.rejects(() => V.updateDoc(store, dek, (d) => d), (e) => e.code === 'vault_rollback', 'and nothing is written on top of it');
+});
+
+test('meta is MAC-protected: lowering docVer (to allow a rollback), editing KDF or devices is detected after unwrap', async () => {
+  const { store, dek, token } = await fresh();
+  await V.updateDoc(store, dek, (d) => { d.settings.A = '1'; return d; });
+  const snapshot = structuredClone(await store.get(V.DOC_KEY));
+  await V.updateDoc(store, dek, (d) => { d.settings.A = '2'; return d; });
+  const meta = await store.get(V.META_KEY);
+  assert.ok(V.metaMacOk(dek, meta));
+  // replay the old doc AND lower docVer in meta
+  await store.set(V.DOC_KEY, snapshot); await store.set(V.META_KEY, { ...meta, docVer: snapshot.ver });
+  assert.equal(await V.unlockWithToken(store, token), null, 'a token no longer unlocks a tampered meta');
+  assert.equal(await V.unlockWithPassword(store, PW), null);
+  await assert.rejects(() => V.readDoc(store, dek), (e) => e.code === 'vault_tampered');
+  await store.set(V.META_KEY, { ...meta, kdf: { ...meta.kdf, N: 2048 } }); assert.equal(await V.unlockWithToken(store, token), null);
+  await store.set(V.META_KEY, { ...meta, mac: undefined }); assert.equal(await V.unlockWithToken(store, token), null, 'a meta without MAC is refused');
+  await store.set(V.META_KEY, meta); assert.ok(await V.unlockWithToken(store, token), 'the genuine meta still works');
+});
+
+test('createVault: a doc left from an earlier (reset) vault is replaced; a lost doc write rolls the meta back', async () => {
+  const store = new MemoryStore();
+  await store.set(V.DOC_KEY, { ver: 7, iv: 'x', ct: 'y' });   // stale doc of a vault whose meta was deleted
+  const v = await V.createVault(store, { password: PW, kdf: FAST });
+  assert.deepEqual((await V.readDoc(store, v.dek)).doc.secrets, {});
+  const s2 = new MemoryStore(); const realCas = s2.cas.bind(s2);
+  s2.cas = async (k, e, val) => (k === V.DOC_KEY ? false : realCas(k, e, val));
+  await assert.rejects(() => V.createVault(s2, { password: PW, kdf: FAST }), (e) => e.code === 'conflict');
+  assert.equal(await V.loadMeta(s2), null, 'no half-created vault is left behind');
+});
+
+test('password policy: common, sequential and low-variety passwords are refused', () => {
+  for (const p of ['password123', '1234567890', 'abcdefghij', 'aaaaaaaaaaaa', 'abababababab', 'QWERTYUIOP', '9876543210']) assert.ok(V.checkPassword(p), p);
+  for (const p of ['correct horse battery', 'Tr0ub4dor&3xyz']) assert.equal(V.checkPassword(p), '', p);
 });

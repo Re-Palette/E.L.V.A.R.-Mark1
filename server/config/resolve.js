@@ -71,7 +71,7 @@ async function loadDoc(auth, token) {
   const k = crypto.createHash('sha256').update(token).digest('hex'), now = Date.now();
   const hit = warm.get(k);
   if (hit && hit.docVer === auth.meta.docVer && now - hit.at < WARM_MS) return hit;
-  const { doc, ver } = await readDoc(getStore(), auth.dek);
+  const { doc, ver } = await readDoc(getStore(), auth.dek, auth.meta);
   const rec = { docVer: auth.meta.docVer, doc, ver, at: now };
   warm.set(k, rec);
   if (warm.size > 50) for (const [kk, v] of warm) if (now - v.at > WARM_MS) warm.delete(kk);

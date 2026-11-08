@@ -1,5 +1,5 @@
 // UpstashStore: Vercel (Upstash Redis REST). Values are JSON strings. Atomic operations use small Lua scripts.
-const INCR_LUA = "local n=redis.call('INCR',KEYS[1]); if n==1 then redis.call('EXPIRE',KEYS[1],ARGV[1]) end; return n";
+const INCR_LUA = "local n=redis.call('INCRBY',KEYS[1],ARGV[2]); if redis.call('TTL',KEYS[1])<0 then redis.call('EXPIRE',KEYS[1],ARGV[1]) end; return n";
 const CAS_LUA = "local c=redis.call('GET',KEYS[1]); local v=0; if c then v=cjson.decode(c).ver or 0 end; if v==tonumber(ARGV[1]) then redis.call('SET',KEYS[1],ARGV[2]); return 1 end; return 0";
 
 export class UpstashStore {
@@ -20,7 +20,7 @@ export class UpstashStore {
     const [r] = await this.pipeline([c]); return r === 'OK';
   }
   async del(key) { const [n] = await this.pipeline([['DEL', key]]); return Number(n) > 0; }
-  async incr(key, ttlSec) { const [n] = await this.pipeline([['EVAL', INCR_LUA, '1', key, String(Math.ceil(ttlSec || 86400))]]); return Number(n); }
+  async incr(key, ttlSec, by = 1) { const [n] = await this.pipeline([['EVAL', INCR_LUA, '1', key, String(Math.ceil(ttlSec || 86400)), String(Math.trunc(Number(by) || 0))]]); return Number(n); }
   async cas(key, expectedVer, value) { const [r] = await this.pipeline([['EVAL', CAS_LUA, '1', key, String(Number(expectedVer) || 0), JSON.stringify(value)]]); return Number(r) === 1; }
   async cmd(cmds) { return this.pipeline(cmds); }
 }
