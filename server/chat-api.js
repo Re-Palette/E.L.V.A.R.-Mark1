@@ -6,7 +6,7 @@ import { googleConfigured, declarations } from './google/index.js';
 import { brainProfileSummary, profileBlock, brainCatalog, catalogBlock } from './brain.js';
 import { readConfig } from './live-token-core.js';
 import { completeText, usable } from './llm.js';
-import { A, AS, U } from './profile/index.js';
+import { A, AS, U, currentProfile } from './profile/index.js';
 import { env } from './config/resolve.js';
 
 const API = 'https://generativelanguage.googleapis.com/v1beta/models';
@@ -66,7 +66,7 @@ export function sanitizeContents(contents) {
 
 export async function instruction() {
   const [profile, catalog] = await Promise.all([brainProfileSummary().catch(() => null), brainCatalog().catch(() => null)]);
-  return buildInstruction({ google: googleConfigured() }) + profileBlock(profile) + catalogBlock(catalog) + STD_NOTE;
+  return buildInstruction({ google: googleConfigured(), features: currentProfile().features }) + profileBlock(profile) + catalogBlock(catalog) + STD_NOTE;
 }
 
 /** Gemini's chat is over its limit / down / rejected: answer in plain text with another available model (Sarashina, Groq), no tools. History is flattened to text. */
@@ -94,7 +94,7 @@ async function chatGemini({ contents }) {
   const body = {
     systemInstruction: { parts: [{ text: await instruction() }] },
     contents: sanitizeContents(contents),
-    tools: [{ functionDeclarations: declarations({ alwaysOnly: !googleConfigured() }) }],
+    tools: [{ functionDeclarations: declarations({ alwaysOnly: !googleConfigured(), features: currentProfile().features }) }],
     generationConfig: { temperature: 0.7, maxOutputTokens: 1200 },
   };
   const j = await genAny(MODELS.chat(), body, 28000);
