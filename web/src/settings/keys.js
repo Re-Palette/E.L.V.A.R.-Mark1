@@ -3,6 +3,11 @@ import { esc } from '../elvar/ui.js';
 import { api } from '../elvar/auth.js';
 import { keyStatusText } from '../setup/wizard-text.js';
 
+const LABEL = {
+  GEMINI_API_KEY: 'Gemini APIキー', GROQ_API_KEY: 'Groq APIキー', EXA_API_KEY: 'Exa APIキー', NEWSDATA_API_KEY: 'NewsData APIキー',
+  SARASHINA_API_KEY: 'Sarashina APIキー', BRAIN_GITHUB_TOKEN: '第二の脳の GitHub トークン', BUILD_GITHUB_TOKEN: '製作依頼の GitHub トークン',
+};
+const label = (k, s) => LABEL[k] || s.label;
 const HELP = {
   GEMINI_API_KEY: '音声会話・文章・検索（必須）', GROQ_API_KEY: '難しい推論・サブエージェント', EXA_API_KEY: '本格的な調べもの', NEWSDATA_API_KEY: 'ニュース',
   SARASHINA_API_KEY: '日本語の要約・分類', BRAIN_GITHUB_TOKEN: '第二の脳（GitHub のノート）', BUILD_GITHUB_TOKEN: '製作依頼（Claude Code）',
@@ -17,9 +22,9 @@ export function mountKeys(root) {
       ${ro ? `<p class="ev-note">${cfg.mode === 'env' ? '環境変数モードです。キーは環境変数で変更してください（ここでは状態だけ表示します）。' : 'セットアップが済むと、ここでキーを保存できます。'}</p>` : '<p class="ev-note">保存したキーは暗号化され、画面には二度と表示されません。入れ直すときは、新しいキーを入力して保存します。</p>'}
       ${Object.entries(cfg.secrets).map(([k, s]) => `
         <div class="ev-key" data-k="${esc(k)}">
-          <div class="ev-row" style="margin:0"><span class="nm">${esc(s.label)}</span><span class="ev-chip ${s.set ? 'ok' : 'off'}">${esc(keyStatusText(s))}</span></div>
+          <div class="ev-row" style="margin:0"><span class="nm">${esc(label(k, s))}</span><span class="ev-chip ${s.set ? 'ok' : 'off'}">${esc(keyStatusText(s))}</span></div>
           <div class="st">${esc(HELP[k] || '')}</div>
-          ${ro ? '' : `<div class="ev-row"><input class="ev-input" style="flex:1;min-width:12em" type="password" autocomplete="off" spellcheck="false" aria-label="${esc(s.label)}" data-in>
+          ${ro ? '' : `<div class="ev-row"><input class="ev-input" style="flex:1;min-width:12em" type="password" autocomplete="off" spellcheck="false" aria-label="${esc(label(k, s))}" data-in>
             <button class="ev-btn sm pri" type="button" data-save>保存</button>
             ${s.testable && s.set ? '<button class="ev-btn sm" type="button" data-test>確認</button>' : ''}
             ${s.set && s.source === 'app' ? '<button class="ev-btn sm danger" type="button" data-del>削除</button>' : ''}</div>`}
@@ -39,7 +44,7 @@ export function mountKeys(root) {
       const r = await api('/api/elvar/config', { method: 'PATCH', body: { secrets: { [k]: v } } });
       input.value = '';
       if (r.status !== 200) return msg(r.body?.message || '保存できませんでした', 'warn');
-      cfg = r.body; draw(); msg(`${cfg.secrets[k].label} を保存しました`, 'ok');
+      cfg = r.body; draw(); msg(`${label(k, cfg.secrets[k])} を保存しました`, 'ok');
     } else if (e.target.closest('[data-del]')) {
       const r = await api('/api/elvar/config', { method: 'PATCH', body: { secrets: { [k]: null } } });
       if (r.status === 200) { cfg = r.body; draw(); msg('削除しました', 'ok'); }
