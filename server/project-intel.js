@@ -3,17 +3,32 @@
 // Plain code on the actual text (no model guessing); the 統合担当 agent / the voice model turn it into advice and progress entries.
 import { parseProjectNotes } from './brain.js';
 import { localDate } from '../shared/tz.js';
-import { TZ } from './profile/index.js';
+import { TZ, currentProfile } from './profile/index.js';
 
 const DAY = 864e5;
 const tzDate = (ms) => localDate(ms, TZ());
 const STOP = new Set(['プロジェクト', 'アイデア', 'メモ', '概要', '進捗', 'ログ', '記録', '作成', '作成日', '状態', '新規', '次にやること', 'やること', 'ノート', 'このフォルダのノート', '関連ノート', 'きっかけ', '一言で', 'これから', '追記', '予定', '確認', '会話', '内容', '今日', '明日', '今回', '全体', '目的', '機能', '必要', '場合', 'こと', 'もの', 'ため', 'それ', 'これ', 'する', 'できる', 'いる', 'ある', 'など', 'について', 'として', 'エルヴァー', 'アプリ', 'システム', 'ページ', '作る']);
 
-/** Distinctive terms of a text: katakana words, kanji runs, latin words (frequency-weighted, stop words removed). Pure (tested). */
-export function termsOf(text, limit = 30) {
+// Words that name the people in a conversation (the owner's address / names, the assistant's names): they are on every line of a conversation log,
+// so they must never count as a project's distinctive terms (they would make every project "mentioned" in every conversation).
+export function speakerWords(profile = currentProfile()) {
+  const a = profile?.assistant || {}, o = profile?.owner || {};
+  const out = new Set();
+  for (const w of [a.displayName, a.spokenName, o.name, o.reading, o.romaji, o.address, o.addressReading, ...(o.avoidAddresses || [])]) {
+    const t = String(w || '').trim(); if (!t) continue;
+    out.add(t.toLowerCase());
+    for (const m of t.matchAll(/[ァ-ヴー]{3,}|[一-龠々]{2,}|[A-Za-z][A-Za-z0-9.+#-]{2,}/g)) out.add(m[0].toLowerCase());   // the words inside "テスト様", "E.L.V.A.R." ...
+  }
+  return out;
+}
+// "- **label**：text" -> "text": the speaker label is not content.
+const stripSpeaker = (line) => String(line).replace(/^- \*\*[^*]*\*\*\s*[：:]\s*/, '');
+
+/** Distinctive terms of a text: katakana words, kanji runs, latin words (frequency-weighted, stop words and the speaker names removed). Pure (tested). */
+export function termsOf(text, limit = 30, exclude = speakerWords()) {
   const freq = new Map();
   for (const m of String(text || '').replace(/\[\[[^\]]*\]\]/g, ' ').matchAll(/[ァ-ヴー]{3,}|[一-龠々]{2,}|[A-Za-z][A-Za-z0-9.+#-]{2,}/g)) {
-    const w = m[0].toLowerCase(); if (STOP.has(m[0]) || STOP.has(w) || /^(the|and|for|with|http|https|www|com|md)$/.test(w)) continue;
+    const w = m[0].toLowerCase(); if (STOP.has(m[0]) || STOP.has(w) || exclude.has(w) || /^(the|and|for|with|http|https|www|com|md)$/.test(w)) continue;
     freq.set(w, (freq.get(w) || 0) + 1);
   }
   return [...freq].sort((a, b) => b[1] - a[1] || b[0].length - a[0].length).slice(0, limit).map(([w]) => w);
@@ -45,7 +60,7 @@ export function analyzeProjects({ projects = [], conversations = [], nowMs = Dat
     // how recently / how often the owner talked about it (conversation logs): by name, or by 2+ of its distinctive terms in the same turn
     let mentions = 0, lastMention = null;
     for (const c of convRecent) for (const line of c.text.split('\n')) {
-      const l = line.toLowerCase(); if (!/^- \*\*/.test(line)) continue;
+      if (!/^- \*\*/.test(line)) continue; const l = stripSpeaker(line).toLowerCase();
       if (l.includes(nameKey) || terms.slice(0, 8).filter((t) => l.includes(t)).length >= 2) { mentions++; if (!lastMention || c.date > lastMention) lastMention = c.date; }
     }
     const deadlines = deadlinesIn(all, nowMs).map((d) => ({ ...d, inDays: Math.round((Date.parse(d.date + 'T00:00:00Z') - Date.parse(today + 'T00:00:00Z')) / DAY) }));

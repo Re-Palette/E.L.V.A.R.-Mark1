@@ -74,3 +74,25 @@ test('project screen helpers: relation map draws nodes + edges (dashed when one 
     assert.equal(r.status, 200); assert.equal(r.body.result.count, 0); assert.equal(r.body.result.unconfigured, true); assert.deepEqual(r.body.result.projects, []);
   } finally { for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]; Object.assign(process.env, keep); }
 });
+
+test('conversation logs: the speaker names (address, assistant) are not content: they never become terms and never match a project', async () => {
+  const { speakerWords } = await import('../server/project-intel.js');
+  const { runWithConfig, envConfig } = await import('../server/config/resolve.js');
+  const { mergeProfile } = await import('../shared/profile.js');
+  const prof = mergeProfile({ owner: { name: 'テスト太郎', address: 'テスト様', avoidAddresses: ['テストさん'] } });
+  const sw = speakerWords(prof);
+  for (const w of ['テスト様', 'テスト太郎', 'エルヴァー', 'e.l.v.a.r.', 'テストさん']) assert.ok(sw.has(w), w);
+  // a project whose notes talk to / about the speakers a lot
+  const noisy = P('雑談の案', ['# 雑談の案\nテスト様 エルヴァー テスト様 エルヴァー テスト太郎 テスト様 エルヴァー に相談する。\n## 次にやること\n- [ ] 何か'], '2026-11-01T00:00:00Z');
+  const logs = [{ date: '2026-11-03', text: '### 20:00\n- **テスト様**：今日の天気は？\n- **エルヴァー**：晴れです。\n### 20:10\n- **テスト様**：エルヴァー、ありがとう' }];
+  runWithConfig({ ...envConfig(), profile: prof }, () => {
+    assert.ok(!termsOf(noisy.notes[0].text).some((t) => /テスト|エルヴァー/.test(t)), 'speaker words are excluded from the terms');
+    const r = analyzeProjects({ projects: [noisy], conversations: logs, nowMs: NOW }).projects[0];
+    assert.equal(r.mentionsLast14d, 0, 'a log line is matched on what was said, not on who said it');
+  });
+  // the label prefix is stripped even for words that are not in the profile
+  const other = P('Zeta計画', ['# Zeta計画\nZeta 計画 を進める。## 次にやること\n- [ ] x'], '2026-11-01T00:00:00Z');
+  const lab = [{ date: '2026-11-03', text: '- **Zeta**：関係ない話' }];
+  assert.equal(analyzeProjects({ projects: [other], conversations: lab, nowMs: NOW }).projects[0].mentionsLast14d, 0, 'the "**label**：" prefix does not count');
+  assert.equal(analyzeProjects({ projects: [other], conversations: [{ date: '2026-11-03', text: '- **ご主人様**：Zeta計画 の件だけど' }], nowMs: NOW }).projects[0].mentionsLast14d, 1, 'the content still does');
+});
