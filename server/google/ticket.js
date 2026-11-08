@@ -1,12 +1,14 @@
 // Approval tickets: the server shows the user a summary of an action and signs EXACTLY (tool + args). Only a request that carries
 // a valid ticket for identical args is executed. A model cannot change the args after the user approved, and cannot forge a ticket.
 import crypto from 'node:crypto';
+import { currentConfig } from '../config/resolve.js';
 
 const TTL_MS = 120_000;
 const used = new Map(); // jti -> exp (single use per server instance)
 const fallbackKey = crypto.randomBytes(32);
 
-const key = () => (process.env.ELVAR_ACCESS_TOKEN
+// Vault mode: derived from the vault key (the same on every instance). Env mode: from the shared access token. Otherwise a per-process random key.
+const key = () => currentConfig().ticketKey || (process.env.ELVAR_ACCESS_TOKEN
   ? crypto.createHmac('sha256', process.env.ELVAR_ACCESS_TOKEN).update('elvar-approval-ticket-v1').digest()
   : fallbackKey);
 

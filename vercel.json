@@ -32,6 +32,10 @@
     {
       "source": "/api/hud/data",
       "destination": "/api/hud-data"
+    },
+    {
+      "source": "/api/elvar/:path*",
+      "destination": "/api/elvar?p=:path*"
     }
   ],
   "functions": {
@@ -49,6 +53,9 @@
     },
     "api/chat.js": {
       "maxDuration": 40
+    },
+    "api/elvar.js": {
+      "maxDuration": 20
     }
   }
 }

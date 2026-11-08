@@ -1,6 +1,8 @@
 // Vercel Function: GET /api/health
-import { readConfig, handleHealth, sendJson } from '../server/live-token-core.js';
+import { sendJson } from '../server/http.js';
+import { withConfig } from '../server/config/with-owner.js';
+import { readConfig, handleHealth } from '../server/live-token-core.js';
 
-export default function handler(req, res) {
+export default withConfig((req, res) => {
   sendJson(res, handleHealth(readConfig()));
-}
+});

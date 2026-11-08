@@ -1,10 +1,10 @@
-// E.L.V.A.R. Mark1 — minimal personal server for LOCAL development (Phase 1).
+// E.L.V.A.R. Mark1 — personal server for LOCAL use.
 // On Vercel the same logic runs as Functions in /api (see api/*.js); this file is not used there.
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readConfig, handleLiveToken, handleHealth, sendJson, sendHtml, isAuthorized } from './live-token-core.js';
+import { readConfig, handleLiveToken, handleHealth, sendJson, sendHtml } from './live-token-core.js';
 import { buildConnect, handleCallback } from './google/oauth-web.js';
 import { executeGoogle, googleStatus } from './google/index.js';
 import { runAgent } from './agents/runner.js';
@@ -13,6 +13,10 @@ import { buildHudData } from './hud-data.js';
 import { handleNotif } from './notif-sync.js';
 import { handleChat } from './chat-api.js';
 import { getConfig, runWithConfig } from './config/resolve.js';
+import { routeElvar } from './router.js';
+import { getStore, storeKind } from './store/index.js';
+import { loadMeta } from './config/vault.js';
+import { ensureSetupCode } from './config/auth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.resolve(__dirname, '../web/dist');
@@ -45,63 +49,66 @@ function serveStatic(req, res) {
 }
 
 // The configuration is resolved per request (never frozen at start-up): a changed setting applies to the next request.
-const server = http.createServer(async (req, res) => {
-  const { cfg: appCfg } = await getConfig(req);
-  return runWithConfig(appCfg, () => handle(req, res));
-});
+const server = http.createServer((req, res) => { handle(req, res); });
+
+const OWNER_API = new Set(['/api/live-token', '/api/google/connect', '/api/google/execute', '/api/google/status', '/api/system/check', '/api/chat', '/api/notif', '/api/hud/data', '/api/agent/run']);
+const BODY_METHODS = new Set(['POST', 'PUT', 'PATCH']);
 
 async function handle(req, res) {
-  const cfg = readConfig();
   try {
-    const { pathname } = new URL(req.url, 'http://x');
-    if (pathname === '/api/health') return sendJson(res, handleHealth(cfg));
-    if (pathname === '/api/live-token') return sendJson(res, await handleLiveToken(req, cfg));
-    if (pathname === '/api/google/connect') {
-      if (req.method !== 'POST') return sendJson(res, { status: 405, body: { error: 'method_not_allowed' } });
-      if (!isAuthorized(req, cfg)) return sendJson(res, { status: 401, body: { error: 'unauthorized' } });
-      return sendJson(res, buildConnect(req));
+    const { pathname, searchParams } = new URL(req.url, 'http://x');
+    if (pathname.startsWith('/api/elvar/')) {
+      return sendJson(res, await routeElvar(req, { pathname, query: Object.fromEntries(searchParams), body: BODY_METHODS.has(req.method) ? await readJson(req) : {} }));
     }
-    if (pathname === '/api/google/callback') { const r = await handleCallback(req); return sendHtml(res, r.status, r.html); }
-    if (pathname === '/api/google/execute' || pathname === '/api/google/status') {
-      if (!isAuthorized(req, cfg)) return sendJson(res, { status: 401, body: { error: 'unauthorized' } });
-      if (pathname === '/api/google/status') return sendJson(res, { status: 200, body: await googleStatus({ probe: new URL(req.url, 'http://x').searchParams.get('probe') === '1' }) });
-      if (req.method !== 'POST') return sendJson(res, { status: 405, body: { error: 'method_not_allowed' } });
-      return sendJson(res, await executeGoogle(await readJson(req)));
-    }
-    if (pathname === '/api/system/check') {
-      if (!isAuthorized(req, cfg)) return sendJson(res, { status: 401, body: { error: 'unauthorized' } });
-      return sendJson(res, { status: 200, body: await runServerChecks({ deep: new URL(req.url, 'http://x').searchParams.get('deep') === '1' }) });
-    }
-    if (pathname === '/api/chat') {
-      if (!isAuthorized(req, cfg)) return sendJson(res, { status: 401, body: { error: 'unauthorized' } });
-      return sendJson(res, await handleChat({ method: req.method, body: req.method === 'POST' ? await readJson(req) : {} }));
-    }
-    if (pathname === '/api/notif') {
-      if (!isAuthorized(req, cfg)) return sendJson(res, { status: 401, body: { error: 'unauthorized' } });
-      if (!cfg.accessToken) return sendJson(res, { status: 403, body: { error: 'ELVAR_ACCESS_TOKEN が未設定のため、通知の同期は使えません' } });
-      const q = Object.fromEntries(new URL(req.url, 'http://x').searchParams);
-      return sendJson(res, await handleNotif({ method: req.method, query: q, body: req.method === 'POST' ? await readJson(req) : {} }));
-    }
-    if (pathname === '/api/hud/data') {
-      if (!isAuthorized(req, cfg)) return sendJson(res, { status: 401, body: { error: 'unauthorized' } });
-      return sendJson(res, { status: 200, body: await buildHudData() });
-    }
-    if (pathname === '/api/agent/run') {
-      if (!isAuthorized(req, cfg)) return sendJson(res, { status: 401, body: { error: 'unauthorized' } });
-      if (req.method !== 'POST') return sendJson(res, { status: 405, body: { error: 'method_not_allowed' } });
-      const b = await readJson(req);
-      return sendJson(res, { status: 200, body: await runAgent({ agent: String(b.agent || ''), task: String(b.task || '') }) });
-    }
-    if (pathname.startsWith('/api/')) return sendJson(res, { status: 404, body: { error: 'not_found' } });
-    return serveStatic(req, res);
+    if (!pathname.startsWith('/api/')) return serveStatic(req, res);
+    // Resolve who is calling and with which configuration (vault > env > default), then run the endpoint inside that configuration.
+    const g = await getConfig(req);
+    if (OWNER_API.has(pathname) && !g.ok) return sendJson(res, { status: g.status, body: { error: g.error } });
+    return await runWithConfig(g.cfg, () => api(req, res, pathname, searchParams, g));
   } catch (e) {
     console.error('[server]', e?.message || e);
-    return sendJson(res, { status: 500, body: { error: 'internal_error' } });
+    if (!res.headersSent) return sendJson(res, { status: 500, body: { error: 'internal_error' } });
+    res.end();
   }
 }
 
-server.listen(PORT, () => {
-  const cfg = readConfig();
-  console.log(`[elvar] server on :${PORT} (gemini ${cfg.apiKey ? 'configured' : 'NOT configured'}, model ${cfg.model})`);
-  if (!cfg.accessToken) console.log('[elvar] ELVAR_ACCESS_TOKEN not set → /api/live-token accepts localhost only');
+async function api(req, res, pathname, q, g) {
+  if (pathname === '/api/health') return sendJson(res, handleHealth(readConfig()));
+  if (pathname === '/api/live-token') return sendJson(res, await handleLiveToken(req, readConfig()));
+  if (pathname === '/api/google/connect') {
+    if (req.method !== 'POST') return sendJson(res, { status: 405, body: { error: 'method_not_allowed' } });
+    return sendJson(res, buildConnect(req));
+  }
+  if (pathname === '/api/google/callback') { const r = await handleCallback(req); return sendHtml(res, r.status, r.html); }
+  if (pathname === '/api/google/status') return sendJson(res, { status: 200, body: await googleStatus({ probe: q.get('probe') === '1' }) });
+  if (pathname === '/api/google/execute') {
+    if (req.method !== 'POST') return sendJson(res, { status: 405, body: { error: 'method_not_allowed' } });
+    return sendJson(res, await executeGoogle(await readJson(req)));
+  }
+  if (pathname === '/api/system/check') return sendJson(res, { status: 200, body: await runServerChecks({ deep: q.get('deep') === '1' }) });
+  if (pathname === '/api/chat') return sendJson(res, await handleChat({ method: req.method, body: req.method === 'POST' ? await readJson(req) : {} }));
+  if (pathname === '/api/notif') {
+    if (g.auth.mode === 'local') return sendJson(res, { status: 403, body: { error: '通知の同期には、先にセットアップ（オーナーパスワードの設定）が必要です（暗号化の鍵に使います）' } });
+    return sendJson(res, await handleNotif({ method: req.method, query: Object.fromEntries(q), body: req.method === 'POST' ? await readJson(req) : {} }));
+  }
+  if (pathname === '/api/hud/data') return sendJson(res, { status: 200, body: await buildHudData() });
+  if (pathname === '/api/agent/run') {
+    if (req.method !== 'POST') return sendJson(res, { status: 405, body: { error: 'method_not_allowed' } });
+    const b = await readJson(req);
+    return sendJson(res, { status: 200, body: await runAgent({ agent: String(b.agent || ''), task: String(b.task || '') }) });
+  }
+  return sendJson(res, { status: 404, body: { error: 'not_found' } });
+}
+
+server.listen(PORT, async () => {
+  const kind = storeKind();
+  console.log(`[elvar] server on :${PORT} (store: ${kind})`);
+  try {
+    const store = getStore();
+    if (!store) return console.log('[elvar] no storage configured: add Upstash Redis (UPSTASH_REDIS_REST_URL / _TOKEN) to enable app-side setup');
+    if (await loadMeta(store)) return console.log('[elvar] owner account exists: sign in from the app');
+    if (process.env.ELVAR_ACCESS_TOKEN) console.log('[elvar] ELVAR_ACCESS_TOKEN is set: env mode until the owner account is created in the app');
+    await ensureSetupCode(store, { rotate: true });   // prints "ELVAR SETUP CODE: ..." (the code is shown here only, never over the network)
+    console.log(`[elvar] open http://localhost:${PORT}/ (or the Vite dev URL) to finish setup`);
+  } catch (e) { console.error('[elvar] start-up check failed:', e?.message || e); }
 });

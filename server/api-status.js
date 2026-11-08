@@ -12,6 +12,27 @@ const withTimeout = (p, ms = 6000) => Promise.race([p, new Promise((_, rej) => s
 const why = (e) => String(e?.cause?.code || e?.message || e).slice(0, 120);
 const ms = async (fn) => { const t = Date.now(); const r = await fn(); return [r, Date.now() - t]; };
 
+/** One cheap probe of an HTTP service. @returns {Promise<{status:'ok'|'fail'|'warn', detail:string, verified:boolean}>} */
+async function probeOnce(url, headers, init = {}) {
+  try {
+    const [r, t] = await ms(() => withTimeout(fetch(url, { headers, ...init })));
+    if (r.ok) return { status: 'ok', detail: `接続できました（${t}ms）`, verified: true };
+    if (r.status === 401 || r.status === 403 || r.status === 400) return { status: 'fail', detail: `キーが拒否されました (${r.status})`, verified: true };
+    if (r.status === 429) return { status: 'warn', detail: '利用上限に達しています (429)。キーは有効です', verified: true };
+    return { status: 'warn', detail: `応答は返りましたが想定外です (${r.status})`, verified: false };
+  } catch (e) { return { status: 'fail', detail: `接続できません: ${why(e)}`, verified: false }; }
+}
+
+/** Check ONE saved key (settings screen / wizard). The key is read on the server and never returned. */
+export async function testKey(name) {
+  const key = env(name);
+  if (!key) return { status: 'fail', detail: 'キーが設定されていません', verified: false };
+  if (name === 'GEMINI_API_KEY') return probeOnce('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1', { 'x-goog-api-key': key });
+  if (name === 'GROQ_API_KEY') return probeOnce('https://api.groq.com/openai/v1/models', { authorization: `Bearer ${key}` });
+  if (name === 'EXA_API_KEY') return probeOnce('https://api.exa.ai/search', { 'x-api-key': key, 'content-type': 'application/json' }, { method: 'POST', body: JSON.stringify({ query: 'test', numResults: 1 }) });
+  return { status: 'warn', detail: 'このキーは、つながるかどうかの確認に対応していません（保存だけしました）', verified: false };
+}
+
 /** @returns {Promise<{id:string,group:'api',label:string,status:'ok'|'warn'|'fail'|'off',detail:string,verified:boolean,fix?:string}[]>} */
 export async function apiConnections({ deep = false } = {}) {
   const cfg = readConfig(), items = [];

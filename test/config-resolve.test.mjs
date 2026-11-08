@@ -39,10 +39,10 @@ test('cfgEnv is an env-shaped view: property read, "in", and a live view of chan
   assert.ok(!('SUBAGENT_PROVIDER' in cfgEnv));
 });
 
-test('getConfig(req): env-only for now; shape is final (get/source/profile/features)', async () => {
+test('getConfig(req): before the vault exists, a local loopback caller gets the env-only config (shape: get/source/profile/features)', async () => {
   await withEnv({ BRAIN_BRANCH: 'dev', BRAIN_DIR: undefined }, async () => {
-    const r = await getConfig({ headers: {} });
-    assert.equal(r.ok, true); assert.equal(r.status, 200);
+    const r = await getConfig({ headers: {}, socket: { remoteAddress: '127.0.0.1' } });
+    assert.equal(r.ok, true); assert.equal(r.auth.mode, 'local'); assert.equal(r.status, 200);
     assert.equal(r.cfg.get('BRAIN_BRANCH'), 'dev'); assert.equal(r.cfg.source('BRAIN_BRANCH'), 'env'); assert.equal(r.cfg.source('BRAIN_DIR'), 'default');
     assert.deepEqual(r.cfg.profile, DEFAULT_PROFILE); assert.equal(typeof r.cfg.features, 'object');
   });

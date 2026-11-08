@@ -4,20 +4,23 @@ import { GoogleGenAI, Modality, StartSensitivity, EndSensitivity } from '@google
 import { buildInstruction } from './persona.js';
 import { googleConfigured, declarations } from './google/index.js';
 import { promptVars } from './profile/vars.js';
-import { currentVars } from './profile/index.js';
+import { currentVars, currentProfile } from './profile/index.js';
 import { cfgEnv } from './config/resolve.js';
+import { getStore } from './store/index.js';
+export { sendHtml, sendJson } from './http.js';
 import { brainProfileSummary, profileBlock, brainCatalog, catalogBlock } from './brain.js';
 
 // Changes only when the voice or the greeting wording changes (NOT with every persona / model edit: the saved greeting must survive redeploys) -> clients drop their cached greeting audio.
 const GREETING_PROMPT_VERSION = 'g4';
-const instructionFor = () => buildInstruction({ google: googleConfigured() });
-export function cacheKeyFor(cfg) {
-  return crypto.createHash('sha256').update([cfg.voice, GREETING_PROMPT_VERSION].join('\u0001')).digest('hex').slice(0, 12);
+const instructionFor = () => buildInstruction({ google: googleConfigured(), features: currentProfile().features });
+// The saved greeting audio is valid only for the same voice, wording, address and language: change any of them and clients record it again.
+export function cacheKeyFor(cfg, profile = currentProfile()) {
+  return crypto.createHash('sha256').update([cfg.voice, GREETING_PROMPT_VERSION, profile.greeting?.template, profile.owner?.address, profile.locale?.language].join('\u0001')).digest('hex').slice(0, 12);
 }
 
 // Words the recogniser tends to mishear: hint them.
-export function vocabFor(vars) {
-  return [vars.A, vars.AS, vars.U, vars.UN, '第二の脳', 'ブリーフィング', 'イブニングリキャップ', 'サブエージェント', 'システムチェック', 'Gemini', 'Groq', 'Obsidian'].filter((w, i, a) => w && a.indexOf(w) === i);
+export function vocabFor(vars, profile) {
+  return [vars.A, vars.AS, vars.U, vars.UN, ...(profile?.preferences?.vocabulary || []), '第二の脳', 'ブリーフィング', 'イブニングリキャップ', 'サブエージェント', 'システムチェック', 'Gemini', 'Groq', 'Obsidian'].filter((w, i, a) => w && a.indexOf(w) === i);
 }
 export const VOCAB = vocabFor(promptVars());
 
@@ -25,7 +28,7 @@ export function readConfig(env = cfgEnv) {
   return {
     apiKey: env.GEMINI_API_KEY || '',
     model: env.GEMINI_LIVE_MODEL || 'gemini-3.8-live',
-    voice: env.GEMINI_LIVE_VOICE || 'Kore',
+    voice: env.GEMINI_LIVE_VOICE || currentProfile().assistant.voice || 'Kore',
     fallbackModel: env.GEMINI_LIVE_MODEL_FALLBACK || '',   // used only if minting a token for the main model fails
     // How long a pause counts as "finished speaking" (ms). Lower = the reply starts sooner (but may cut in on slow talkers).
     silenceMs: Math.max(100, Math.min(2000, Number(env.GEMINI_LIVE_SILENCE_MS) || 600)),
@@ -34,34 +37,29 @@ export function readConfig(env = cfgEnv) {
     // LOW (default): small sounds / the reply's own echo are less likely to count as the owner starting to speak (= the reply being cut off).
     startSens: ['high', 'low'].includes(String(env.GEMINI_LIVE_START_SENSITIVITY || '').toLowerCase()) ? String(env.GEMINI_LIVE_START_SENSITIVITY).toUpperCase() : '',   // default: the server's own setting (LOW made it miss the owner's quiet speech)
     // Languages the speech recogniser may choose from (BCP-47). Default Japanese + English only: stops it guessing Korean / Chinese / etc. for unclear audio. '' = automatic.
-    inputLangs: (env.GEMINI_LIVE_INPUT_LANGS === undefined ? 'ja-JP,en-US' : env.GEMINI_LIVE_INPUT_LANGS).split(',').map((x) => x.trim()).filter(Boolean),
+    inputLangs: (env.GEMINI_LIVE_INPUT_LANGS === undefined ? currentProfile().locale.inputLangs.join(',') : env.GEMINI_LIVE_INPUT_LANGS).split(',').map((x) => x.trim()).filter(Boolean),
     accessToken: env.ELVAR_ACCESS_TOKEN || '',
     onVercel: Boolean(env.VERCEL),
   };
 }
 
-function isLoopback(req) {
-  const a = req.socket?.remoteAddress || '';
-  return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
-}
-
-// Fail-closed: with no ELVAR_ACCESS_TOKEN only a local (non-Vercel) loopback caller is allowed.
-export function isAuthorized(req, cfg) {
-  if (!cfg.accessToken) return !cfg.onVercel && isLoopback(req);
-  const a = Buffer.from(String(req.headers['x-elvar-token'] || ''));
-  const b = Buffer.from(cfg.accessToken);
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
-}
-
-// Per-process cap (free-tier protection). On serverless this is per warm instance, i.e. best-effort only.
+// Free-tier protection: at most 30 tokens an hour. Counted in the store (the same on every serverless instance); per process when there is no store.
 const MAX_TOKENS_PER_HOUR = 30;
 const mintLog = [];
+async function mintAllowed(now) {
+  let store = null; try { store = getStore(); } catch { /* fall back to the process counter */ }
+  if (store) {
+    const hour = new Date(now).toISOString().slice(0, 13).replace(/\D/g, '');
+    try { return (await store.incr(`elvar:v1:rl:mint:${hour}`, 3700)) <= MAX_TOKENS_PER_HOUR; } catch { /* store trouble: fall back */ }
+  }
+  while (mintLog.length && now - mintLog[0] > 3600_000) mintLog.shift();
+  if (mintLog.length >= MAX_TOKENS_PER_HOUR) return false;
+  mintLog.push(now); return true;
+}
 
 export async function mintLiveToken(cfg, { useFallback = false, plain = false } = {}) {
   const now = Date.now();
-  while (mintLog.length && now - mintLog[0] > 3600_000) mintLog.shift();
-  if (mintLog.length >= MAX_TOKENS_PER_HOUR) throw Object.assign(new Error('rate_limited'), { status: 429 });
-  mintLog.push(now);
+  if (!(await mintAllowed(now))) throw Object.assign(new Error('rate_limited'), { status: 429 });
   const ai = new GoogleGenAI({ apiKey: cfg.apiKey, httpOptions: { apiVersion: 'v1alpha' } });
   const [profile, catalog] = await Promise.all([brainProfileSummary().catch(() => null), brainCatalog().catch(() => null)]);
   const instruction = instructionFor() + profileBlock(profile) + catalogBlock(catalog);   // learned profile + what the vault contains (titles); kept out of the greeting cache key
@@ -76,10 +74,10 @@ export async function mintLiveToken(cfg, { useFallback = false, plain = false } 
         config: {
           responseModalities: [Modality.AUDIO],
           systemInstruction: instruction,
-          tools: [{ functionDeclarations: declarations({ alwaysOnly: !googleConfigured() }) }],   // without Google only the self-check tool is offered
+          tools: [{ functionDeclarations: declarations({ alwaysOnly: !googleConfigured(), features: currentProfile().features }) }],   // without Google only the self-check tool is offered
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: cfg.voice } } },
           ...(plain ? {} : { outputAudioTranscription: {} }),   // the assistant's own words as text too (for the conversation log in the second brain; no on-screen transcript of them)
-          inputAudioTranscription: plain ? {} : { ...(cfg.inputLangs?.length ? { languageCodes: cfg.inputLangs } : {}), customVocabulary: vocabFor(currentVars()) },   // plain=1: the client's safe retry if the server rejects the language hints
+          inputAudioTranscription: plain ? {} : { ...(cfg.inputLangs?.length ? { languageCodes: cfg.inputLangs } : {}), customVocabulary: vocabFor(currentVars(), currentProfile()) },   // plain=1: the client's safe retry if the server rejects the language hints
           // Faster turn-taking: treat a short pause as the end of the owner's turn and reply right away.
           realtimeInputConfig: { automaticActivityDetection: { ...(cfg.startSens ? { startOfSpeechSensitivity: StartSensitivity[`START_SENSITIVITY_${cfg.startSens}`] } : {}), endOfSpeechSensitivity: EndSensitivity[`END_SENSITIVITY_${cfg.endSens}`], prefixPaddingMs: cfg.prefixMs, silenceDurationMs: cfg.silenceMs } },
         },
@@ -103,10 +101,10 @@ export async function mintLiveToken(cfg, { useFallback = false, plain = false } 
 }
 
 // Framework-neutral request handlers returning { status, body }.
+// The caller has already been authenticated (withOwner / the router): this only checks the method and the key.
 export async function handleLiveToken(req, cfg) {
   if (req.method !== 'POST') return { status: 405, body: { error: 'method_not_allowed' } };
-  if (!isAuthorized(req, cfg)) return { status: 401, body: { error: 'unauthorized' } };
-  if (!cfg.apiKey) return { status: 503, body: { error: 'GEMINI_API_KEY is not set on the server' } };
+  if (!cfg.apiKey) return { status: 503, body: { error: 'setup_required', missing: ['GEMINI_API_KEY'] } };
   const useFallback = /[?&]fallback=1\b/.test(String(req.url || '')), plain = /[?&]plain=1\b/.test(String(req.url || ''));
   try {
     return { status: 200, body: await mintLiveToken(cfg, { useFallback, plain }) };
@@ -119,19 +117,4 @@ export async function handleLiveToken(req, cfg) {
 
 export function handleHealth(cfg) {
   return { status: 200, body: { ok: true, geminiConfigured: Boolean(cfg.apiKey), accessTokenConfigured: Boolean(cfg.accessToken), model: cfg.model, fallbackModel: Boolean(cfg.fallbackModel) } };
-}
-
-export function sendHtml(res, status, html) {
-  res.statusCode = status;
-  res.setHeader('content-type', 'text/html; charset=utf-8');
-  res.setHeader('cache-control', 'no-store');
-  res.setHeader('referrer-policy', 'no-referrer');
-  res.end(html);
-}
-
-export function sendJson(res, { status, body }) {
-  res.statusCode = status;
-  res.setHeader('content-type', 'application/json; charset=utf-8');
-  res.setHeader('cache-control', 'no-store');
-  res.end(JSON.stringify(body));
 }
