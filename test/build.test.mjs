@@ -191,3 +191,10 @@ test('build_status end to end: progress / elapsed / PR stats / checks / run / us
     process.env.CLAUDE_SESSION_RUN_LIMIT = '10'; denyExtras = false; assert.equal((await buildStatus({ summarizeComments: false })).usage.ratio5h, 0.2); delete process.env.CLAUDE_SESSION_RUN_LIMIT;
   });
 });
+
+test('issueBody fills placeholders in our header only, never in the request text', () => {
+  const b = issueBody('ページに「{{U}}」と{{A}}を表示する', 'request');
+  assert.ok(!b.slice(0, b.indexOf('ページに')).includes('{{'), 'header filled');
+  assert.ok(b.includes('ページに「{{U}}」と{{A}}を表示する'), 'request text untouched');
+  const s = issueBody('{{TZ_LABEL}} のまま', 'self'); assert.ok(s.endsWith('{{TZ_LABEL}} のまま'));
+});

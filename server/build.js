@@ -58,7 +58,8 @@ export async function readBrief({ briefPath, brief }) {
   return String(brief || '');
 }
 
-export function issueBody(text, target) { return P((target === 'self' ? SELF_HEAD : REQUEST_HEAD) + String(text).trim()).slice(0, 64000); }
+// Only OUR header carries placeholders: the owner's own request text is inserted as-is (a literal "{{U}}" they typed stays literal).
+export function issueBody(text, target) { return (P(target === 'self' ? SELF_HEAD : REQUEST_HEAD) + String(text).trim()).slice(0, 64000); }
 
 export async function buildRequest({ title, request, project, briefPath, brief, target }) {
   const tg = target === 'self' ? 'self' : 'builds', R = repoFor(tg);
