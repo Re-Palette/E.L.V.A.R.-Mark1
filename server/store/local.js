@@ -28,7 +28,8 @@ export class LocalStore {
   }
   /** Compare-and-set on the record's numeric `ver` (absent record = version 0). `value.ver` is the new version. */
   async cas(key, expectedVer, value) {
-    const cur = await this.get(key); const curVer = cur && Number.isFinite(cur.ver) ? cur.ver : 0;
+    const e = this._live(key); let cur = null; if (e && e.t === 's') { try { cur = JSON.parse(e.v); } catch { /* corrupt: treat as absent */ } }   // no await between the read and the write: atomic
+    const curVer = cur && Number.isFinite(cur.ver) ? cur.ver : 0;
     if (curVer !== (Number(expectedVer) || 0)) return false;
     this.data[key] = { t: 's', v: JSON.stringify(value), x: null }; this._persist(); return true;
   }
