@@ -2,6 +2,7 @@
 // them through the bridge. Nothing is sent anywhere until the owner asks ("通知は？"), and the HUD never shows message text (only app + sender).
 import { decryptJson } from './notif-crypto.js';
 import { ownerAddress } from './brand.js';
+import { notifSecret } from './elvar/auth.js';
 const KEY_READ = 'elvar_notif_read', KEY_SPEAK = 'elvar_notif_speak', KEY_SYNC = 'elvar_notif_sync';
 const cut = (s, n) => { s = String(s ?? '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
 
@@ -38,7 +39,8 @@ export function initNotifications({ live, hudLive, store, onNew = null }) {
   const available = () => !!(A() && A().getNotifications);          // this is the phone app: it holds the notifications itself
   const syncOn = () => store.get(KEY_SYNC) === '1';
   const cloudMode = () => !available() && syncOn();                  // PC / browser: notifications come from the encrypted cloud relay
-  const token = () => live.authHeaders?.()['x-elvar-token'] || '';
+  const token = () => live.authHeaders?.()['x-elvar-token'] || '';   // authorises this device's calls
+  const key = () => notifSecret() || token();                                   // decryption key material (vault notifSecret; the access token in env mode)
   let items = [], lastFetched = 0, cloudSince = 0, pending = [], lastAnnounce = 0, cloudErr = '';
   const seenCloud = new Set();
   const lastRead = () => Number(store.get(KEY_READ)) || 0;
@@ -60,7 +62,7 @@ export function initNotifications({ live, hudLive, store, onNew = null }) {
   let pulling = null;   // one pull at a time: a second caller waits for the first instead of racing it
   function pullCloud(o = {}) { if (!cloudMode()) return Promise.resolve(); return (pulling ??= pullCloudOnce(o).finally(() => { pulling = null; })); }
   async function pullCloudOnce({ quiet = false } = {}) {
-    const t = token(); if (!t) { cloudErr = 'アクセストークンが無いため、復号できません'; return; }
+    const t = key(); if (!t) { cloudErr = 'ログインしていないため、復号できません'; return; }
     try {
       const r = await fetch(`/api/notif?since=${Math.max(0, cloudSince - 1)}`, { headers: live.authHeaders(), cache: 'no-store' });
       if (!r.ok) { cloudErr = r.status === 503 ? 'サーバーのRedis（Upstash）が未設定です' : r.status === 403 ? 'サーバーにアクセストークンが未設定です' : `同期に失敗しました (${r.status})`; return; }
@@ -74,7 +76,7 @@ export function initNotifications({ live, hudLive, store, onNew = null }) {
     } catch (e) { cloudErr = `同期に接続できません: ${e?.message ?? e}`; }
   }
   /** Tell the phone app how to reach the relay (it uploads notifications itself, even while the page is closed). */
-  function configureSync() { try { A()?.setSyncConfig?.(location.origin, token(), syncOn()); } catch {} }
+  function configureSync() { try { A()?.setSyncConfig?.(location.origin, token(), syncOn(), key()); } catch {} }
 
   window.__elvarNotif = (raw) => add(raw);                                                           // pushed by the Android app while the page is open
   if (available()) { fetchNew({ quiet: true }); configureSync(); document.addEventListener('visibilitychange', () => { if (!document.hidden) { fetchNew(); configureSync(); } }); every(fetchNew, 60e3); }
@@ -114,7 +116,7 @@ export function initNotifications({ live, hudLive, store, onNew = null }) {
     },
     setSpeak(on) { store.set(KEY_SPEAK, on ? '1' : '0'); if (!on) pending = []; },
     setSync(on) { store.set(KEY_SYNC, on ? '1' : '0'); configureSync(); if (on && cloudMode()) pullCloud({ quiet: true }); },
-    async cloudStatus() { try { const r = await fetch('/api/notif?status=1', { headers: live.authHeaders(), cache: 'no-store' }); return r.ok ? await r.json() : { configured: false, error: r.status === 403 ? 'ELVAR_ACCESS_TOKEN が未設定' : `エラー (${r.status})` }; } catch { return { configured: false, error: '接続できません' }; } },
+    async cloudStatus() { try { const r = await fetch('/api/notif?status=1', { headers: live.authHeaders(), cache: 'no-store' }); return r.ok ? await r.json() : { configured: false, error: r.status === 403 ? 'セットアップが済んでいません' : `エラー (${r.status})` }; } catch { return { configured: false, error: '接続できません' }; } },
     setApp(pkg, on) { try { A().setNotifApp(pkg, !!on); } catch {} },
     openAccessSettings() { try { A().openNotifSettings(); } catch {} },
     clear() { return this.run({ action: 'clear' }); },

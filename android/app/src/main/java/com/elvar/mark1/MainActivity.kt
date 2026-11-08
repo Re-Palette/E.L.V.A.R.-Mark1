@@ -64,7 +64,7 @@ class MainActivity : Activity() {
         @JavascriptInterface fun getNotifications(afterId: Long): String = NotifStore.since(applicationContext, afterId)
         @JavascriptInterface fun getNotifApps(): String = NotifStore.appsJson(applicationContext)
         @JavascriptInterface fun setNotifApp(pkg: String, on: Boolean) { NotifStore.setAllowed(applicationContext, pkg, on) }
-        @JavascriptInterface fun setSyncConfig(baseUrl: String, token: String, enabled: Boolean) { NotifStore.setSync(applicationContext, baseUrl, token, enabled); if (enabled) NotifSync.trigger(applicationContext) }
+        @JavascriptInterface fun setSyncConfig(baseUrl: String, token: String, enabled: Boolean, notifSecret: String) { NotifStore.setSync(applicationContext, baseUrl, token, enabled, notifSecret); if (enabled) NotifSync.trigger(applicationContext) }
         @JavascriptInterface fun clearNotifications() { NotifStore.clear(applicationContext) }
 
         @JavascriptInterface

@@ -59,10 +59,11 @@ object NotifStore {
     @Synchronized fun clear(ctx: Context) { ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("items", "[]").apply() }
 
     // ---- cloud relay settings (set by the web app) and how far we have uploaded
-    @Synchronized fun setSync(ctx: Context, baseUrl: String, token: String, enabled: Boolean) {
+    // token = this device's x-elvar-token (authorises the upload); notifSecret = the vault's notification key material (empty in env mode: the token is used)
+    @Synchronized fun setSync(ctx: Context, baseUrl: String, token: String, enabled: Boolean, notifSecret: String = "") {
         val sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val wasOn = sp.getBoolean("syncOn", false)
-        val e = sp.edit().putString("syncUrl", baseUrl.trimEnd('/')).putString("syncToken", token).putBoolean("syncOn", enabled)
+        val e = sp.edit().putString("syncUrl", baseUrl.trimEnd('/')).putString("syncToken", token).putString("syncSecret", notifSecret).putBoolean("syncOn", enabled)
         if (enabled && !wasOn) e.putLong("syncedId", sp.getLong("nextId", 1L) - 1)       // switching it on sends NEW notifications only, not the old ones already stored
         e.apply()
     }
@@ -71,6 +72,7 @@ object NotifStore {
         return Triple(sp.getString("syncUrl", "") ?: "", sp.getString("syncToken", "") ?: "", sp.getBoolean("syncOn", false))
     }
     @Synchronized fun syncedId(ctx: Context): Long = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong("syncedId", 0L)
+    @Synchronized fun syncSecret(ctx: Context): String = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("syncSecret", "") ?: ""
     @Synchronized fun setSyncedId(ctx: Context, id: Long) { ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putLong("syncedId", id).apply() }
     /** A short random tag of this install, so ids from two phones can never collide in the relay. */
     @Synchronized fun installTag(ctx: Context): String {

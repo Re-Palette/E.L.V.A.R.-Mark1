@@ -5,9 +5,9 @@ import { AudioMeter } from './audio-meter.js';
 import { getGreeting, putGreeting, concatPcm } from './greeting-cache.js';
 import { greetingPrompt } from './greeting-gen.js';
 import { StdSession, QUOTA_RE, isQuotaClose } from './std-session.js';
+import { authHeaders, requireLogin } from '../elvar/auth.js';
 
 const OUT_RATE = 24000; // Gemini Live output: 24 kHz 16-bit PCM
-const TOKEN_KEY = 'elvar_access_token';
 const QUOTA_HOURS = 3;   // after the Live limit is hit, stay away from Live for this long (the limit is per day; we re-probe later)
 const lsGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
@@ -217,30 +217,17 @@ export class GeminiLiveSession {
     await this.connecting;
   }
 
-  /** Headers that authorise calls to our own /api (the access token saved in the browser or passed by the desktop app). */
-  authHeaders() {
-    let saved = ''; try { saved = localStorage.getItem(TOKEN_KEY) || ''; } catch {}
-    saved = saved || window.elvarDesktop?.accessToken || '';
-    return saved ? { 'x-elvar-token': saved } : {};
-  }
+  /** Headers that authorise calls to our own /api (delegates to the auth module: the device token). */
+  authHeaders() { return authHeaders(); }
 
   async fetchToken({ interactive = true, fallback = false, plain = flagActive('elvar_plain_asr') } = {}) {
     const url = '/api/live-token' + (fallback || plain ? '?' + [fallback && 'fallback=1', plain && 'plain=1'].filter(Boolean).join('&') : '');
-    const headers = { 'content-type': 'application/json' };
-    const saved = localStorage.getItem(TOKEN_KEY) || window.elvarDesktop?.accessToken || ''; // desktop app passes it at launch (no window.prompt there)
-    if (saved) headers['x-elvar-token'] = saved;
-    let r = await fetch(url, { method: 'POST', headers });
+    const post = () => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders() } });
+    let r = await post();
     if (r.status === 401 && !interactive) throw new Error('unauthorized');
-    if (r.status === 401) {
-      const entered = window.prompt('E.L.V.A.R. アクセストークンを入力してください');
-      if (!entered) throw new Error('アクセストークンが必要です');
-      localStorage.setItem(TOKEN_KEY, entered);
-      headers['x-elvar-token'] = entered;
-      r = await fetch(url, { method: 'POST', headers });
-    }
+    if (r.status === 401) { await requireLogin(); r = await post(); }   // the sign-in screen (no window.prompt)
     if (!r.ok) {
       const body = await r.json().catch(() => ({}));
-      if (r.status === 401) localStorage.removeItem(TOKEN_KEY);
       throw new Error(body.error || `token request failed (${r.status})`);
     }
     const data = await r.json();

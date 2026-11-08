@@ -16,7 +16,7 @@ import javax.crypto.spec.SecretKeySpec
 
 /**
  * Uploads notifications to the owner's relay (/api/notif) so the PC can read them. Runs inside the app (not the page), so it works while the
- * screen is closed. Every notification is encrypted on the phone first: AES-256-GCM, key = PBKDF2-SHA256(access token, "elvar-notif-v1", 100000)
+ * screen is closed. Every notification is encrypted on the phone first: AES-256-GCM, key = PBKDF2-SHA256(notifSecret from the vault (the access token in env mode), "elvar-notif-v1", 100000)
  * - the same as web/src/notif-crypto.js. Off unless the owner switched it on in the settings.
  */
 object NotifSync {
@@ -51,7 +51,7 @@ object NotifSync {
         for (i in 0 until minOf(all.length(), 30)) {
             val o = all.getJSONObject(i); val id = o.getLong("id")
             val plain = JSONObject().put("app", o.optString("app")).put("pkg", o.optString("pkg")).put("from", o.optString("title")).put("conversation", o.optString("conversation")).put("text", o.optString("text")).put("at", o.getLong("at")).toString()
-            val (iv, ct) = encrypt(token, plain)
+            val (iv, ct) = encrypt(NotifStore.syncSecret(ctx).ifBlank { token }, plain)
             out.put(JSONObject().put("id", "n$id-$tag").put("at", o.getLong("at")).put("iv", iv).put("ct", ct)); maxId = maxOf(maxId, id)
         }
         val conn = URL("$base/api/notif").openConnection() as HttpURLConnection
