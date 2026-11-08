@@ -26,14 +26,12 @@ export async function sarashinaChat({ messages, fast = false, temperature = 0.3,
     try {
       r = await fetch(`${sarashinaBaseUrl()}/chat/completions`, { method: 'POST', signal: AbortSignal.timeout(timeoutMs), headers: { authorization: `Bearer ${sarashinaKey()}`, 'content-type': 'application/json', accept: 'application/json', 'user-agent': 'elvar/1.0' }, body: JSON.stringify({ model: m, messages, ...(withTemp ? { temperature } : {}) }) });
     } catch (e) { throw Object.assign(new Error(`Sarashinaに接続できません: ${e?.cause?.code || e?.message || e}`), { status: 502 }); }
-    // read the raw body: an HTML / empty answer (a gateway or firewall in front of the API) says a lot more than "403"
-    let raw = ''; let j = {};
-    if (typeof r.text === 'function') { raw = await r.text().catch(() => ''); try { j = JSON.parse(raw); } catch { j = {}; } }
-    else if (typeof r.json === 'function') j = await r.json().catch(() => ({}));
+    let j = {};
+    if (typeof r.json === 'function') j = await r.json().catch(() => ({}));
     if (!r.ok) {
-      const apiMsg = String(j?.error?.message || j?.message || '').slice(0, 160);
-      const hint = apiMsg ? '' : ` [応答: ${raw ? raw.replace(/\s+/g, ' ').slice(0, 90) : '本文なし'}／server=${r.headers?.get?.('server') || '?'}／type=${r.headers?.get?.('content-type') || '?'}]`;
-      throw Object.assign(new Error(`Sarashinaのエラー (${r.status}, モデル ${m}): ${apiMsg}${hint}`), { status: r.status, quota: r.status === 429 });
+      // The upstream body is NOT put into the error (it reaches the system check and the voice model); only its status and type.
+      const type = String(r.headers?.get?.('content-type') || '?').split(';')[0].slice(0, 40);
+      throw Object.assign(new Error(`Sarashinaのエラー (${r.status}, モデル ${m}, 応答の種類 ${type})`), { status: r.status, quota: r.status === 429 });
     }
     const text = j?.choices?.[0]?.message?.content;
     if (!text || !String(text).trim()) throw new Error('Sarashinaから回答が返りませんでした');

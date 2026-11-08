@@ -4,6 +4,11 @@ import { sendJson } from '../server/http.js';
 import { routeElvar } from '../server/router.js';
 
 export default async function handler(req, res) {
+  try { await route(req, res); }
+  catch (e) { console.error('[elvar]', e?.code || e?.message || e); if (!res.headersSent) sendJson(res, { status: 500, body: { error: 'internal_error' } }); }
+}
+
+async function route(req, res) {
   const u = new URL(req.url, 'http://x');
   const p = u.searchParams.get('p');
   u.searchParams.delete('p');

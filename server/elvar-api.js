@@ -26,6 +26,16 @@ export function configView(cfg, a) {
   return { mode: a.mode, writable: writable(a), secrets, settings, missing: ['GEMINI_API_KEY'].filter((n) => !st[n]?.set) };
 }
 
+// Settings that end up inside a URL (repository names, model ids) get a strict format; anything that would be a host / URL is env-only (keys.js infra).
+const SHAPES = [
+  [/_REPO$/, /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/, 'owner/name の形で入力してください'],
+  [/MODEL/, /^[A-Za-z0-9][A-Za-z0-9_.:-]*(\/[A-Za-z0-9][A-Za-z0-9_.:-]*)?$/, 'モデル名の形式が正しくありません'],
+  [/_(URL|ORIGIN|HOST|ENDPOINT)$/, /^$/, 'このアドレスはアプリからは変更できません'],
+];
+function shapeError(name, v) {
+  for (const [re, ok, msg] of SHAPES) if (re.test(name) && (!ok.test(v) || v.includes('..'))) return msg;
+  return '';
+}
 const okValue = (v, max) => typeof v === 'string' && v.length <= max && !/[\u0000-\u001f\u007f]/.test(v);
 
 export async function getConfigRoute({ cfg, auth: a }) { return { status: 200, body: configView(cfg, a) }; }
@@ -46,6 +56,7 @@ export async function patchConfig({ body, auth: a, cfg }) {
     if (!SETTING_EDITABLE(name)) return bad(400, 'unknown_key', `${name} は設定できません`);
     if (v === null || v === '') { settingUpdates[name] = null; continue; }
     if (!okValue(v, 200)) return bad(400, 'bad_value', '値が正しくありません', { key: name });
+    const se = shapeError(name, v.trim()); if (se) return bad(400, 'bad_value', se, { key: name });
     settingUpdates[name] = v.trim();
   }
   const store = getStore();

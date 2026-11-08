@@ -41,7 +41,7 @@ test('cfgEnv is an env-shaped view: property read, "in", and a live view of chan
 
 test('getConfig(req): before the vault exists, a local loopback caller gets the env-only config (shape: get/source/profile/features)', async () => {
   await withEnv({ BRAIN_BRANCH: 'dev', BRAIN_DIR: undefined }, async () => {
-    const r = await getConfig({ headers: {}, socket: { remoteAddress: '127.0.0.1' } });
+    const r = await getConfig({ headers: { host: 'localhost:8787' }, socket: { remoteAddress: '127.0.0.1' } });
     assert.equal(r.ok, true); assert.equal(r.auth.mode, 'local'); assert.equal(r.status, 200);
     assert.equal(r.cfg.get('BRAIN_BRANCH'), 'dev'); assert.equal(r.cfg.source('BRAIN_BRANCH'), 'env'); assert.equal(r.cfg.source('BRAIN_DIR'), 'default');
     assert.deepEqual(r.cfg.profile, DEFAULT_PROFILE); assert.equal(typeof r.cfg.features, 'object');

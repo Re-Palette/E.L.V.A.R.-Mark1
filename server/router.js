@@ -43,10 +43,13 @@ function match(pathname) {
  * @returns {Promise<{status:number, body:object}>}
  */
 export async function routeElvar(req, { pathname, query = {}, body = {} }) {
-  const hits = match(pathname);
+  let hits;
+  try { hits = match(pathname); } catch { return bad(400, 'bad_path'); }   // a malformed %-escape
   if (!hits.length) return bad(404, 'not_found');
   const hit = hits.find((h) => h.r.method === req.method);
   if (!hit) return bad(405, 'method_not_allowed');
+  // Writes must be JSON: a cross-site <form> or a text/plain fetch cannot send that without a CORS preflight (which we never answer).
+  if (['POST', 'PUT', 'PATCH'].includes(req.method) && !/^application\/json\b/i.test(String(req.headers['content-type'] || ''))) return bad(415, 'json_required');
   try {
     if (hit.r.auth === 'owner') {
       const g = await getConfig(req);

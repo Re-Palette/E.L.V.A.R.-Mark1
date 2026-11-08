@@ -11,19 +11,21 @@ import handler from '../api/elvar.js';
 _setKdfForTests({ N: 2 ** 10, r: 8, p: 1 });
 const PW = 'correct horse battery';
 const TOUCH = ['ELVAR_ACCESS_TOKEN', 'ELVAR_SETUP_CODE', 'VERCEL', 'GEMINI_API_KEY', 'GROQ_API_KEY'];
+const CODE = 'TEST-CODE-0001';   // a fixed setup code (ELVAR_SETUP_CODE) for the tests that do not read it from the log
 
 async function fresh(fn, env0 = {}) {
   const old = Object.fromEntries(TOUCH.map((k) => [k, process.env[k]]));
   for (const k of TOUCH) delete process.env[k];
-  Object.assign(process.env, env0);
+  Object.assign(process.env, { ELVAR_SETUP_CODE: CODE }, env0);
+  for (const [k, v] of Object.entries(env0)) if (v === undefined) delete process.env[k];
   resetStore(); _clearWarmCache();
   const logs = []; const realLog = console.log; console.log = (...a) => logs.push(a.join(' '));
   try { return await fn({ logs }); }
   finally { console.log = realLog; for (const k of TOUCH) { if (old[k] === undefined) delete process.env[k]; else process.env[k] = old[k]; } resetStore(); _clearWarmCache(); }
 }
-const mk = (method, token, ip = '127.0.0.1') => ({ method, headers: token ? { 'x-elvar-token': token } : {}, socket: { remoteAddress: ip } });
-const call = (method, pathname, { token, body, query, ip } = {}) => routeElvar(mk(method, token, ip), { pathname, body, query });
-async function owner() { const r = await call('POST', '/api/elvar/setup/claim', { body: { password: PW, deviceName: 'PC' } }); assert.equal(r.status, 200); return r.body.token; }
+const mk = (method, token, ip = '127.0.0.1', extra = {}) => ({ method, headers: { host: 'localhost:8787', ...(['POST', 'PUT', 'PATCH'].includes(method) ? { 'content-type': 'application/json' } : {}), ...(token ? { 'x-elvar-token': token } : {}), ...extra }, socket: { remoteAddress: ip } });
+const call = (method, pathname, { token, body, query, ip, headers } = {}) => routeElvar(mk(method, token, ip, headers), { pathname, body, query });
+async function owner() { const r = await call('POST', '/api/elvar/setup/claim', { body: { setupCode: CODE, password: PW, deviceName: 'PC' } }); assert.equal(r.status, 200); return r.body.token; }
 
 test('route table: unknown path 404, wrong method 405, every route is registered once', () => fresh(async () => {
   assert.equal((await call('GET', '/api/elvar/nope')).status, 404);
@@ -71,7 +73,7 @@ test('full setup flow: state -> claim -> save the Gemini key (write-only) -> pro
   assert.equal(sess.body.profile.locale.timeZone, 'America/New_York'); assert.deepEqual(sess.body.brand, { name: 'E.L.V.A.R.', spokenName: 'エルヴァー', ownerAddress: 'テスト様' });
   assert.ok(sess.body.notifSecret.length >= 40); assert.deepEqual(sess.body.missing, []); assert.equal(sess.body.mode, 'vault');
   assert.equal((await call('POST', '/api/elvar/setup/claim', { ip: '203.0.113.5', body: { setupCode: code, password: PW } })).status, 409, 'setup runs once');
-}));
+}, { ELVAR_SETUP_CODE: undefined }));
 
 test('config PATCH validation: unknown / google / profile-backed keys, whitespace in keys, null deletes, settings revert to default', () => fresh(async () => {
   const token = await owner(); const patch = (body) => call('PATCH', '/api/elvar/config', { token, body });
@@ -152,7 +154,26 @@ test('api/elvar.js: the Vercel entry maps ?p=<path> (from the rewrite) to the ro
   const run = async (url, over = {}) => { const out = {}; await handler({ method: 'GET', url, headers: {}, socket: { remoteAddress: '127.0.0.1' }, ...over }, { setHeader() {}, end(b) { out.body = JSON.parse(b); }, get statusCode() { return out.status; }, set statusCode(v) { out.status = v; } }); return out; };
   const st = await run('/api/elvar?p=state'); assert.equal(st.status, 200); assert.equal(st.body.initialized, false);
   const nf = await run('/api/elvar?p=nothing/here'); assert.equal(nf.status, 404);
-  const cl = await run('/api/elvar?p=setup/claim', { method: 'POST', body: { password: PW } }); assert.equal(cl.status, 200); assert.ok(cl.body.token);
+  const cl = await run('/api/elvar?p=setup/claim', { method: 'POST', headers: { 'content-type': 'application/json' }, body: { setupCode: CODE, password: PW } }); assert.equal(cl.status, 200); assert.ok(cl.body.token);
   const dev = await run(`/api/elvar?p=devices`, { headers: { 'x-elvar-token': cl.body.token } }); assert.equal(dev.status, 200); assert.equal(dev.body.devices.length, 1);
   const q = await run('/api/elvar?p=devices&x=1', { headers: {} }); assert.equal(q.status, 401);
+}));
+
+test('writes must be JSON (415 otherwise); a malformed %-escape is a 400, not a crash', () => fresh(async () => {
+  const r = await call('POST', '/api/elvar/setup/claim', { body: { setupCode: CODE, password: PW }, headers: { 'content-type': 'text/plain' } });
+  assert.equal(r.status, 415);
+  assert.equal((await call('PATCH', '/api/elvar/config', { headers: { 'content-type': 'application/x-www-form-urlencoded' } })).status, 415);
+  assert.equal((await call('DELETE', '/api/elvar/devices/%E0%A4%A')).status, 400);
+  const out = {}; await handler({ method: 'GET', url: '/api/elvar?p=devices/%E0%A4%A', headers: {}, socket: { remoteAddress: '127.0.0.1' } }, { setHeader() {}, end(b) { out.body = JSON.parse(b); }, get statusCode() { return out.status; }, set statusCode(v) { out.status = v; } });
+  assert.ok(out.status === 400 || out.status === 405, 'answered');
+}));
+
+test('SARASHINA_BASE_URL and other endpoint settings cannot be set from the app (a typed URL could send the key elsewhere); repos / model names are format-checked', () => fresh(async () => {
+  const token = await owner(); const patch = (settings) => call('PATCH', '/api/elvar/config', { token, body: { settings } });
+  assert.equal((await patch({ SARASHINA_BASE_URL: 'https://evil.example/v1' })).body.error, 'unknown_key');
+  assert.ok(!('SARASHINA_BASE_URL' in (await call('GET', '/api/elvar/config', { token })).body.settings));
+  for (const [k, v] of [['BRAIN_REPO', '../../evil'], ['BRAIN_REPO', 'a/b/c'], ['BUILD_REPO', 'x y/z'], ['GROQ_MODEL', '../../v1/x'], ['GEMINI_LIVE_MODEL', 'm?key=1'], ['SARASHINA_MODEL', 'a#b']]) {
+    assert.equal((await patch({ [k]: v })).status, 400, `${k}=${v}`);
+  }
+  assert.equal((await patch({ BRAIN_REPO: 'owner-1/notes.repo', GROQ_MODEL: 'openai/gpt-oss-120b' })).status, 200);
 }));

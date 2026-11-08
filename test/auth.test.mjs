@@ -24,7 +24,7 @@ async function fresh(fn, env0 = {}) {
   finally { console.log = realLog; for (const k of TOUCH) { if (old[k] === undefined) delete process.env[k]; else process.env[k] = old[k]; } resetStore(); _clearWarmCache(); }
 }
 const req = (o = {}) => ({ method: 'GET', headers: {}, socket: { remoteAddress: '203.0.113.9' }, url: '/', ...o });
-const local = (o = {}) => req({ socket: { remoteAddress: '127.0.0.1' }, ...o });
+const local = (h = {}, o = {}) => req({ socket: { remoteAddress: '127.0.0.1' }, headers: { host: 'localhost:8787', ...h }, ...o });
 const withTok = (token, o = {}) => req({ headers: { 'x-elvar-token': token }, ...o });
 const codeFrom = (logs) => { const m = logs.join('\n').match(/ELVAR SETUP CODE: ([A-Z0-9]{4}-[A-Z0-9]{4})/); return m && m[1]; };
 
@@ -38,12 +38,12 @@ test('state: a fresh remote instance asks for the setup code, which is printed t
   assert.ok(!JSON.stringify(await getStore().get('elvar:v1:setup')).includes(code.replace('-', '')), 'only a hash is stored');
 }));
 
-test('state: local loopback needs no code; the Vercel flag and forwarding headers remove that trust', () => fresh(async () => {
-  assert.equal((await A.setupState(local())).body.setupCodeRequired, false);
-  assert.equal((await A.setupState(local({ headers: { 'x-forwarded-for': '198.51.100.1' } }))).body.setupCodeRequired, true, 'behind a proxy: not local');
+test('state: the setup code is ALWAYS required (also from this machine); `local` only describes the caller', () => fresh(async ({ logs }) => {
+  const s = await A.setupState(local());
+  assert.equal(s.body.setupCodeRequired, true); assert.equal(s.body.local, true); assert.ok(codeFrom(logs));
+  assert.equal((await A.setupState(local({ 'x-forwarded-for': '198.51.100.1' }))).body.local, false, 'behind a proxy: not local');
   process.env.VERCEL = '1';
-  assert.equal((await A.setupState(local())).body.setupCodeRequired, true);
-  assert.equal((await A.setupState(req())).body.storage, 'memory');
+  assert.equal((await A.setupState(local())).body.local, false);
 }));
 
 test('state: no storage on Vercel reports storage "none" and no setup is possible', () => fresh(async () => {
@@ -68,8 +68,34 @@ test('claim: wrong code 403, weak password 400, success returns a device token, 
   assert.equal((await A.setupState(req())).body.initialized, true);
 }));
 
-test('claim: from loopback the code may be omitted (local node)', () => fresh(async () => {
-  const ok = await A.claim(local(), { password: PW, deviceName: 'Mac' }); assert.equal(ok.status, 200);
+test('claim: needs the setup code even from loopback (no local shortcut); a JSON-less / cross-site request cannot claim either', () => fresh(async ({ logs }) => {
+  await A.setupState(local()); const code = codeFrom(logs);
+  assert.equal((await A.claim(local({ 'content-type': 'application/json' }, { method: 'POST' }), { password: PW })).status, 403, 'no code, local');
+  assert.equal((await A.claim(local({ 'content-type': 'text/plain', origin: 'https://evil.example' }, { method: 'POST' }), { password: PW })).status, 403, 'the reported CSRF');
+  assert.equal((await A.claim(local({ 'content-type': 'application/json' }, { method: 'POST' }), { setupCode: code, password: PW })).status, 200);
+}));
+
+test('claim in env mode needs the setup code AND the env token (the env owner cannot be locked out by a local / cross-site caller)', () => fresh(async ({ logs }) => {
+  await A.setupState(local()); const code = codeFrom(logs);
+  const r1 = await A.claim(local({ 'content-type': 'text/plain', origin: 'https://evil.example' }, { method: 'POST' }), { setupCode: code, password: PW });
+  assert.equal(r1.status, 401, 'right code but no env token');
+  assert.equal((await A.claim(local({ 'x-elvar-token': 'wrong' }), { setupCode: code, password: PW })).status, 401);
+  assert.equal((await A.authenticate(withTok('env-secret'))).mode, 'env', 'the env token still works');
+  assert.equal((await A.claim(local({ 'x-elvar-token': 'env-secret' }), { setupCode: code, password: PW })).status, 200);
+}, { ELVAR_ACCESS_TOKEN: 'env-secret' }));
+
+test('pre-setup local mode: only a same-machine browser (loopback peer + loopback Host + no foreign Origin + not cross-site + JSON writes)', () => fresh(async () => {
+  const ok = (h, o) => A.authenticate(local(h, o)).then((r) => r.ok);
+  assert.equal(await ok(), true);
+  assert.equal(await ok({ host: '127.0.0.1:5173', origin: 'http://localhost:5173' }), true, 'the Vite dev server');
+  assert.equal(await ok({ host: 'attacker.example:8787' }), false, 'DNS rebinding: foreign Host');
+  assert.equal(await ok({ origin: 'https://evil.example' }), false, 'foreign Origin');
+  assert.equal(await ok({ origin: 'null' }), false, 'opaque origin (sandboxed iframe, file://)');
+  assert.equal(await ok({ 'sec-fetch-site': 'cross-site' }), false);
+  assert.equal(await ok({ 'content-type': 'text/plain' }, { method: 'POST' }), false, 'simple POST');
+  assert.equal(await ok({ 'content-type': 'application/json' }, { method: 'POST' }), true);
+  assert.equal(await ok({ 'x-forwarded-for': '203.0.113.1' }), false, 'reverse proxy');
+  assert.equal((await A.authenticate(req({ headers: { host: 'localhost' } }))).ok, false, 'remote peer');
 }));
 
 test('claim: ELVAR_SETUP_CODE (advanced) is honoured and nothing is generated', () => fresh(async ({ logs }) => {
@@ -79,11 +105,19 @@ test('claim: ELVAR_SETUP_CODE (advanced) is honoured and nothing is generated', 
   assert.equal((await A.claim(req(), { setupCode: 'my-fixed-code', password: PW })).status, 200);
 }, { ELVAR_SETUP_CODE: 'MY-FIXED-CODE' }));
 
-test('claim is rate limited: 5 attempts an hour per address', () => fresh(async () => {
+test('claim is rate limited: 5 attempts an hour per address; many wrong codes rotate (and re-print) the code instead of blocking everyone', () => fresh(async ({ logs }) => {
   await A.setupState(req());
   for (let i = 0; i < 5; i++) assert.equal((await A.claim(req(), { setupCode: 'BAD' + i, password: PW })).status, 403);
   const r = await A.claim(req(), { setupCode: 'BAD6', password: PW }); assert.equal(r.status, 429);
   assert.equal((await A.claim(req({ socket: { remoteAddress: '198.51.100.7' } }), { setupCode: 'BAD', password: PW })).status, 403, 'another address is not blocked by the first');
+  // 20 wrong codes from many addresses: the code is replaced (printed again); the owner is not locked out
+  const first = codeFrom(logs);
+  for (let i = 0; i < 20; i++) await A.claim(req({ socket: { remoteAddress: `198.51.100.${50 + i}` } }), { setupCode: 'WRONG' + i, password: PW });
+  const codes = logs.join('\n').match(/ELVAR SETUP CODE: ([A-Z0-9-]{9})/g);
+  assert.ok(codes.length >= 2, 'a new code was printed'); const latest = codes.at(-1).slice(-9);
+  assert.notEqual(latest, first);
+  assert.equal((await A.claim(req({ socket: { remoteAddress: '198.51.100.99' } }), { setupCode: first, password: PW })).status, 403, 'the old code is dead');
+  assert.equal((await A.claim(req({ socket: { remoteAddress: '198.51.100.98' } }), { setupCode: latest, password: PW })).status, 200, 'the owner, with the new code, still gets in');
 }));
 
 async function setup(logs) { await A.setupState(req()); const c = await A.claim(req(), { setupCode: codeFrom(logs), password: PW, deviceName: 'PC' }); assert.equal(c.status, 200); return c.body; }
@@ -215,3 +249,41 @@ test('version.js equals package.json; the Vercel function budget is respected (<
   const v = JSON.parse(fs.readFileSync(root + 'vercel.json', 'utf8'));
   assert.ok(v.rewrites.some((r) => r.source === '/api/elvar/:path*' && r.destination === '/api/elvar?p=:path*'));
 });
+
+test('login: 40 parallel wrong guesses -> at most 5 reach the password check (counted atomically before scrypt)', () => fresh(async ({ logs }) => {
+  await setup(logs);
+  const rs = await Promise.all(Array.from({ length: 40 }, (_, i) => A.login(req(), { password: 'wrong password ' + i })));
+  assert.equal(rs.filter((r) => r.status === 401).length, 5); assert.equal(rs.filter((r) => r.status === 429).length, 35);
+  assert.equal((await A.login(req(), { password: PW })).status, 429, 'still locked');
+}));
+
+test('login: a success clears the address count; a global failure cap stops distributed guessing; IPv6 is grouped by /64', () => fresh(async ({ logs }) => {
+  await setup(logs);
+  for (let i = 0; i < 4; i++) await A.login(req(), { password: 'nope nope nope' });
+  assert.equal((await A.login(req(), { password: PW })).status, 200);
+  for (let i = 0; i < 4; i++) assert.equal((await A.login(req(), { password: 'nope nope nope' })).status, 401, 'the count restarted');
+  // IPv6: different addresses in one /64 share one counter
+  const v6 = (h) => req({ socket: { remoteAddress: `2001:db8:1:2:${h}::1` } });
+  for (let i = 0; i < 5; i++) assert.equal((await A.login(v6(i.toString(16)), { password: 'nope nope nope' })).status, 401);
+  assert.equal((await A.login(v6('ff'), { password: PW })).status, 429, 'same /64');
+  assert.equal(A.addrKey('2001:db8:1:2:aaaa::1'), A.addrKey('2001:0db8:0001:0002:ffff:1:2:3'));
+  assert.equal(A.addrKey('::ffff:192.0.2.1'), '192.0.2.1'); assert.equal(A.addrKey('192.0.2.1'), '192.0.2.1');
+  // global cap: 100 failures across many addresses in 15 min
+  const store = getStore(); await store.set('elvar:v1:rl:loginall:all', 100, { ttlSec: 900 });
+  assert.equal((await A.login(req({ socket: { remoteAddress: '198.51.100.200' } }), { password: PW })).status, 429, 'global cap');
+}));
+
+test('password change uses the same atomic attempt counting', () => fresh(async ({ logs }) => {
+  const { token } = await setup(logs); const me = await A.authenticate(withTok(token));
+  const rs = await Promise.all(Array.from({ length: 12 }, () => A.changeOwnerPassword(req(), me, { current: 'wrong wrong wrong', next: 'a new long password' })));
+  assert.equal(rs.filter((r) => r.status === 401).length, 5); assert.ok(rs.filter((r) => r.status === 429).length >= 7);
+}));
+
+test('client address: the socket off Vercel (forwarding headers ignored), ELVAR_TRUST_PROXY names the header of YOUR proxy (rightmost entry)', () => fresh(async () => {
+  const r = req({ headers: { 'x-forwarded-for': '1.1.1.1, 203.0.113.7' }, socket: { remoteAddress: '127.0.0.1' } });
+  assert.equal(A.clientIp(r), '127.0.0.1', 'not trusted by default');
+  process.env.ELVAR_TRUST_PROXY = 'x-forwarded-for';
+  try { assert.equal(A.clientIp(r), '203.0.113.7', 'the entry the proxy appended, not the one the client sent'); }
+  finally { delete process.env.ELVAR_TRUST_PROXY; }
+  process.env.VERCEL = '1'; assert.equal(A.clientIp(req({ headers: { 'x-real-ip': '203.0.113.8' } })), '203.0.113.8');
+}));

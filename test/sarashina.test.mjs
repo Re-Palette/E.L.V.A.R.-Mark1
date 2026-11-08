@@ -118,7 +118,7 @@ test('sarashina: a refused parameter (400) is retried without temperature; a 429
   });
   assert.deepEqual(models, ['sarashina3-mini', 'sarashina3-nano']);
   await withFetch(async () => ({ ok: false, status: 401, json: async () => ({ message: 'Unauthorized' }) }), async () => {
-    await assert.rejects(() => sarashinaChat({ messages: [{ role: 'user', content: 'x' }] }), (e) => e.status === 401 && /Unauthorized/.test(e.message));
+    await assert.rejects(() => sarashinaChat({ messages: [{ role: 'user', content: 'x' }] }), (e) => e.status === 401 && /401/.test(e.message) && !/Unauthorized/.test(e.message), 'status only: the upstream body is never echoed');
   });
 });
 

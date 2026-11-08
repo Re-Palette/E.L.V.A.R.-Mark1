@@ -58,10 +58,10 @@ export async function apiConnections({ deep = false } = {}) {
     try { const [, t] = await ms(() => withTimeout(sarashinaChat({ fast: true, model: env('SARASHINA_FAST_MODEL') || 'sarashina3-nano', messages: [{ role: 'user', content: '「はい」とだけ答えてください。' }], timeoutMs: 8000 }), 9000)); add('sarashina', label, 'ok', `接続できています（${t}ms、軽量モデルで1回だけ試しました）`); }
     catch (e) {
       const st = e?.status;
-      const ki = sarashinaKeyInfo(), hint = `［サーバーが受け取ったキー: ${ki.length}文字${ki.hadSpaceOrQuote ? '・前後の空白/引用符を除去' : ''}${ki.hasInnerSpace ? '・途中に空白あり！' : ''}${ki.nonAscii ? '・全角など英数字以外が混入！' : ''}／接続先: ${sarashinaBaseUrl()}］`;
-      if (st === 401 || st === 403) add('sarashina', label, 'fail', `キーが拒否されました (${st}): ${String(e.message).replace(/^[^:]*:\s*/, '').slice(0, 200)} ${hint}`, { fix: 'キーを chat.sarashina.ai のAPIキー画面で確認し、SARASHINA_API_KEY を入れ直す（前後の空白や引用符に注意）。接続先を変えている場合は SARASHINA_BASE_URL も確認' });
+      const ki = sarashinaKeyInfo(), hint = `［サーバーが受け取ったキー: ${ki.length}文字${ki.hadSpaceOrQuote ? '・前後の空白/引用符を除去' : ''}${ki.hasInnerSpace ? '・途中に空白あり！' : ''}${ki.nonAscii ? '・全角など英数字以外が混入！' : ''}／接続先: ${new URL(sarashinaBaseUrl()).host}］`;
+      if (st === 401 || st === 403) add('sarashina', label, 'fail', `キーが拒否されました (${st}) ${hint}`, { fix: 'キーを chat.sarashina.ai のAPIキー画面で確認し、SARASHINA_API_KEY を入れ直す（前後の空白や引用符に注意）。接続先を変えている場合は SARASHINA_BASE_URL も確認' });
       else if (st === 429) add('sarashina', label, 'warn', '利用上限に達しています (429)。モデルごとに毎分の上限が小さいため、少し待てば使えます', { verified: true });
-      else add('sarashina', label, 'fail', `${String(e?.message || e).slice(0, 160)} ${hint}`, { fix: 'SARASHINA_BASE_URL（既定 https://api.sarashina.ai/v1）とモデル名を確認' });
+      else add('sarashina', label, 'fail', `${st ? `応答 ${st}` : `接続できません: ${String(e?.cause?.code || '').slice(0, 30) || '不明'}`} ${hint}`, { fix: 'SARASHINA_BASE_URL（既定 https://api.sarashina.ai/v1）とモデル名を確認' });
     }
   })());
   jobs.push(probeHttp('weather', 'Open-Meteo（天気）', 'https://api.open-meteo.com/v1/forecast?latitude=35.68&longitude=139.76&current=temperature_2m', {}));
