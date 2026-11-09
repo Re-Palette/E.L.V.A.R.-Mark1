@@ -13,6 +13,8 @@
     P.getItem = function (k) { return get.call(this, this === localStorage && !RAW.test(String(k)) ? prefix + k : k); };
     P.setItem = function (k, v) { return set.call(this, this === localStorage && !RAW.test(String(k)) ? prefix + k : k, v); };
     P.removeItem = function (k) { return rem.call(this, this === localStorage && !RAW.test(String(k)) ? prefix + k : k); };
+    // the ORIGINAL storage methods (no prefix): web/src/elvar/local.js erases a user's already-prefixed keys with them
+    window.__elvarRawStorage = { getItem: function (k) { return get.call(localStorage, k); }, setItem: function (k, v) { return set.call(localStorage, k, v); }, removeItem: function (k) { return rem.call(localStorage, k); } };
     var F = typeof IDBFactory !== 'undefined' ? IDBFactory.prototype : null;
     if (F) {
       var open = F.open, del = F.deleteDatabase;

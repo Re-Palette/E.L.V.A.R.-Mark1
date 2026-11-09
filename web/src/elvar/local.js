@@ -1,10 +1,13 @@
 // The browser-side half of the per-user namespace (web/public/ns.js does the prefixing). After sign-in the user's namespace is recorded; on sign-out that
 // user's local data (their localStorage keys and IndexedDB databases) is erased, so a shared computer keeps nothing of them.
 const POINTER = 'elvar_ns';
+// The patched Storage methods (web/public/ns.js) add the user's prefix to every key; this module works with ALREADY prefixed keys, so it uses the original methods
+// that ns.js keeps in window.__elvarRawStorage (without ns.js there is no prefixing and the normal methods are the originals).
+const orig = () => (typeof window !== 'undefined' && window.__elvarRawStorage) || { getItem: (k) => localStorage.getItem(k), setItem: (k, v) => localStorage.setItem(k, v), removeItem: (k) => localStorage.removeItem(k) };
 const raw = {
-  get: (k) => { try { return Storage.prototype.getItem.call(localStorage, k); } catch { return null; } },
-  set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* blocked */ } },
-  del: (k) => { try { localStorage.removeItem(k); } catch { /* blocked */ } },
+  get: (k) => { try { return orig().getItem(k); } catch { return null; } },
+  set: (k, v) => { try { orig().setItem(k, v); } catch { /* blocked */ } },
+  del: (k) => { try { orig().removeItem(k); } catch { /* blocked */ } },
 };
 /** sha256(uid) -> 16 hex characters. The id itself is never used as a name. */
 export async function nsOf(uid) {
