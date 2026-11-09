@@ -182,21 +182,23 @@ export function runDbContract(label, setup) {
     const { a, A, B } = await two({ newUser });
     const h = sha('cb-' + rnd(8).toString('hex')), sealed = rnd(60), result = rnd(70);
     await db.asUser(A, (r) => r.oauthPending.put({ stateHash: h, sealed, ttl: 600 }));
-    assert.equal(await db.system.oauthPendingOwner(h), a, 'the callback finds whose flow it is');
-    assert.equal(await db.system.oauthPendingOwner(sha('nope')), null);
+    assert.equal(await db.system.oauthPendingOwner(h, 'google'), a, 'the callback finds whose flow it is');
+    assert.equal(await db.system.oauthPendingOwner(h, 'mcp'), null, 'a callback of another kind does not find it');
+    assert.equal(await db.asUser(A, (r) => r.oauthPending.begin(h, 'mcp')), null, 'and cannot take it');
+    assert.equal(await db.system.oauthPendingOwner(sha('nope'), 'google'), null);
     assert.deepEqual(await db.asUser(A, (r) => r.oauthPending.get(h)).then((x) => ({ phase: x.phase, same: x.sealed.equals(sealed) })), { phase: 'started', same: true });
-    assert.equal(await db.asUser(B, (r) => r.oauthPending.get(h)), null, 'another user does not see it'); assert.equal(await db.asUser(B, (r) => r.oauthPending.begin(h)), null, 'and cannot take it');
-    assert.ok((await db.asUser(A, (r) => r.oauthPending.begin(h))).equals(sealed), 'the first begin gets it');
-    assert.equal(await db.asUser(A, (r) => r.oauthPending.begin(h)), null, 'the second does not (single use)');
+    assert.equal(await db.asUser(B, (r) => r.oauthPending.get(h)), null, 'another user does not see it'); assert.equal(await db.asUser(B, (r) => r.oauthPending.begin(h, 'google')), null, 'and cannot take it');
+    assert.ok((await db.asUser(A, (r) => r.oauthPending.begin(h, 'google'))).equals(sealed), 'the first begin gets it');
+    assert.equal(await db.asUser(A, (r) => r.oauthPending.begin(h, 'google')), null, 'the second does not (single use)');
     assert.equal((await db.asUser(A, (r) => r.oauthPending.get(h))).phase, 'exchanging');
     assert.equal(await db.asUser(B, (r) => r.oauthPending.settle(h, { sealed: rnd(5), phase: 'done' })), false, 'B cannot write A\'s result');
     assert.equal(await db.asUser(A, (r) => r.oauthPending.settle(h, { sealed: result, phase: 'done' })), true);
     assert.equal(await db.asUser(A, (r) => r.oauthPending.settle(h, { sealed: result, phase: 'done' })), false, 'only an exchange in progress can be settled');
     const done = await db.asUser(A, (r) => r.oauthPending.get(h)); assert.equal(done.phase, 'done'); assert.ok(done.sealed.equals(result));
     for (const bad of [{ sealed: result, phase: 'started' }, { sealed: Buffer.alloc(0), phase: 'done' }, { sealed: result, phase: 'x' }]) await assert.rejects(db.asUser(A, (r) => r.oauthPending.settle(h, bad)), code('invalid_value'));
-    assert.ok((await db.asUser(A, (r) => r.oauthPending.take(h))).equals(result)); assert.equal(await db.system.oauthPendingOwner(h), null, 'gone once claimed');
+    assert.ok((await db.asUser(A, (r) => r.oauthPending.take(h))).equals(result)); assert.equal(await db.system.oauthPendingOwner(h, 'google'), null, 'gone once claimed');
     const h2 = sha('cb2-' + rnd(8).toString('hex')); await db.asUser(A, (r) => r.oauthPending.put({ stateHash: h2, sealed, ttl: 1 })); await passTime(1300);
-    assert.equal(await db.system.oauthPendingOwner(h2), null, 'expired'); assert.equal(await db.asUser(A, (r) => r.oauthPending.begin(h2)), null);
+    assert.equal(await db.system.oauthPendingOwner(h2, 'google'), null, 'expired'); assert.equal(await db.asUser(A, (r) => r.oauthPending.begin(h2, 'google')), null);
   });
 
   T('kv.setNx: a lock that only one caller gets while it lives, per user', async ({ db, newUser, passTime }) => {

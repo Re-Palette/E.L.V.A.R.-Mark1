@@ -33,6 +33,8 @@ export const key200 = (k) => { need(typeof k === 'string' && k.length >= 1 && k.
 // ---- P3: connections
 export const PROVIDER_RE = /^(google|cx:[A-Za-z0-9_-]{1,40})$/;
 export const CONNECTOR_ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
+/** The kinds of OAuth flow (and of callback): the Google login of the user's own client, and a connector's MCP login. */
+export const OAUTH_FLOW_KINDS = Object.freeze(['google', 'mcp']);
 export const OAUTH_STATUSES = Object.freeze(['ok', 'reauth_required']);
 export function oauthTokenInput(provider, r) {
   need(typeof provider === 'string' && PROVIDER_RE.test(provider));

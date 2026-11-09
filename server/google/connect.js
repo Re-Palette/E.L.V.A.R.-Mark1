@@ -144,7 +144,7 @@ export async function connectCallback({ req, query = {} }) {
   const state = String(query.state || '');
   if (!STATE_RE.test(state)) return fail(FAIL_TEXT.bad_state[0], 403);
   let r;
-  try { r = await handleCallback({ openPending: openPendingByState(db), state, code: typeof query.code === 'string' ? query.code : '', error: typeof query.error === 'string' ? query.error : '' }); }
+  try { r = await handleCallback({ openPending: openPendingByState(db, 'google'), expectProvider: 'google', tokenUrl: base('oauth', googleConfig(cfgEnv, null)), state, code: typeof query.code === 'string' ? query.code : '', error: typeof query.error === 'string' ? query.error : '' }); }
   catch (e) { console.error('[elvar] google callback:', e?.code || e?.message); return fail('サービスに接続できません。', 503); }
   audit('google-callback', { ok: r.ok, reason: r.reason });   // no user id: the callback knows only the state
   if (!r.ok) { const [t, s] = FAIL_TEXT[r.reason] || FAIL_TEXT.exchange_failed; return fail(t + ((r.reason === 'denied' || r.reason === 'exchange_failed') && r.error ? `（${esc(r.error)}）` : ''), s); }

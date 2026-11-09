@@ -35,7 +35,7 @@ function unpack(state, sealed) {
  */
 export async function startFlow({ pending, provider, authUrl, tokenUrl, clientId, clientSecret, redirectUri, scopes, params = {}, tokenParams = {}, requireRefresh = true, meta = null, now = Date.now() }) {
   const state = crypto.randomBytes(32).toString('base64url'), verifier = newVerifier();
-  await pending.put({ stateHash: sha(state), sealed: pack(state, { v: 2, phase: 'started', provider, redirectUri, clientId, clientSecret, tokenUrl, verifier, scopes, tokenParams, requireRefresh, meta, exp: now + PENDING_TTL * 1000 }), ttl: PENDING_TTL });
+  await pending.put({ stateHash: sha(state), provider, sealed: pack(state, { v: 2, phase: 'started', provider, redirectUri, clientId, clientSecret, tokenUrl, verifier, scopes, tokenParams, requireRefresh, meta, exp: now + PENDING_TTL * 1000 }), ttl: PENDING_TTL });
   const url = authUrl + '?' + new URLSearchParams({
     client_id: clientId, redirect_uri: redirectUri, response_type: 'code', scope: scopes.join(' '), state,
     code_challenge: challengeS256(verifier), code_challenge_method: 'S256', ...params,
@@ -50,21 +50,25 @@ const short = (s, n = 200) => String(s ?? '').replace(/[\u0000-\u001f\u007f]/g, 
  * @returns {Promise<{ok:boolean, reason?:string, error?:string, provider?:string}>}
  * reason: 'bad_state' | 'unknown_state' (never started, expired or already claimed) | 'used' | 'denied' | 'exchange_failed' | 'no_refresh_token' | 'network'
  */
-export async function handleCallback({ openPending, state, code, error, fetchImpl = fetch, now = Date.now() }) {
+export async function handleCallback({ openPending, expectProvider, tokenUrl = null, state, code, error, fetchImpl = fetch, now = Date.now() }) {
+  // The callback names the kind of flow it serves ('google' | 'mcp'); a state of another kind is "unknown" and is NOT consumed (the lookup, the single-use
+  // update and the stored token URL all depend on it). `tokenUrl` pins the exchange endpoint (Google: always Google's); otherwise the URL sealed at start is used,
+  // which for an MCP flow came from the server's own metadata - its fetchImpl must be the one that refuses private addresses (safeFetchAsFetch).
+  if (expectProvider !== 'google' && expectProvider !== 'mcp') throw new Error('handleCallback: expectProvider is required');
   if (!STATE_RE.test(String(state || ''))) return { ok: false, reason: 'bad_state' };
   const hash = sha(state), pending = await openPending(hash);
   if (!pending) return { ok: false, reason: 'unknown_state' };
   // single use: only the first callback for this state may continue (two parallel callbacks cannot both exchange the code)
-  const sealed = await pending.begin(hash);
+  const sealed = await pending.begin(hash, expectProvider);
   if (!sealed) return { ok: false, reason: (await pending.get(hash)) ? 'used' : 'unknown_state' };
   const p = unpack(state, sealed);
-  if (!p || !(p.exp > now)) { await pending.take(hash).catch(() => {}); return { ok: false, reason: 'unknown_state' }; }
+  if (!p || !(p.exp > now) || p.provider !== expectProvider) { await pending.take(hash).catch(() => {}); return { ok: false, reason: 'unknown_state' }; }
   const settle = (patch, phase) => pending.settle(hash, { sealed: pack(state, { ...p, clientSecret: undefined, verifier: undefined, ...patch }), phase });
   if (error || !code) { await settle({ phase: 'error', error: short(error || 'no_code', 60) }, 'error'); return { ok: false, reason: 'denied', error: short(error || 'no_code', 60), provider: p.provider }; }
   let j = {};
   try {
-    const r = await fetchImpl(p.tokenUrl, {
-      method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    const r = await fetchImpl(tokenUrl || p.tokenUrl, {
+      method: 'POST', redirect: 'error', headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ code: String(code), client_id: p.clientId, ...(p.clientSecret ? { client_secret: p.clientSecret } : {}), redirect_uri: p.redirectUri, grant_type: 'authorization_code', code_verifier: p.verifier, ...(p.tokenParams || {}) }),
       signal: AbortSignal.timeout(15_000),
     });

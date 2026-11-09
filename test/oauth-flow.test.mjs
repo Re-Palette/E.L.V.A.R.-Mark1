@@ -14,8 +14,9 @@ const SECRET = 'FAKE-SECRET-super-secret-client-value';
 /** Two users in one database; `pa` / `pb` are their pending interfaces (what cfg.db gives a request). */
 function world() {
   const db = createMemoryDb(), a = db.testing.newUser(), b = db.testing.newUser(), A = mintVerifiedUid(a, 'test'), B = mintVerifiedUid(b, 'test');
-  return { db, a, b, A, B, pa: pendingFor((fn) => db.asUser(A, fn)), pb: pendingFor((fn) => db.asUser(B, fn)), open: openPendingByState(db) };
+  return { db, a, b, A, B, pa: pendingFor((fn) => db.asUser(A, fn)), pb: pendingFor((fn) => db.asUser(B, fn)), open: openPendingByState(db, PROV) };
 }
+const PROV = 'google';
 const base = (pending) => ({ pending, provider: 'google', authUrl: 'https://accounts.example/auth', tokenUrl: 'https://token.example/token', clientId: 'cid.apps.example', clientSecret: SECRET, redirectUri: 'https://app.example/api/google/callback', scopes: ['a', 'b'], params: { access_type: 'offline' } });
 function tokenEndpoint(reply) {
   const calls = [];
@@ -46,7 +47,7 @@ test('start: authorize URL with PKCE S256 and a 32-byte state; the database hold
 
 test('callback: no token, only the state: the code is exchanged on the server with the client secret and the PKCE verifier; the browser gets nothing', async () => {
   const w = world(), f = await startFlow(base(w.pa)), ep = tokenEndpoint(OK);
-  const r = await handleCallback({ openPending: w.open, state: f.state, code: 'THE-CODE', fetchImpl: ep });
+  const r = await handleCallback({ expectProvider: PROV, openPending: w.open, state: f.state, code: 'THE-CODE', fetchImpl: ep });
   assert.deepEqual(r, { ok: true, provider: 'google' });
   assert.equal(ep.calls.length, 1); const c = ep.calls[0];
   assert.equal(c.url, 'https://token.example/token'); assert.equal(c.grant_type, 'authorization_code'); assert.equal(c.code, 'THE-CODE');
@@ -57,7 +58,7 @@ test('callback: no token, only the state: the code is exchanged on the server wi
 
 test('the result is bound to the user who started the flow: only they can claim it; another user\'s claim with the same state finds nothing and cannot disturb it', async () => {
   const w = world(), f = await startFlow(base(w.pa));
-  await handleCallback({ openPending: w.open, state: f.state, code: 'c', fetchImpl: tokenEndpoint(OK) });
+  await handleCallback({ expectProvider: PROV, openPending: w.open, state: f.state, code: 'c', fetchImpl: tokenEndpoint(OK) });
   assert.deepEqual(await claimFlow({ pending: w.pb, state: f.state }), { status: 'missing' }, 'B knows the state (e.g. it leaked) and still gets nothing');
   assert.equal(await discardPending(w.pb, f.state), false, 'B cannot discard it either');
   const c = await claimFlow({ pending: w.pa, state: f.state }); assert.equal(c.status, 'ok'); assert.equal(c.tokens.refresh_token, 'RT-secret');
@@ -66,17 +67,17 @@ test('the result is bound to the user who started the flow: only they can claim 
 test('callback is single use: a replay and two parallel callbacks exchange the code exactly once', async () => {
   const w = world(), f = await startFlow(base(w.pa));
   let n = 0; const slow = async () => { n++; await new Promise((r) => setTimeout(r, 20)); return { ok: true, status: 200, json: async () => OK[1] }; };
-  const rs = await Promise.all([1, 2, 3].map(() => handleCallback({ openPending: w.open, state: f.state, code: 'c', fetchImpl: slow })));
+  const rs = await Promise.all([1, 2, 3].map(() => handleCallback({ expectProvider: PROV, openPending: w.open, state: f.state, code: 'c', fetchImpl: slow })));
   assert.equal(rs.filter((r) => r.ok).length, 1); assert.equal(n, 1);
   assert.ok(rs.filter((r) => !r.ok).every((r) => r.reason === 'used'));
-  assert.equal((await handleCallback({ openPending: w.open, state: f.state, code: 'c', fetchImpl: slow })).reason, 'used'); assert.equal(n, 1);
+  assert.equal((await handleCallback({ expectProvider: PROV, openPending: w.open, state: f.state, code: 'c', fetchImpl: slow })).reason, 'used'); assert.equal(n, 1);
 });
 
 test('callback refuses unknown, malformed, expired and other people\'s state without touching the token endpoint', async () => {
   const w = world(), f = await startFlow(base(w.pa)), ep = tokenEndpoint(OK);
-  for (const bad of ['', 'x', f.state + 'A', f.state.slice(0, -1), 'A'.repeat(43), null, undefined, { a: 1 }]) assert.notEqual((await handleCallback({ openPending: w.open, state: bad, code: 'c', fetchImpl: ep })).ok, true, String(bad));
+  for (const bad of ['', 'x', f.state + 'A', f.state.slice(0, -1), 'A'.repeat(43), null, undefined, { a: 1 }]) assert.notEqual((await handleCallback({ expectProvider: PROV, openPending: w.open, state: bad, code: 'c', fetchImpl: ep })).ok, true, String(bad));
   w.db.testing.advance((PENDING_TTL + 5) * 1000);
-  assert.equal((await handleCallback({ openPending: w.open, state: f.state, code: 'c', fetchImpl: ep })).reason, 'unknown_state', 'expired');
+  assert.equal((await handleCallback({ expectProvider: PROV, openPending: w.open, state: f.state, code: 'c', fetchImpl: ep })).reason, 'unknown_state', 'expired');
   assert.equal(ep.calls.length, 0);
   assert.equal((await claimFlow({ pending: w.pa, state: crypto.randomBytes(32).toString('base64url') })).status, 'missing', 'another state finds nothing');
 });
@@ -84,17 +85,17 @@ test('callback refuses unknown, malformed, expired and other people\'s state wit
 test('claim: pending until the callback has run, then the tokens; the user discards the record after storing them', async () => {
   const w = world(), f = await startFlow(base(w.pa));
   assert.deepEqual(await claimFlow({ pending: w.pa, state: f.state }), { status: 'pending' });
-  await handleCallback({ openPending: w.open, state: f.state, code: 'c', fetchImpl: tokenEndpoint(OK) });
+  await handleCallback({ expectProvider: PROV, openPending: w.open, state: f.state, code: 'c', fetchImpl: tokenEndpoint(OK) });
   const c = await claimFlow({ pending: w.pa, state: f.state });
   assert.equal(c.status, 'ok'); assert.equal(c.tokens.refresh_token, 'RT-secret'); assert.deepEqual(c.scopes, ['a', 'b']); assert.equal(c.clientId, 'cid.apps.example'); assert.equal(c.provider, 'google');
   assert.equal((await claimFlow({ pending: w.pa, state: f.state })).status, 'ok', 'still there until discarded (the user may retry a failed save)');
   await discardPending(w.pa, f.state);
   assert.equal((await claimFlow({ pending: w.pa, state: f.state })).status, 'missing');
-  assert.equal((await handleCallback({ openPending: w.open, state: f.state, code: 'c', fetchImpl: tokenEndpoint(OK) })).ok, false, 'a claimed flow cannot be replayed');
+  assert.equal((await handleCallback({ expectProvider: PROV, openPending: w.open, state: f.state, code: 'c', fetchImpl: tokenEndpoint(OK) })).ok, false, 'a claimed flow cannot be replayed');
 });
 
 test('failures are parked for the app to report: denied, provider refusal, no refresh token, network', async () => {
-  const run = async (cb) => { const w = world(), f = await startFlow(base(w.pa)); const r = await handleCallback({ openPending: w.open, state: f.state, ...cb }); return { r, c: await claimFlow({ pending: w.pa, state: f.state }), w, f }; };
+  const run = async (cb) => { const w = world(), f = await startFlow(base(w.pa)); const r = await handleCallback({ expectProvider: PROV, openPending: w.open, state: f.state, ...cb }); return { r, c: await claimFlow({ pending: w.pa, state: f.state }), w, f }; };
   let x = await run({ error: 'access_denied' }); assert.equal(x.r.reason, 'denied'); assert.deepEqual([x.c.status, x.c.error], ['error', 'access_denied']);
   assert.equal((await claimFlow({ pending: x.w.pa, state: x.f.state })).status, 'missing', 'an error is reported once, then cleared');
   x = await run({ code: 'c', fetchImpl: tokenEndpoint([400, { error: 'invalid_client', error_description: 'Unauthorized' }]) }); assert.equal(x.r.reason, 'exchange_failed'); assert.deepEqual([x.c.status, x.c.error, x.c.description], ['error', 'invalid_client', 'Unauthorized']);
@@ -106,7 +107,7 @@ test('failures are parked for the app to report: denied, provider refusal, no re
 test('a long token (an MCP server\'s JWT) still fits the 8 KB column', async () => {
   const w = world(), f = await startFlow({ ...base(w.pa), provider: 'mcp', requireRefresh: false });
   const big = 'x'.repeat(3500);
-  assert.equal((await handleCallback({ openPending: w.open, state: f.state, code: 'c', fetchImpl: tokenEndpoint([200, { access_token: big, refresh_token: big, expires_in: 60, scope: 'a' }]) })).ok, true);
+  assert.equal((await handleCallback({ expectProvider: 'mcp', openPending: openPendingByState(w.db, 'mcp'), state: f.state, code: 'c', fetchImpl: tokenEndpoint([200, { access_token: big, refresh_token: big, expires_in: 60, scope: 'a' }]) })).ok, true);
   assert.equal((await claimFlow({ pending: w.pa, state: f.state })).tokens.access_token, big);
 });
 
@@ -115,8 +116,21 @@ test('nothing is logged: codes, tokens and secrets never reach the console', asy
   console.log = console.error = console.warn = (...a) => logs.push(a.join(' '));
   try {
     const w = world(), f = await startFlow(base(w.pa));
-    await handleCallback({ openPending: w.open, state: f.state, code: 'SECRET-CODE-XYZ', fetchImpl: tokenEndpoint(OK) });
+    await handleCallback({ expectProvider: PROV, openPending: w.open, state: f.state, code: 'SECRET-CODE-XYZ', fetchImpl: tokenEndpoint(OK) });
     await claimFlow({ pending: w.pa, state: f.state });
   } finally { Object.assign(console, { log: real.l, error: real.e, warn: real.w }); }
   for (const s of ['SECRET-CODE-XYZ', 'RT-secret', SECRET]) assert.ok(!logs.join('\n').includes(s));
+});
+
+test('review fix: a flow of one kind is invisible to the callback of the other kind - zero network calls, the state is not consumed, no token URL of a stranger is ever called', async () => {
+  for (const [started, wrong, right] of [['mcp', 'google', 'mcp'], ['google', 'mcp', 'google']]) {
+    const w = world(), f = await startFlow({ ...base(w.pa), provider: started, tokenUrl: 'http://169.254.169.254/latest/token', requireRefresh: false });
+    let calls = 0; const net = async () => { calls++; return { ok: true, status: 200, json: async () => ({ access_token: 'x', refresh_token: 'y' }) }; };
+    const r = await handleCallback({ expectProvider: wrong, openPending: openPendingByState(w.db, wrong), state: f.state, code: 'c', fetchImpl: net });
+    assert.deepEqual([r.ok, r.reason, calls], [false, 'unknown_state', 0], `${started} state at the ${wrong} callback`);
+    assert.equal((await w.pa.get(stateHashOf(f.state))).phase, 'started', 'not consumed: the right callback still works');
+    const ok = await handleCallback({ expectProvider: right, openPending: openPendingByState(w.db, right), tokenUrl: 'https://token.example/token', state: f.state, code: 'c', fetchImpl: async (url) => { calls++; assert.equal(url, 'https://token.example/token', 'a pinned token URL wins over the stored one'); return { ok: true, status: 200, json: async () => ({ access_token: 'x', refresh_token: 'y', expires_in: 60 }) }; } });
+    assert.equal(ok.ok, true); assert.equal(calls, 1);
+  }
+  await assert.rejects(handleCallback({ openPending: async () => null, state: 'A'.repeat(43) }), /expectProvider/);
 });

@@ -93,3 +93,16 @@ test('github-brain: import is idempotent and never overwrites a note changed her
     await h.call('POST', '/api/elvar/brain-sync/push', A, { force: true }); assert.equal(gh.files['日記/今日.md'], '晴れ\n');
   } finally { gh.restore(); }
 }));
+
+test('review fix (BLOCKER 1): an MCP state at the Google callback, and a Google state at the connector callback, fail without any network call', () => withH(async (h, A, uid) => {
+  const { startFlow } = await import('../server/oauth/flow.js'), { pendingFor } = await import('../server/oauth/pending.js'), { mintVerifiedUid } = await import('../server/db/verified-uid.js');
+  const v = mintVerifiedUid(uid, 'test'), pa = pendingFor((fn) => h.db.asUser(v, fn));
+  const real = globalThis.fetch; let calls = 0; globalThis.fetch = async () => { calls++; throw new Error('no network'); };
+  try {
+    const mk = (provider) => startFlow({ pending: pa, provider, authUrl: 'https://a.example/auth', tokenUrl: 'http://169.254.169.254/latest/meta-data', clientId: 'cid', clientSecret: 's', redirectUri: 'https://x.example/cb', scopes: ['a'], requireRefresh: false });
+    const m = await mk('mcp'), g = await mk('google');
+    assert.ok((await h.call('GET', '/api/google/callback', {}, {}, { state: m.state, code: 'c' })).status >= 400);
+    assert.ok((await h.call('GET', '/api/elvar/oauth/callback', {}, {}, { state: g.state, code: 'c' })).status >= 400);
+    assert.equal(calls, 0, 'neither callback touched the network');
+  } finally { globalThis.fetch = real; }
+}));

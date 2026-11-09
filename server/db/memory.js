@@ -176,19 +176,19 @@ export function createMemoryDb({ now = null } = {}) {
         async markUsed(jti, ttl) { V.key200(jti); const t = V.ttlSec(ttl); if (find('ticket_uses', uid, (r) => r.jti === jti)) return false; tables.ticket_uses.push({ user_id: uid, jti, exp: clock() + t * 1000 }); return true; },
       },
       oauthPending: {
-        async put({ stateHash, sealed, ttl }) {
-          V.need(V.isBytes(stateHash, 32) && V.isBytes(sealed) && sealed.length >= 1 && sealed.length <= 8192); const t = V.ttlSec(ttl);
+        async put({ stateHash, sealed, ttl, provider = 'google' }) {
+          V.need(V.isBytes(stateHash, 32) && V.isBytes(sealed) && sealed.length >= 1 && sealed.length <= 8192 && V.OAUTH_FLOW_KINDS.includes(provider)); const t = V.ttlSec(ttl);
           if (tables.oauth_pending.some((r) => sameBytes(r.state_hash, stateHash))) throw dbError('conflict', 409);
-          tables.oauth_pending.push({ user_id: uid, state_hash: V.toBuf(stateHash), sealed: V.toBuf(sealed), phase: 'started', expires_at: clock() + t * 1000 });
+          tables.oauth_pending.push({ user_id: uid, state_hash: V.toBuf(stateHash), provider, sealed: V.toBuf(sealed), phase: 'started', expires_at: clock() + t * 1000 });
         },
         async take(stateHash) {
           V.need(V.isBytes(stateHash, 32));
           const r = find('oauth_pending', uid, (x) => sameBytes(x.state_hash, stateHash) && live(x)); if (!r) return null;
           remove('oauth_pending', (x) => x === r); return Buffer.from(r.sealed);
         },
-        async begin(stateHash) {
-          V.need(V.isBytes(stateHash, 32));
-          const r = find('oauth_pending', uid, (x) => sameBytes(x.state_hash, stateHash) && live(x) && x.phase === 'started'); if (!r) return null;
+        async begin(stateHash, provider) {
+          V.need(V.isBytes(stateHash, 32) && V.OAUTH_FLOW_KINDS.includes(provider));
+          const r = find('oauth_pending', uid, (x) => sameBytes(x.state_hash, stateHash) && x.provider === provider && live(x) && x.phase === 'started'); if (!r) return null;
           r.phase = 'exchanging'; return Buffer.from(r.sealed);
         },
         async settle(stateHash, { sealed, phase }) {
@@ -445,7 +445,7 @@ export function createMemoryDb({ now = null } = {}) {
       if (!tables.admins.find((r) => r.user_id === u.id)) tables.admins.push({ user_id: u.id, granted_by: null, granted_at: clock() });
       return u.id;
     },
-    async oauthPendingOwner(stateHash) { V.need(V.isBytes(stateHash, 32)); const r = tables.oauth_pending.find((x) => sameBytes(x.state_hash, stateHash) && live(x)); return r ? r.user_id : null; },
+    async oauthPendingOwner(stateHash, provider) { V.need(V.isBytes(stateHash, 32) && V.OAUTH_FLOW_KINDS.includes(provider)); const r = tables.oauth_pending.find((x) => sameBytes(x.state_hash, stateHash) && x.provider === provider && live(x)); return r ? r.user_id : null; },
     async deviceLookup(hash) { V.need(V.isBytes(hash, 32)); const r = tables.devices.find((x) => sameBytes(x.token_hash, hash)); return r ? { userId: r.user_id, deviceId: r.id, scopes: [...r.scopes] } : null; },
   };
 

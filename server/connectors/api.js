@@ -228,7 +228,7 @@ export async function oauthCallback({ req, query = {} }) {
   if (!(await rateLimit(req, 'cxoauthcb', 30, 600))) return fail('試行が多すぎます。しばらくしてからもう一度お試しください。', 429);
   const state = String(query.state || ''); if (!STATE_RE.test(state)) return fail(FAIL.bad_state, 403);
   let r;
-  try { r = await handleCallback({ openPending: openPendingByState(db), state, code: typeof query.code === 'string' ? query.code : '', error: typeof query.error === 'string' ? query.error : '', fetchImpl: safeFetchAsFetch() }); }
+  try { r = await handleCallback({ openPending: openPendingByState(db, 'mcp'), expectProvider: 'mcp', state, code: typeof query.code === 'string' ? query.code : '', error: typeof query.error === 'string' ? query.error : '', fetchImpl: safeFetchAsFetch() }); }
   catch (e) { console.error('[elvar] connector oauth callback:', e?.code || e?.message); return fail('サービスに接続できません。', 503); }
   audit('connector-oauth-callback', { ok: r.ok, reason: r.reason });
   if (!r.ok) return fail((FAIL[r.reason] || FAIL.exchange_failed) + (r.error ? `（${cleanText(r.error, 40)}）` : ''), r.reason === 'network' ? 502 : 400);

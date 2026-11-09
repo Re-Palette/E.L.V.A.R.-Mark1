@@ -176,9 +176,9 @@ export function pgRepos(tx, uid, afterCommit = () => {}) {
     },
 
     oauthPending: {
-      async put({ stateHash, sealed, ttl }) {
-        V.need(V.isBytes(stateHash, 32) && V.isBytes(sealed) && sealed.length >= 1 && sealed.length <= 8192); const t = V.ttlSec(ttl);
-        await tx`insert into app.oauth_pending (state_hash, user_id, sealed, expires_at) values (${V.toBuf(stateHash)}, ${uid}, ${V.toBuf(sealed)}, now() + make_interval(secs => ${t}))`;
+      async put({ stateHash, sealed, ttl, provider = 'google' }) {
+        V.need(V.isBytes(stateHash, 32) && V.isBytes(sealed) && sealed.length >= 1 && sealed.length <= 8192 && V.OAUTH_FLOW_KINDS.includes(provider)); const t = V.ttlSec(ttl);
+        await tx`insert into app.oauth_pending (state_hash, user_id, provider, sealed, expires_at) values (${V.toBuf(stateHash)}, ${uid}, ${provider}, ${V.toBuf(sealed)}, now() + make_interval(secs => ${t}))`;
       },
       /** Single use, and only for the user who started the flow (the row is invisible to everybody else). @returns {Promise<Buffer|null>} */
       async take(stateHash) {
@@ -187,9 +187,9 @@ export function pgRepos(tx, uid, afterCommit = () => {}) {
         return r.length ? Buffer.from(r[0].sealed) : null;
       },
       /** The callback takes a flow that has only been started, exactly once (started -> exchanging). @returns {Promise<Buffer|null>} null = unknown, expired or already taken */
-      async begin(stateHash) {
-        V.need(V.isBytes(stateHash, 32));
-        const r = await tx`update app.oauth_pending set phase = 'exchanging' where user_id = ${uid} and state_hash = ${V.toBuf(stateHash)} and phase = 'started' and expires_at > now() returning sealed`;
+      async begin(stateHash, provider) {
+        V.need(V.isBytes(stateHash, 32) && V.OAUTH_FLOW_KINDS.includes(provider));   // the callback names ITS kind: a state of another kind is not taken
+        const r = await tx`update app.oauth_pending set phase = 'exchanging' where user_id = ${uid} and state_hash = ${V.toBuf(stateHash)} and provider = ${provider} and phase = 'started' and expires_at > now() returning sealed`;
         return r.length ? Buffer.from(r[0].sealed) : null;
       },
       /** Write the result of the exchange (exchanging -> done | error); the expiry stays. @returns {Promise<boolean>} */
@@ -508,9 +508,9 @@ export function pgSystem(sql) {
     /** The confirmed account with this e-mail becomes an admin (the first one). @returns {Promise<string|null>} its id */
     async bootstrapAdmin(email) { V.need(typeof email === 'string' && email.length >= 3 && email.length <= 320); const [r] = await sql`select app.bootstrap_admin(${email}) as id`; return r.id || null; },
     /** Whose OAuth flow is this state (its hash)? The callback has no token; everything after this runs as that user. @returns {Promise<string|null>} the user id (not yet verified: mint it 'oauth_pending') */
-    async oauthPendingOwner(stateHash) {
-      V.need(V.isBytes(stateHash, 32));
-      const [r] = await sql`select app.oauth_pending_owner(${V.toBuf(stateHash)}) as uid`;
+    async oauthPendingOwner(stateHash, provider) {
+      V.need(V.isBytes(stateHash, 32) && V.OAUTH_FLOW_KINDS.includes(provider));
+      const [r] = await sql`select app.oauth_pending_owner(${V.toBuf(stateHash)}, ${provider}) as uid`;
       return r.uid || null;
     },
     async deviceLookup(hash) {
