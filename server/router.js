@@ -1,13 +1,18 @@
 // One route table for /api/elvar/* (Vercel: the single function api/elvar.js; local: server/index.js). Vercel's Hobby plan allows 12 functions, so new
 // endpoints never get a file of their own.
 //   auth: 'none'  - anyone (state, login, claim: protected by their own checks and rate limits)
-//         'owner' - a valid device token (or the env token / local loopback before setup)
+//         'owner' - a valid device token (or the env token / local loopback before setup)   [single-owner mode, removed in P2]
+//         'user'  - a signed-in user (Supabase access token); the handler gets `user` = { uid, db(fn), cfg, ... }  (server/auth/with-user.js)
+//         'admin' - a signed-in admin (token claim AND a row in app.admins)
+//         'device:<scope>' - a per-user device token with that scope (Android notification sync)
+//         'cron'  - Vercel Cron (Authorization: Bearer CRON_SECRET); the handler gets `user` = { system }
 //         'state' - a browser coming back from another site (the Google callback): no device token, protected by a single-use `state`; it may answer HTML
 import { getConfig, runWithConfig, envConfig } from './config/resolve.js';
 import * as A from './config/auth.js';
 import * as API from './elvar-api.js';
 import * as G from './google/connect.js';
 import * as CX from './connectors/api.js';
+import { authenticate } from './auth/with-user.js';
 
 const bad = (status, error) => ({ status, body: { error } });
 
@@ -51,8 +56,11 @@ export const ALIASES = {
 };
 export const isRouterPath = (pathname) => pathname.startsWith('/api/elvar/') || Object.hasOwn(ALIASES, pathname.replace(/\/+$/, ''));
 
-const compiled = ROUTES.map((r) => ({ ...r, parts: r.path.split('/').filter(Boolean) }));
-function match(pathname) {
+export const isUserAuth = (a) => a === 'user' || a === 'admin' || a === 'cron' || /^device:[a-z][a-z:]*$/.test(String(a));
+
+const compile = (routes) => routes.map((r) => ({ ...r, parts: r.path.split('/').filter(Boolean) }));
+const compiled = compile(ROUTES);
+function match(pathname, compiled) {
   const segs = pathname.replace(/\/+$/, '').split('/').filter(Boolean);
   const hits = [];
   for (const r of compiled) {
@@ -69,10 +77,15 @@ function match(pathname) {
  * @param {{pathname:string, query?:object, body?:object}} o
  * @returns {Promise<{status:number, body:object}>}
  */
-export async function routeElvar(req, { pathname, query = {}, body = {} }) {
+export const routeElvar = (req, o) => dispatch(compiled, req, o);
+
+/** A router over another route table (tests use it with routes that exercise the user / admin / device / cron authentication). */
+export const createRouter = (routes) => { const c = compile(routes); return (req, o) => dispatch(c, req, o); };
+
+async function dispatch(compiled, req, { pathname, query = {}, body = {} }) {
   pathname = ALIASES[pathname.replace(/\/+$/, '')] || pathname;
   let hits;
-  try { hits = match(pathname); } catch { return bad(400, 'bad_path'); }   // a malformed %-escape
+  try { hits = match(pathname, compiled); } catch { return bad(400, 'bad_path'); }   // a malformed %-escape
   if (!hits.length) return bad(404, 'not_found');
   const hit = hits.find((h) => h.r.method === req.method);
   if (!hit) return bad(405, 'method_not_allowed');
@@ -84,6 +97,13 @@ export async function routeElvar(req, { pathname, query = {}, body = {} }) {
       if (!g.ok) return bad(g.status, g.error);
       return await runWithConfig(g.cfg, () => hit.r.handler({ req, body, query, params: hit.params, cfg: g.cfg, auth: g.auth }));
     }
+    if (isUserAuth(hit.r.auth)) {
+      const a = await authenticate(hit.r.auth, req, hit.r.authOpts);
+      if (!a.ok) return bad(a.status, a.error);
+      const cfg = a.ctx.cfg;   // undefined for cron: runWithConfig falls back to the plain env config
+      return await runWithConfig(cfg, () => hit.r.handler({ req, body, query, params: hit.params, cfg, auth: { mode: a.ctx.kind }, user: a.ctx }));
+    }
+    if (hit.r.auth !== 'none' && hit.r.auth !== 'state') return bad(500, 'bad_auth_kind');   // a typo in a route's auth must never make it public
     const cfg = envConfig({ mode: 'none' });
     return await runWithConfig(cfg, () => hit.r.handler({ req, body, query, params: hit.params, cfg, auth: { mode: 'none' } }));
   } catch (e) {

@@ -103,8 +103,11 @@ export const currentConfig = () => als.getStore() || envConfig();
 
 /** Synchronous accessor: cfg.get(name) -> process.env[name] -> undefined. */
 export function env(name) {
-  const v = currentConfig().get(name);
-  return v === undefined || v === null ? process.env[name] : v;
+  const cfg = currentConfig();
+  const v = cfg.get(name);
+  if (v !== undefined && v !== null) return v;
+  if (cfg.strictUser && isSecret(name)) return undefined;   // a signed-in user's API keys never come from the platform's environment (M5)
+  return process.env[name];
 }
 
 /** An env-shaped object backed by env(); for `fn(env = process.env)` style parameters. */
