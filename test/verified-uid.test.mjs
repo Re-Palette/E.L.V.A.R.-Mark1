@@ -33,7 +33,7 @@ test("the 'test' source is refused unless ELVAR_TEST_MODE=1 (production code can
 });
 
 test('only the identity-checking modules (and tests) import mintVerifiedUid', () => {
-  const ALLOWED = new Set(['server/db/verified-uid.js', 'server/auth/jwt.js', 'server/auth/with-user.js']);   // + server/rights/* for the purge job (source "purge") and later oauth/flow.js
+  const ALLOWED = new Set(['server/db/verified-uid.js', 'server/auth/jwt.js', 'server/auth/with-user.js', 'server/oauth/pending.js']);   // + server/rights/* for the purge job (source "purge"); oauth/pending.js mints the user a single-use OAuth state belongs to
   const ALLOWED_DIRS = ['server/rights/', 'test/'];
   const users = walk(ROOT).map((f) => path.relative(ROOT, f)).filter((f) => fs.readFileSync(path.join(ROOT, f), 'utf8').includes('mintVerifiedUid'));
   const bad = users.filter((f) => !ALLOWED.has(f) && !ALLOWED_DIRS.some((d) => f.startsWith(d)));
@@ -43,6 +43,6 @@ test('only the identity-checking modules (and tests) import mintVerifiedUid', ()
 
 test('asUser is only called with identities from the auth layer: no file outside server/auth, server/rights, server/db and tests calls db.asUser', () => {
   const callers = walk(ROOT).map((f) => path.relative(ROOT, f)).filter((f) => /\.asUser\(/.test(fs.readFileSync(path.join(ROOT, f), 'utf8')));
-  const bad = callers.filter((f) => !['server/auth/', 'server/rights/', 'server/db/', 'test/'].some((d) => f.startsWith(d)));
+  const bad = callers.filter((f) => !['server/auth/', 'server/rights/', 'server/db/', 'test/'].some((d) => f.startsWith(d)) && f !== 'server/oauth/pending.js');   // pending.js: the OAuth callback acts as the user who started the flow
   assert.deepEqual(bad, [], 'handlers use ctx.db(fn) from withUser / the router, not asUser directly');
 });
