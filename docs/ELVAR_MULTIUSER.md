@@ -144,6 +144,7 @@ server/db/service.js   service role（§3.4 の用途だけ。ここ以外で im
 - `elvar_app` ロール: `login noinherit nobypassrls`、`grant authenticated to elvar_app`、スキーマ `app` の所有者ではない。claims を設定し忘れると `auth.uid()` が null → RLS で 0 行（**失敗は閉じる**）。
 - `asUser(uid)` に渡す `uid` は、JWT 検証・デバイストークン検証・OAuth pending の照合のどれかを通った値だけ（型 `VerifiedUid` を返す関数経由に限定。素の文字列は受け付けない）。
 - Data API は `public`/`graphql_public` だけ公開し、`app` は公開しない（`supabase/config.toml` の `api.schemas`）。ブラウザが anon key と自分の JWT で直接テーブルを触る道は無い → サーバー側の検証（容量・上限・承認）を迂回できない。
+- **正直な限界**: `ELVAR_DB_URL`（`elvar_app` の接続文字列）は実質的に全テナント用の資格情報。`elvar_app` は `set role authenticated` のあと `request.jwt.claims` に任意のユーザー ID を書けるので、これを持つ人は全員分の行を読める（RLS は「サーバーのバグ」と「盗まれたユーザートークン」を防ぐもので、接続文字列の漏洩は防がない）。Sensitive env で保管し、漏れたら `elvar_app` のパスワードを替える。秘密（API キー）は別の資格情報（KEK）で守られる。
 - 代替案（不採用）: supabase-js で PostgREST にユーザー JWT を付けて呼ぶ。RLS は効くが、同じ JWT を持つブラウザも直接書けるため、容量・使用量・状態の整合を全部 DB トリガーで守る必要が出る。
 
 ### 3.3 Storage

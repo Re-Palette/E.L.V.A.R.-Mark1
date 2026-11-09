@@ -6,6 +6,10 @@
 -- * The server connects as `elvar_app` (login, NOINHERIT, NOBYPASSRLS, owns nothing, no privileges on any table). A request runs inside one
 --   transaction that does `set local role authenticated` after setting `request.jwt.claims`; from there Row Level Security applies.
 --   If the server forgets either step it fails closed: no switch -> "permission denied", no claims -> auth.uid() is null -> zero rows.
+--   HONEST LIMIT: that protects against server bugs and against a stolen user token, NOT against a leaked connection string. elvar_app may `set role
+--   authenticated` and then write ANY user id into request.jwt.claims, so whoever holds ELVAR_DB_URL can act as every tenant (read all rows, as RLS
+--   trusts the claims). ELVAR_DB_URL is effectively an all-tenant credential: store it as a sensitive environment variable, never in the browser, a log,
+--   or a repository, and rotate the elvar_app password if it may have been exposed. (Secrets stay protected by the KEK, which is a separate credential.)
 -- * Extensions pgroonga, vector and pg_cron are created by the later migrations that need them (notes 05, memory 08, cron 13), not here.
 
 create schema if not exists app;

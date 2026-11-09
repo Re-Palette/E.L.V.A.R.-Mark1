@@ -36,9 +36,13 @@ export function createPgDb(url, opts = {}) {
     kind: 'pg',
     async asUser(vuid, fn) {
       const uid = requireVerifiedUid(vuid);
+      const hooks = [];
+      let out;
       try {
-        return await sql.begin(async (tx) => { await switchToUser(tx, uid); return fn(pgRepos(tx, uid)); });
+        out = await sql.begin(async (tx) => { hooks.length = 0; await switchToUser(tx, uid); return fn(pgRepos(tx, uid, (h) => { hooks.push(h); })); });
       } catch (e) { throw isDriverError(e) ? mapPgError(e) : e; }
+      for (const h of hooks) { try { await h(); } catch { /* a cache hook must never fail a committed request */ } }   // only reached after COMMIT
+      return out;
     },
     system: pgSystem(sql),
     async ping() { try { await sql`select 1`; return true; } catch { return false; } },

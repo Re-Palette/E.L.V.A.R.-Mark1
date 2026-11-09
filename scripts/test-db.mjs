@@ -1,5 +1,5 @@
 // npm run test:db: runs the migrations and the RLS / isolation / contract tests (test/db/*.test.mjs) against a real Postgres.
-//   default                     starts a throw-away Postgres in Docker (image ELVAR_TEST_DB_IMAGE, default postgres:16; plain Postgres is enough because
+//   default                     starts a throw-away Postgres in Docker (image ELVAR_TEST_DB_IMAGE, default postgres:17 - MERGE with row level security needs 15+, and CI pins the same major; plain Postgres is enough because
 //                               test/db/support/supabase-emulation.sql stands in for the Supabase parts), removes it afterwards
 //   ELVAR_TEST_DB_ADMIN_URL     use this superuser connection instead (a disposable database! schema `app` is dropped and recreated). If the database
 //                               already is a Supabase one (`supabase start`), the emulation is skipped and the real auth schema is used.
@@ -9,7 +9,7 @@ import postgres from 'postgres';
 import { prepareDatabase, appUrlFrom } from '../test/db/support/prepare.mjs';
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
-const IMAGE = process.env.ELVAR_TEST_DB_IMAGE || 'postgres:16';
+const IMAGE = process.env.ELVAR_TEST_DB_IMAGE || 'postgres:17';
 const NAME = `elvar-testdb-${process.pid}`;
 const say = (m) => console.log(`[test:db] ${m}`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

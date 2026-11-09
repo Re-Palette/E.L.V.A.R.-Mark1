@@ -6,7 +6,7 @@
 //   uid      a VerifiedUid (the only thing the database layer accepts)
 //   db(fn)   = database.asUser(uid, fn): runs fn(repos) as that user, with Row Level Security
 //   cfg      the request configuration (user-scoped; the platform's environment never supplies a user's secrets)
-// ctx (cron): { kind:'cron', system }   the system operations only (no user, no table access)
+// ctx (cron): { kind:'cron', system, cfg }   the system operations only (no user, no table access); cfg is strict like a user's (no personal settings, no secrets)
 // A signed-in user whose account is suspended or pending deletion gets 403. The account row is created on the first request.
 import { getDb } from '../db/index.js';
 import { DbError } from '../db/errors.js';
@@ -16,27 +16,53 @@ import { safeEqual } from '../crypto/envelope.js';
 import { sendJson } from '../http.js';
 import { getVerifier, bearerFrom, AuthError } from './jwt.js';
 import { deviceTokenFrom, parseDeviceToken } from './device-token.js';
-import { userConfigShell } from './user-config.js';
+import { userConfigShell, cronConfig } from './user-config.js';
 
+// The account status (active / suspended / pending_deletion) is cached per warm instance for 30 seconds. That is the documented bound on how long a
+// suspension or a deletion request made on ANOTHER instance can go unnoticed by ordinary requests. The instance that makes the change calls
+// invalidateAccount() at once. Anything sensitive does not rely on the cache: routes that write secrets, export, delete or administer set
+// authOpts { freshAccount: true } (status read from the database every time) and call requireFresh() (recent sign-in, token still accepted by Auth).
 const ACCOUNT_CACHE_MS = 30_000, ACCOUNT_CACHE_MAX = 1000;
-const accountCache = new Map();   // uid -> { status, at }
+const accountCache = new Map();   // uid -> { account, at }
 export const invalidateAccount = (uid) => { accountCache.delete(String(uid?.uid ?? uid)); };
 export const _clearAccountCache = () => accountCache.clear();
 
 const fail = (status, error) => ({ ok: false, status, error });
 const STATUS_ERROR = { suspended: 'account_suspended', pending_deletion: 'account_pending_deletion' };
 
-async function loadAccount(db, uid, now) {
+async function loadAccount(db, uid, now, { fresh = false } = {}) {
   const hit = accountCache.get(uid.uid);
-  if (hit && now - hit.at < ACCOUNT_CACHE_MS) return hit.account;
-  const account = await db.asUser(uid, async (r) => (await r.accounts.get()) || r.accounts.ensure());
+  if (!fresh && hit && now - hit.at < ACCOUNT_CACHE_MS) return hit.account;
+  let account;
+  try {
+    account = await db.asUser(uid, async (r) => (await r.accounts.get()) || r.accounts.ensure());
+  } catch (e) {
+    // ensure_account() inserts a row that references auth.users: a still-valid access token of a user who has since been deleted violates that
+    // foreign key (SQLSTATE 23503 -> invalid_reference). Their session is over: 401, not a server error.
+    if (e instanceof DbError && e.code === 'invalid_reference') { accountCache.delete(uid.uid); throw new AuthError('account_deleted'); }
+    throw e;
+  }
   accountCache.set(uid.uid, { account, at: now });
   if (accountCache.size > ACCOUNT_CACHE_MAX) accountCache.delete(accountCache.keys().next().value);
   return account;
 }
 
+/**
+ * What a device token (the Android notification sync) may touch: its own uid and the short-lived key/value store under the `notif:` prefix, nothing else.
+ * No profile, settings, secrets, keys, devices, account, audit or usage: a leaked device token cannot read or change any of it through the server.
+ */
+export function limitDeviceRepos(r, scopes = []) {
+  if (!scopes.some((s) => s === 'notif:push' || s === 'notif:pull')) return Object.freeze({ uid: r.uid, afterCommit: r.afterCommit });
+  const k = (key) => { if (typeof key !== 'string' || !key.startsWith('notif:')) throw new DbError('forbidden', 403); return key; };
+  return Object.freeze({
+    uid: r.uid, afterCommit: r.afterCommit,
+    kv: Object.freeze({ get: (key) => r.kv.get(k(key)), set: (key, v, o) => r.kv.set(k(key), v, o), del: (key) => r.kv.del(k(key)) }),
+  });
+}
+
 function makeCtx(db, extra) {
-  const ctx = { ...extra, db: (fn) => db.asUser(ctx.uid, fn) };
+  // A device token is for one narrow job: its ctx.db hands out a reduced repos object (limitDeviceRepos), never the user's whole account.
+  const ctx = { ...extra, db: extra.kind === 'device' ? (fn) => db.asUser(ctx.uid, (r) => fn(limitDeviceRepos(r, ctx.scopes))) : (fn) => db.asUser(ctx.uid, fn) };
   ctx.cfg = userConfigShell(ctx);
   return ctx;
 }
@@ -53,7 +79,7 @@ export async function authenticate(kind, req, opts = {}) {
     if (kind === 'user' || kind === 'admin') {
       const token = bearerFrom(req); if (!token) return fail(401, 'login_required');
       const jwt = await getVerifier()(token);
-      const account = await loadAccount(db, jwt.uid, now);
+      const account = await loadAccount(db, jwt.uid, now, { fresh: opts.freshAccount });
       if (STATUS_ERROR[account.status] && !(account.status === 'pending_deletion' && opts.allowPendingDeletion)) return fail(403, STATUS_ERROR[account.status]);
       if (kind === 'admin') {
         // two independent checks: the signed claim and a row in app.admins (read through a definer function)
@@ -67,10 +93,10 @@ export async function authenticate(kind, req, opts = {}) {
       const row = await db.system.deviceLookup(t.hash);
       if (!row || row.deviceId !== t.deviceId || !row.scopes.includes(scope)) return fail(401, 'invalid_token');
       const uid = mintVerifiedUid(row.userId, 'device');
-      const account = await loadAccount(db, uid, now);
+      const account = await loadAccount(db, uid, now, { fresh: opts.freshAccount });
       if (STATUS_ERROR[account.status]) return fail(403, STATUS_ERROR[account.status]);
       const ctx = makeCtx(db, { kind: 'device', uid, email: null, role: 'device', jwt: null, deviceId: row.deviceId, scopes: row.scopes, account });
-      ctx.db((r) => r.devices.touch(row.deviceId)).catch(() => {});   // best effort
+      db.asUser(uid, (r) => r.devices.touch(row.deviceId)).catch(() => {});   // best effort; the full repos are used here, inside this module only
       return { ok: true, ctx };
     }
     return fail(500, 'bad_auth_kind');
@@ -88,7 +114,7 @@ async function authCron(req) {
   const token = bearerFrom(req);
   if (!token || !safeEqual(token, secret)) return fail(401, 'invalid_token');
   const db = await getDb();
-  return { ok: true, ctx: { kind: 'cron', system: db.system } };
+  return { ok: true, ctx: { kind: 'cron', system: db.system, cfg: cronConfig() } };
 }
 
 /**

@@ -123,37 +123,47 @@ export async function rewrapDek(kek, userId, rec) {
 
 // ---------------------------------------------------------------------------------------------------------------- keyring
 /**
- * The user's DEK and secrets on top of a repos object `r` (from db.asUser): r.uid, r.keys, r.secrets.
- * A warm instance keeps a decrypted DEK for `cacheMs` (default 60 s); it is dropped on rotation and when a secret shows a different dek_ver.
+ * The user's DEK and secrets on top of a repos object `r` (from db.asUser): r.uid, r.keys, r.secrets, r.afterCommit.
+ *
+ * Cache rules (a DEK that is not in the database must never be used, and a replaced DEK must never be used again):
+ *   - A DEK is put into the warm-instance cache only AFTER the transaction that read or created it has committed (r.afterCommit). If the
+ *     transaction rolls back, nothing was cached, so the next request creates (or reads) the real key.
+ *   - A cache hit is never trusted blindly: inside the current transaction user_keys is read again and the hit is used only if the row is the same
+ *     wrap (kek_id, dek_ver and the wrap's IV all equal). Another instance that rotated the DEK or re-wrapped it is therefore noticed at once.
+ *   - Within one transaction a small per-transaction memo avoids unwrapping twice.
+ * Secrets additionally carry a composite foreign key to user_keys(user_id, dek_ver) (migration 02), so even a bug here cannot store a secret
+ * under a DEK version that does not exist.
  */
 export function createKeyring({ kek, cacheMs = 60_000, max = 500, now = Date.now } = {}) {
   if (!kek) throw new Error('createKeyring: kek is required');
-  const cache = new Map();   // uid -> { dek, dekVer, kekId, at }
+  const cache = new Map();          // uid -> { dek, dekVer, kekId, iv, at }   committed keys only
+  const memo = new WeakMap();       // r (one transaction) -> { dek, dekVer, kekId, iv }
   const forget = (uid) => { cache.delete(uid); };
   const remember = (uid, v) => {
     cache.delete(uid); cache.set(uid, { ...v, at: now() });
     while (cache.size > max) cache.delete(cache.keys().next().value);   // oldest first
   };
+  const afterCommit = (r, fn) => { if (typeof r.afterCommit === 'function') r.afterCommit(fn); };   // no hook -> no caching (fail safe)
+  const same = (v, rec) => v && rec && v.kekId === rec.kekId && v.dekVer === rec.dekVer && Buffer.from(v.iv).equals(Buffer.from(rec.iv));
+  const publish = (r, v) => { memo.set(r, v); afterCommit(r, () => remember(r.uid, v)); return v; };
 
-  async function load(r, { cacheIt = true } = {}) {
+  async function load(r) {
     let rec = await r.keys.get();
     if (!rec) {
       const dek = newDek(), fresh = await wrapDek(kek, r.uid, 1, dek);
-      if (await r.keys.create(fresh)) { if (cacheIt) remember(r.uid, { dek, dekVer: 1, kekId: fresh.kekId }); return { dek, dekVer: 1, kekId: fresh.kekId }; }
+      if (await r.keys.create(fresh)) return publish(r, { dek, dekVer: 1, kekId: fresh.kekId, iv: fresh.iv });   // cached only if this transaction commits
       rec = await r.keys.get();   // somebody else created it first
       if (!rec) throw fail('keys_unavailable', 500);
     }
+    const m = memo.get(r);
+    if (same(m, rec)) return m;
+    const hit = cache.get(r.uid);
+    if (same(hit, rec) && now() - hit.at < cacheMs) return hit;   // validated against the row we just read in this transaction
     let dek;
     try { dek = await unwrapDek(kek, r.uid, rec); } catch (e) { if (e?.code) throw e; throw fail('dek_unreadable', 500); }
-    const v = { dek, dekVer: rec.dekVer, kekId: rec.kekId };
-    if (cacheIt) remember(r.uid, v);
-    return v;
+    return publish(r, { dek, dekVer: rec.dekVer, kekId: rec.kekId, iv: rec.iv });
   }
-  async function dek(r, wantVer) {
-    const hit = cache.get(r.uid);
-    if (hit && now() - hit.at < cacheMs && (wantVer === undefined || hit.dekVer === wantVer)) return hit;
-    return load(r);
-  }
+  const dek = (r) => load(r);
 
   return {
     dek, forget, load,
@@ -166,7 +176,7 @@ export function createKeyring({ kek, cacheMs = 60_000, max = 500, now = Date.now
     /** @returns {Promise<string|null>} */
     async getSecret(r, name) {
       const rec = await r.secrets.get(needName(name)); if (!rec) return null;
-      const k = await dek(r, rec.dekVer);
+      const k = await dek(r);
       try { return openSecret(k.dek, r.uid, name, rec); } catch { throw fail('secret_unreadable', 500); }
     },
     deleteSecret: (r, name) => r.secrets.del(needName(name)),
@@ -181,21 +191,21 @@ export function createKeyring({ kek, cacheMs = 60_000, max = 500, now = Date.now
      */
     async rotateDek(r) {
       forget(r.uid);
-      const cur = await load(r, { cacheIt: false }), nextVer = cur.dekVer + 1, next = newDek();
+      const cur = await load(r), nextVer = cur.dekVer + 1, next = newDek();
       const all = await r.secrets.allSealed();
       for (const s of all) {
         let plain; try { plain = openSecret(cur.dek, r.uid, s.name, s); } catch { throw fail('secret_unreadable', 500); }
         await r.secrets.put(s.name, sealSecret(next, r.uid, s.name, nextVer, plain));
       }
       await r.keys.replace(await wrapDek(kek, r.uid, nextVer, next));
-      forget(r.uid);
+      memo.delete(r); forget(r.uid); afterCommit(r, () => forget(r.uid));
       return { dekVer: nextVer, reencrypted: all.length };
     },
     /** KEK rotation for this user. @returns {Promise<boolean>} true if the wrap was changed */
     async rewrap(r) {
       const rec = await r.keys.get(); if (!rec) return false;
       if (rec.kekId === kek.currentId) return false;
-      await r.keys.replace(await rewrapDek(kek, r.uid, rec)); forget(r.uid);
+      await r.keys.replace(await rewrapDek(kek, r.uid, rec)); memo.delete(r); forget(r.uid); afterCommit(r, () => forget(r.uid));
       return true;
     },
   };

@@ -100,7 +100,7 @@ async function dispatch(compiled, req, { pathname, query = {}, body = {} }) {
     if (isUserAuth(hit.r.auth)) {
       const a = await authenticate(hit.r.auth, req, hit.r.authOpts);
       if (!a.ok) return bad(a.status, a.error);
-      const cfg = a.ctx.cfg;   // undefined for cron: runWithConfig falls back to the plain env config
+      const cfg = a.ctx.cfg;   // strict: a user's (or cron's) request never reads the owner-mode environment
       return await runWithConfig(cfg, () => hit.r.handler({ req, body, query, params: hit.params, cfg, auth: { mode: a.ctx.kind }, user: a.ctx }));
     }
     if (hit.r.auth !== 'none' && hit.r.auth !== 'state') return bad(500, 'bad_auth_kind');   // a typo in a route's auth must never make it public

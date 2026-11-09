@@ -3,7 +3,7 @@
 import crypto from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { DEFAULT_PROFILE, mergeProfile } from '../profile/defaults.js';
-import { KEYS, keyInfo, isSecret } from './keys.js';
+import { KEYS, keyInfo, isSecret, isPlatformDefault } from './keys.js';
 import { authenticate } from './auth.js';
 import { getStore } from '../store/index.js';
 import { readDoc, ticketKeyFromDek, connectorKeyFromDek } from './vault.js';
@@ -106,7 +106,7 @@ export function env(name) {
   const cfg = currentConfig();
   const v = cfg.get(name);
   if (v !== undefined && v !== null) return v;
-  if (cfg.strictUser && isSecret(name)) return undefined;   // a signed-in user's API keys never come from the platform's environment (M5)
+  if (cfg.strictUser && !isPlatformDefault(name)) return undefined;   // in a user (or cron) context only allow-listed platform defaults come from the environment (M5)
   return process.env[name];
 }
 

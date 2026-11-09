@@ -19,9 +19,11 @@ const deviceRow = (r) => ({ id: r.id, name: r.name, scopes: r.scopes, createdAt:
 const auditRow = (r) => ({ id: String(r.id), at: iso(r.at), actor: r.actor, actorId: r.actor_id, action: r.action, target: r.target, meta: r.meta });
 const limitRow = (r) => ({ provider: r.provider, metric: r.metric, period: r.period, soft: num(r.soft), softAction: r.soft_action });
 
-export function pgRepos(tx, uid) {
+export function pgRepos(tx, uid, afterCommit = () => {}) {
   return {
     uid,
+    /** Run `fn` after the surrounding asUser() transaction has committed (never if it rolls back). Used for warm caches of things the transaction created. */
+    afterCommit,
 
     accounts: {
       /** Creates the account row on first use (idempotent), returns it. */
@@ -95,7 +97,8 @@ export function pgRepos(tx, uid) {
     audit: {
       async append({ actor = 'user', actorId, action, target = null, meta = null }) {
         V.need(['user', 'system'].includes(actor) && typeof action === 'string' && action.length >= 1 && action.length <= 100);
-        await tx`insert into app.audit_log (user_id, actor, actor_id, action, target, meta) values (${uid}, ${actor}, ${actorId ?? (actor === 'user' ? uid : null)}, ${action}, ${target}, ${meta}::jsonb)`;
+        V.need(actor === 'user' ? (actorId === undefined || actorId === uid) : (actorId === undefined || actorId === null));   // the policy: user -> auth.uid(), system -> null
+        await tx`insert into app.audit_log (user_id, actor, actor_id, action, target, meta) values (${uid}, ${actor}, ${actor === 'user' ? uid : null}, ${action}, ${target}, ${meta}::jsonb)`;
       },
       async list({ limit = 100 } = {}) {
         V.need(Number.isInteger(limit) && limit >= 1 && limit <= 1000);

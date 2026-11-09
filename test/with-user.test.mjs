@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import * as jose from 'jose';
 import { getDb, resetDb } from '../server/db/index.js';
 import { createJwtVerifier, _setVerifierForTests, AuthError } from '../server/auth/jwt.js';
-import { authenticate, requireFresh, invalidateAccount, _clearAccountCache, withUser, withAdmin, withDevice, withCron } from '../server/auth/with-user.js';
+import { authenticate, requireFresh, invalidateAccount, _clearAccountCache, withUser, withAdmin, withDevice, withCron, limitDeviceRepos } from '../server/auth/with-user.js';
 import { newDeviceToken, parseDeviceToken, deviceTokenFrom } from '../server/auth/device-token.js';
 import { createRouter, ROUTES, isUserAuth } from '../server/router.js';
 import { env, runWithConfig, envConfig } from '../server/config/resolve.js';
@@ -22,7 +22,7 @@ const sealed = () => ({ ct: crypto.randomBytes(40), iv: crypto.randomBytes(12), 
 // A test route table exercising every auth kind through the real router.
 const TEST_ROUTES = [
   { method: 'GET', path: '/api/elvar/t/me', auth: 'user', handler: async ({ user }) => ({ status: 200, body: { uid: user.uid.uid, account: await user.db((r) => r.accounts.get()), source: user.uid.source } }) },
-  { method: 'PUT', path: '/api/elvar/t/secret/:name', auth: 'user', handler: ({ user, params }) => user.db(async (r) => { await r.secrets.put(params.name, sealed()); return { status: 200, body: { ok: true } }; }) },
+  { method: 'PUT', path: '/api/elvar/t/secret/:name', auth: 'user', handler: ({ user, params }) => user.db(async (r) => { await r.keys.create({ kekId: 'k1', dekVer: 1, wrapped: crypto.randomBytes(48), iv: crypto.randomBytes(12) }); await r.secrets.put(params.name, sealed()); return { status: 200, body: { ok: true } }; }) },
   { method: 'GET', path: '/api/elvar/t/secret/:name', auth: 'user', handler: ({ user, params }) => user.db(async (r) => ((await r.secrets.get(params.name)) ? { status: 200, body: { found: true } } : { status: 404, body: { error: 'not_found' } })) },
   { method: 'POST', path: '/api/elvar/t/devices', auth: 'user', handler: ({ user, body }) => user.db(async (r) => { const t = newDeviceToken(); await r.devices.create({ id: t.deviceId, name: 'phone', tokenHash: t.hash, scopes: body.scopes || ['notif:push'] }); return { status: 200, body: { token: t.token, id: t.deviceId } }; }) },
   { method: 'DELETE', path: '/api/elvar/t/devices/:id', auth: 'user', handler: ({ user, params }) => user.db(async (r) => ((await r.devices.revoke(params.id)) ? { status: 200, body: { ok: true } } : { status: 404, body: { error: 'not_found' } })) },
@@ -202,6 +202,52 @@ test('no database configured: authenticated routes answer 503 db_unavailable, pu
     assert.equal((await call('GET', '/api/elvar/t/public', {})).status, 200);
   } finally { console.error = orig; process.env.ELVAR_DB = saved; _setVerifierForTests(null); await resetDb(); }
 });
+
+// ---- review P1-6 / P1-8
+test('a valid token of a user who no longer exists (deleted from Auth) is a 401 account_deleted, never a 500 and never a new account', () => fresh(async (db) => {
+  const gone = db.testing.newUser(), h = await bearer(gone);
+  assert.equal((await call('GET', '/api/elvar/t/me', h)).status, 200);
+  db.testing.deleteUser(gone); _clearAccountCache();
+  assert.deepEqual(await call('GET', '/api/elvar/t/me', h), { status: 401, body: { error: 'account_deleted' } });
+  assert.deepEqual(await call('GET', '/api/elvar/t/me', await bearer(crypto.randomUUID())), { status: 401, body: { error: 'account_deleted' } }, 'a signed token of an id Auth never had');
+  assert.equal(await db.asUser((await verifier((h.authorization).slice(7))).uid, (r) => r.accounts.get()), null, 'no account row was created for it');
+  // the same guard in the Vercel-style wrapper
+  const res = fakeRes(); await withUser(async () => assert.fail('must not run'))(req('GET', h), res); assert.equal(res.statusCode, 401); assert.deepEqual(JSON.parse(res.body), { error: 'account_deleted' });
+}));
+
+test('MemoryDb accounts.ensure refuses an unknown or deleted user like the real foreign key does', () => fresh(async (db) => {
+  const { mintVerifiedUid } = await import('../server/db/verified-uid.js');
+  const code = (e) => { assert.equal(e.code, 'invalid_reference'); assert.equal(e.status, 409); return true; };
+  await assert.rejects(db.asUser(mintVerifiedUid(crypto.randomUUID(), 'test'), (r) => r.accounts.ensure()), code);
+  const u = db.testing.newUser(); await db.asUser(mintVerifiedUid(u, 'test'), (r) => r.accounts.ensure());
+  db.testing.deleteUser(u); await assert.rejects(db.asUser(mintVerifiedUid(u, 'test'), (r) => r.accounts.ensure()), code);
+}));
+
+test('freshAccount: a sensitive route reads the status from the database, ignoring the 30 s cache', () => fresh(async (db) => {
+  const uid = db.testing.newUser(), h = await bearer(uid), t0 = Date.now();
+  assert.equal((await authenticate('user', req('GET', h), { now: t0 })).ok, true);
+  db.testing.setAccountStatus(uid, 'suspended');
+  assert.equal((await authenticate('user', req('GET', h), { now: t0 + 1000 })).ok, true, 'ordinary routes: the cached status is used for up to 30 s (documented)');
+  const r = await authenticate('user', req('GET', h), { now: t0 + 1000, freshAccount: true });
+  assert.deepEqual({ ok: r.ok, status: r.status, error: r.error }, { ok: false, status: 403, error: 'account_suspended' });
+}));
+
+test('a device context gets a reduced repos object: its uid and the notif: key/value store, nothing else', () => fresh(async (db) => {
+  const a = db.testing.newUser(), b = db.testing.newUser(), hA = await bearer(a), hB = await bearer(b);
+  const dev = (await call('POST', '/api/elvar/t/devices', hA, { scopes: ['notif:push'] })).body;
+  const ctx = (await authenticate('device:notif:push', req('POST', { 'x-elvar-token': dev.token }))).ctx;
+  const seen = await ctx.db(async (r) => r);
+  assert.deepEqual(Object.keys(seen).sort(), ['afterCommit', 'kv', 'uid'], 'the only things a device can reach');
+  for (const n of ['profile', 'settings', 'secrets', 'keys', 'devices', 'accounts', 'audit', 'usage', 'usageLimits', 'tickets', 'oauthPending']) assert.equal(seen[n], undefined, n);
+  assert.ok(Object.isFrozen(seen));
+  await ctx.db((r) => r.kv.set('notif:items', { n: 1 }, { ttlSec: 60 }));
+  assert.deepEqual(await ctx.db((r) => r.kv.get('notif:items')), { n: 1 });
+  await assert.rejects(ctx.db((r) => r.kv.get('other:key')), (e) => e.code === 'forbidden');
+  await assert.rejects(ctx.db((r) => r.kv.set('GEMINI_API_KEY', 1, { ttlSec: 60 })), (e) => e.code === 'forbidden');
+  const ctxB = (await authenticate('user', req('GET', hB))).ctx;
+  assert.equal(await ctxB.db((r) => r.kv.get('notif:items')), null, 'another user never sees it');
+  assert.deepEqual(Object.keys(limitDeviceRepos({ uid: 'x', afterCommit() {} }, ['something:else'])).sort(), ['afterCommit', 'uid'], 'a scope that needs no storage gets none');
+}));
 
 // ---- the real route table
 test('the real route table: every route has a known auth kind; user-facing kinds need a cross-user case; the old owner routes do not grow', () => {

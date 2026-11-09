@@ -46,7 +46,12 @@ declare
   c bigint;
 begin
   for r in select dr.table_name as t, dr.owner_column as o from app.data_registry dr order by dr.table_name loop
-    execute format('select count(*) from app.%I where %I = $1', r.t, r.o) into c using p_user;
+    if r.t = 'rate_limits' then
+      -- a counter belongs to the user by its user_id AND by its key: a row that names the user in `who` but lost its user_id still counts as residue
+      select count(*) into c from app.rate_limits where user_id = p_user or who in ('u:' || p_user::text, p_user::text);
+    else
+      execute format('select count(*) from app.%I where %I = $1', r.t, r.o) into c using p_user;
+    end if;
     table_name := r.t; n := c; return next;
   end loop;
 end $$;

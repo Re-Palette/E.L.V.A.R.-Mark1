@@ -78,6 +78,10 @@ export function runDbContract(label, setup) {
   T('secrets: ciphertext only, per user and per name, names validated, list never carries ciphertext', async ({ db, newUser }) => {
     const { A, B } = await two({ newUser });
     const sa = sealedRec(), sb = sealedRec({ last4: 'bbbb' });
+    // a secret needs a key row of the same dek_ver (composite foreign key, checked at commit): nothing is stored without one
+    await assert.rejects(db.asUser(A, (r) => r.secrets.put('GEMINI_API_KEY', sa)), code('invalid_reference'));
+    assert.equal((await db.asUser(A, (r) => r.secrets.list())).length, 0, 'the refused commit left nothing behind');
+    await db.asUser(A, (r) => r.keys.create(keyRec())); await db.asUser(B, (r) => r.keys.create(keyRec()));
     await db.asUser(A, (r) => r.secrets.put('GEMINI_API_KEY', sa)); await db.asUser(B, (r) => r.secrets.put('GEMINI_API_KEY', sb));
     await db.asUser(A, (r) => r.secrets.put('cx:abc:auth', sealedRec()));
     const list = await db.asUser(A, (r) => r.secrets.list());
@@ -86,9 +90,14 @@ export function runDbContract(label, setup) {
     const ga = await db.asUser(A, (r) => r.secrets.get('GEMINI_API_KEY')), gb = await db.asUser(B, (r) => r.secrets.get('GEMINI_API_KEY'));
     assert.ok(ga.ct.equals(sa.ct) && ga.iv.equals(sa.iv) && ga.last4 === 'wxyz'); assert.ok(gb.ct.equals(sb.ct));
     assert.equal(await db.asUser(B, (r) => r.secrets.get('cx:abc:auth')), null);
-    await db.asUser(A, (r) => r.secrets.put('GEMINI_API_KEY', sealedRec({ last4: 'new1', dekVer: 2 })));
+    await assert.rejects(db.asUser(A, (r) => r.secrets.put('GEMINI_API_KEY', sealedRec({ last4: 'new1', dekVer: 2 }))), code('invalid_reference'));   // no key version 2 yet
+    await db.asUser(A, async (r) => {   // a rotation writes the secrets first and replaces the key last: fine, the check is at commit
+      await r.secrets.put('GEMINI_API_KEY', sealedRec({ last4: 'new1', dekVer: 2 })); await r.secrets.put('cx:abc:auth', sealedRec({ dekVer: 2 })); await r.keys.replace(keyRec({ dekVer: 2 }));
+    });
     assert.equal((await db.asUser(A, (r) => r.secrets.get('GEMINI_API_KEY'))).dekVer, 2);
     assert.equal((await db.asUser(A, (r) => r.secrets.allSealed())).length, 2);
+    await assert.rejects(db.asUser(A, (r) => r.keys.replace(keyRec({ dekVer: 3 }))), code('invalid_reference'));   // would orphan the version-2 secrets
+    await assert.rejects(db.asUser(A, (r) => r.secrets.put('cx:abc:auth', sealedRec({ dekVer: 1 }))), code('invalid_reference'));
     for (const bad of ['', 'a|b', 'x'.repeat(81), 'has space', 'ü']) {
       await assert.rejects(db.asUser(A, (r) => r.secrets.put(bad, sealedRec())), code('invalid_value'));
       await assert.rejects(db.asUser(A, (r) => r.secrets.get(bad)), code('invalid_value'));
@@ -202,8 +211,13 @@ export function runDbContract(label, setup) {
     assert.equal(await db.system.rlHit({ bucket: bucket + 'y', who, windowSec: 3600 }), 1);
     assert.equal(await db.system.rlHit({ bucket, who: 'ignored', windowSec: 3600, userId: A }), 1);
     assert.equal(await db.system.rlHit({ bucket, who: 'ignored', windowSec: 3600, userId: A }), 2);
-    assert.equal(await db.system.rlHit({ bucket, who: A.uid, windowSec: 3600 }), 3, 'same counter as the id form');
     assert.equal(await db.system.rlHit({ bucket, who: 'x', windowSec: 3600, userId: B }), 1);
+    // review finding P1-3: a signed-out caller can neither share nor create a counter that names a user
+    await assert.rejects(db.system.rlHit({ bucket, who: A.uid, windowSec: 3600 }));
+    await assert.rejects(db.system.rlHit({ bucket, who: A.uid.toUpperCase(), windowSec: 3600 }));
+    await assert.rejects(db.system.rlHit({ bucket, who: `ip-${A.uid}`, windowSec: 3600 }));
+    assert.equal(await db.system.rlHit({ bucket, who: `u:${A.uid.slice(0, 8)}`, windowSec: 3600 }), 1, 'a prefix of an id is just an address hash');
+    assert.equal(await db.system.rlHit({ bucket, who: 'ignored', windowSec: 3600, userId: A }), 3, 'A keeps counting in its own counter');
     await assert.rejects(db.system.rlHit({ bucket, who, windowSec: 0 }));
     await assert.rejects(db.system.rlHit({ bucket, who, windowSec: 86401 }));
     await assert.rejects(db.system.rlHit({ bucket, who, windowSec: 60, userId: A.uid }), code('unverified_uid'));
@@ -286,9 +300,8 @@ export function runDbContract(label, setup) {
     assert.ok(!(await db.asUser(A, (r) => ring.ticketKey(r))).equals(tk1), 'approval tickets die with the old DEK');
     assert.ok(!(await db.asUser(A, (r) => ring.dek(r))).dek.equals(dek1));
     // the old ciphertext no longer opens under the new key (put it back as if from a backup)
-    await db.asUser(A, (r) => r.secrets.put('S1', old));
-    await assert.rejects(db.asUser(A, (r) => ring.getSecret(r, 'S1')), code('secret_unreadable'));
-    await db.asUser(A, (r) => ring.setSecret(r, 'S1', 'value-one-0001'));
+    await assert.rejects(db.asUser(A, (r) => r.secrets.put('S1', old)), code('invalid_reference'));   // version 1 no longer exists: the database refuses it
+    assert.equal(await db.asUser(A, (r) => ring.getSecret(r, 'S1')), 'value-one-0001');
     // a rotation that fails half way leaves nothing changed
     await assert.rejects(db.asUser(A, async (r) => { await ring.rotateDek(r); throw new Error('abort'); }), /abort/);
     ring.forget(A.uid);
@@ -309,5 +322,70 @@ export function runDbContract(label, setup) {
     const ringNew = createKeyring({ kek: envKekProvider({ ELVAR_KEK: k2 }) });
     assert.equal(await db.asUser(A, (r) => ringNew.getSecret(r, 'S')), 'value-0003-abcd', 'readable with only the new key');
     await assert.rejects(db.asUser(A, (r) => ringOld.forget(A.uid) || ringOld.getSecret(r, 'S')), code('kek_unknown'));
+  });
+
+  // ---- review findings P1-1 / P1-2: a DEK that never committed, and a DEK that another instance replaced
+  T('envelope: a DEK created in a transaction that rolls back is never cached or used (the next request makes the real one)', async ({ db, newUser }) => {
+    const { A } = await two({ newUser });
+    const kek = testKek(), ring = createKeyring({ kek });
+    await assert.rejects(db.asUser(A, async (r) => { await ring.setSecret(r, 'GEMINI_API_KEY', 'first-try-0001'); throw new Error('abort'); }), /abort/);
+    assert.equal(await db.asUser(A, (r) => r.keys.get()), null, 'the rolled-back key row does not exist');
+    // same keyring (same warm cache), new request: must create a key row and seal under THAT key
+    await db.asUser(A, (r) => ring.setSecret(r, 'GEMINI_API_KEY', 'second-try-0002'));
+    const row = await db.asUser(A, (r) => r.keys.get()); assert.ok(row && row.dekVer === 1);
+    const other = createKeyring({ kek });   // cold cache: reads what is really in the database
+    assert.equal(await db.asUser(A, (r) => other.getSecret(r, 'GEMINI_API_KEY')), 'second-try-0002');
+    // the same through a failing commit (the secret write itself is rejected after the key was created in the same transaction)
+    const B2 = (await two({ newUser })).A, ring2 = createKeyring({ kek });
+    await assert.rejects(db.asUser(B2, async (r) => { await ring2.dek(r); await r.secrets.put('bad name', sealedRec()); }), code('invalid_value'));
+    assert.equal(await db.asUser(B2, (r) => r.keys.get()), null);
+    await db.asUser(B2, (r) => ring2.setSecret(r, 'S', 'value-0004-abcd'));
+    assert.equal(await db.asUser(B2, (r) => createKeyring({ kek }).getSecret(r, 'S')), 'value-0004-abcd');
+  });
+
+  T('envelope: a committed first key is cached (no unwrap needed afterwards) and a cache hit is checked against user_keys', async ({ db, newUser }) => {
+    const { A } = await two({ newUser });
+    let unwraps = 0; const real = testKek(), kek = { get currentId() { return real.currentId; }, wrap: (...a) => real.wrap(...a), unwrap: (...a) => { unwraps++; return real.unwrap(...a); } };
+    const ring = createKeyring({ kek });
+    await db.asUser(A, (r) => ring.setSecret(r, 'S', 'value-0005-abcd'));
+    await db.asUser(A, (r) => ring.getSecret(r, 'S')); await db.asUser(A, (r) => ring.getSecret(r, 'S'));
+    assert.equal(unwraps, 0, 'served from the warm cache after the first commit');
+  });
+
+  T('envelope: another instance rotated the DEK, so this instance must not keep using its cached one (two keyrings, one database)', async ({ db, newUser }) => {
+    const { A } = await two({ newUser });
+    const kek = testKek(), one = createKeyring({ kek }), two_ = createKeyring({ kek });
+    await db.asUser(A, (r) => one.setSecret(r, 'S1', 'value-one-0001'));
+    assert.equal(await db.asUser(A, (r) => two_.getSecret(r, 'S1')), 'value-one-0001');     // both instances now have the DEK warm
+    assert.deepEqual(await db.asUser(A, (r) => two_.rotateDek(r)), { dekVer: 2, reencrypted: 1 });
+    // instance one still holds DEK v1: writing now must NOT seal under it
+    await db.asUser(A, (r) => one.setSecret(r, 'S2', 'value-two-0002'));
+    assert.equal((await db.asUser(A, (r) => r.keys.get())).dekVer, 2);
+    assert.equal((await db.asUser(A, (r) => r.secrets.get('S2'))).dekVer, 2);
+    assert.equal(await db.asUser(A, (r) => one.getSecret(r, 'S1')), 'value-one-0001');
+    assert.equal(await db.asUser(A, (r) => createKeyring({ kek }).getSecret(r, 'S2')), 'value-two-0002');
+    assert.equal(await db.asUser(A, (r) => one.getSecret(r, 'S2')), 'value-two-0002');
+    // derived keys follow too: instance one must hand out the NEW ticket key
+    assert.ok((await db.asUser(A, (r) => one.ticketKey(r))).equals(await db.asUser(A, (r) => two_.ticketKey(r))));
+  });
+
+  T('envelope: the database refuses a secret under a DEK version that does not exist (composite foreign key), and removing the key removes its secrets', async ({ db, newUser }) => {
+    const { A } = await two({ newUser });
+    await assert.rejects(db.asUser(A, (r) => r.secrets.put('S', sealedRec({ dekVer: 1 }))), code('invalid_reference'));
+    await db.asUser(A, async (r) => { await r.keys.create(keyRec()); await r.secrets.put('S', sealedRec({ dekVer: 1 })); });
+    await assert.rejects(db.asUser(A, (r) => r.secrets.put('S', sealedRec({ dekVer: 2 }))), code('invalid_reference'));
+    assert.equal(await db.asUser(A, (r) => r.keys.del()), true);
+    assert.equal((await db.asUser(A, (r) => r.secrets.list())).length, 0, 'crypto-shred: the secrets went with the key');
+  });
+
+  T('audit: a user entry always names the caller, a system entry names nobody; nobody can claim to be somebody else', async ({ db, newUser }) => {
+    const { a, A, B } = await two({ newUser });
+    await db.asUser(A, async (r) => { await r.audit.append({ action: 'u1' }); await r.audit.append({ action: 'u2', actorId: a }); await r.audit.append({ actor: 'system', action: 's1' }); });
+    const list = await db.asUser(A, (r) => r.audit.list());
+    assert.deepEqual(list.map((x) => [x.action, x.actor, x.actorId]).sort(), [['s1', 'system', null], ['u1', 'user', a], ['u2', 'user', a]]);
+    await assert.rejects(db.asUser(A, (r) => r.audit.append({ action: 'x', actorId: B.uid })), code('invalid_value'));
+    await assert.rejects(db.asUser(A, (r) => r.audit.append({ actor: 'system', action: 'x', actorId: a })), code('invalid_value'));
+    await assert.rejects(db.asUser(A, (r) => r.audit.append({ actor: 'admin', action: 'x' })), code('invalid_value'));
+    assert.equal((await db.asUser(A, (r) => r.audit.list())).length, 3);
   });
 }

@@ -11,6 +11,7 @@ import { requireVerifiedUid } from './verified-uid.js';
 import { REGISTRY } from '../rights/registry.js';
 
 const DEFAULT_QUOTA = 524288000;
+const UUID_ANYWHERE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const iso = (ms) => new Date(ms).toISOString();
 const sameBytes = (a, b) => Buffer.from(a).equals(Buffer.from(b));
 const clone = (v) => {
@@ -32,11 +33,13 @@ export function createMemoryDb({ now = null } = {}) {
   const remove = (t, pred) => { const n = tables[t].length; tables[t] = tables[t].filter((r) => !pred(r)); return n - tables[t].length; };
   const live = (r) => r.expires_at > clock();
 
-  function repos(uid) {
+  function repos(uid, hooks = []) {
     return {
       uid,
+      afterCommit(h) { hooks.push(h); },
       accounts: {
-        async ensure() { if (!find('accounts', uid)) tables.accounts.push({ user_id: uid, status: 'active', storage_quota_bytes: DEFAULT_QUOTA, hard_limits: {}, suspended_reason: null, created_at: clock() }); return this.get(); },
+        // like the real ensure_account(): the row references auth.users, so an unknown or deleted user is refused (SQLSTATE 23503 -> invalid_reference)
+        async ensure() { if (!users.has(uid)) throw dbError('invalid_reference', 409); if (!find('accounts', uid)) tables.accounts.push({ user_id: uid, status: 'active', storage_quota_bytes: DEFAULT_QUOTA, hard_limits: {}, suspended_reason: null, created_at: clock() }); return this.get(); },
         async get() { const r = find('accounts', uid); return r ? { userId: uid, status: r.status, storageQuotaBytes: r.storage_quota_bytes, hardLimits: clone(r.hard_limits), suspendedReason: r.suspended_reason, createdAt: iso(r.created_at) } : null; },
         async isAdmin() { return Boolean(find('admins', uid)); },
       },
@@ -53,7 +56,7 @@ export function createMemoryDb({ now = null } = {}) {
         async get() { const r = find('user_keys', uid); return r ? { kekId: r.kek_id, dekVer: r.dek_ver, wrapped: Buffer.from(r.wrapped), iv: Buffer.from(r.iv), rotatedAt: r.rotated_at ? iso(r.rotated_at) : null } : null; },
         async create(rec) { const k = V.keyInput(rec); if (find('user_keys', uid)) return false; tables.user_keys.push({ user_id: uid, kek_id: k.kekId, dek_ver: k.dekVer, wrapped: k.wrapped, iv: k.iv, rotated_at: null }); return true; },
         async replace(rec) { const k = V.keyInput(rec); const r = find('user_keys', uid); if (!r) throw dbError('not_found', 404); Object.assign(r, { kek_id: k.kekId, dek_ver: k.dekVer, wrapped: k.wrapped, iv: k.iv, rotated_at: clock() }); },
-        async del() { return remove('user_keys', (r) => r.user_id === uid) > 0; },
+        async del() { remove('user_secrets', (r) => r.user_id === uid); return remove('user_keys', (r) => r.user_id === uid) > 0; },   // on delete cascade (crypto-shred)
       },
       secrets: {
         async list() { return rows('user_secrets', uid).sort((a, b) => (a.name < b.name ? -1 : 1)).map((r) => ({ name: r.name, last4: r.last4, dekVer: r.dek_ver, updatedAt: iso(r.updated_at) })); },
@@ -81,7 +84,8 @@ export function createMemoryDb({ now = null } = {}) {
       audit: {
         async append({ actor = 'user', actorId, action, target = null, meta = null }) {
           V.need(['user', 'system'].includes(actor) && typeof action === 'string' && action.length >= 1 && action.length <= 100);
-          tables.audit_log.push({ user_id: uid, id: ++auditSeq, at: clock(), actor, actor_id: actorId ?? (actor === 'user' ? uid : null), action, target, meta: clone(meta) });
+          V.need(actor === 'user' ? (actorId === undefined || actorId === uid) : (actorId === undefined || actorId === null));   // the policy: user -> auth.uid(), system -> null
+          tables.audit_log.push({ user_id: uid, id: ++auditSeq, at: clock(), actor, actor_id: actor === 'user' ? uid : null, action, target, meta: clone(meta) });
         },
         async list({ limit = 100 } = {}) {
           V.need(Number.isInteger(limit) && limit >= 1 && limit <= 1000);
@@ -129,11 +133,18 @@ export function createMemoryDb({ now = null } = {}) {
     };
   }
   let auditSeq = 0;
+  // user_secrets (user_id, dek_ver) -> user_keys (user_id, dek_ver), deferrable: checked when the transaction commits (a failure rolls it back)
+  const checkKeyReferences = (uid) => {
+    const key = find('user_keys', uid);
+    for (const s of tables.user_secrets) if (s.user_id === uid && (!key || key.dek_ver !== s.dek_ver)) throw dbError('invalid_reference', 409);
+  };
 
   const system = {
     async rlHit({ bucket, who, windowSec, userId = null }) {
-      const uid = userId ? requireVerifiedUid(userId) : null; const w = uid ?? String(who);
-      V.need(typeof bucket === 'string' && bucket.length >= 1 && bucket.length <= 64 && Number.isInteger(windowSec) && windowSec >= 1 && windowSec <= 86400 && w.length >= 1 && w.length <= 128);
+      const uid = userId ? requireVerifiedUid(userId) : null;
+      if (!uid) V.need(typeof who === 'string' && who.length >= 1 && who.length <= 120 && !UUID_ANYWHERE.test(who));   // a user id is not an address
+      const w = uid ? `u:${uid}` : `ip:${who}`;
+      V.need(typeof bucket === 'string' && bucket.length >= 1 && bucket.length <= 64 && Number.isInteger(windowSec) && windowSec >= 1 && windowSec <= 86400);
       const start = Math.floor(clock() / 1000 / windowSec) * windowSec * 1000;
       let r = tables.rate_limits.find((x) => x.bucket === bucket && x.who === w && x.window_start === start);
       if (!r) { r = { bucket, who: w, window_start: start, n: 0, user_id: uid, expires_at: start + windowSec * 2000 }; tables.rate_limits.push(r); }
@@ -145,7 +156,9 @@ export function createMemoryDb({ now = null } = {}) {
         ticket_uses: remove('ticket_uses', (r) => r.exp <= clock()), oauth_pending: remove('oauth_pending', (r) => r.expires_at <= clock()),
       };
     },
-    async residualCheck(vuid) { const uid = requireVerifiedUid(vuid); return REGISTRY.map((e) => ({ table: e.table, n: tables[e.table].filter((r) => r[e.ownerColumn] === uid).length })).sort((a, b) => (a.table < b.table ? -1 : 1)); },
+    async residualCheck(vuid) {
+      const uid = requireVerifiedUid(vuid);
+      return REGISTRY.map((e) => ({ table: e.table, n: tables[e.table].filter((r) => r[e.ownerColumn] === uid || (e.table === 'rate_limits' && (r.who === `u:${uid}` || r.who === uid))).length })).sort((a, b) => (a.table < b.table ? -1 : 1)); },
     async deviceLookup(hash) { V.need(V.isBytes(hash, 32)); const r = tables.devices.find((x) => sameBytes(x.token_hash, hash)); return r ? { userId: r.user_id, deviceId: r.id, scopes: [...r.scopes] } : null; },
   };
 
@@ -154,8 +167,13 @@ export function createMemoryDb({ now = null } = {}) {
     async asUser(vuid, fn) {
       const uid = requireVerifiedUid(vuid);
       const snap = Object.fromEntries(REGISTRY.map((e) => [e.table, tables[e.table].filter((r) => r[e.ownerColumn] === uid).map(clone)]));
-      try { return await fn(repos(uid)); }
-      catch (e) {   // roll back this user's rows (only theirs: a concurrent request of another user is not touched)
+      const hooks = [];
+      try {
+        const out = await fn(repos(uid, hooks));
+        checkKeyReferences(uid);   // what the deferred composite foreign key checks at COMMIT
+        for (const h of hooks) { try { await h(); } catch { /* ignore */ } }
+        return out;
+      } catch (e) {   // roll back this user's rows (only theirs: a concurrent request of another user is not touched)
         for (const en of REGISTRY) tables[en.table] = [...tables[en.table].filter((r) => r[en.ownerColumn] !== uid), ...snap[en.table]];
         throw e;
       }

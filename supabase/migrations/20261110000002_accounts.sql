@@ -42,7 +42,8 @@ create table app.user_keys (                      -- the user's DEK, wrapped by 
   dek_ver int not null default 1 check (dek_ver >= 1),
   wrapped bytea not null check (octet_length(wrapped) = 48),
   iv bytea not null check (octet_length(iv) = 12),
-  rotated_at timestamptz
+  rotated_at timestamptz,
+  unique (user_id, dek_ver)                       -- the target of the composite foreign keys of every table that stores a dek_ver
 );
 select app._secure('user_keys', 'select,insert,update,delete');
 
@@ -54,7 +55,11 @@ create table app.user_secrets (                   -- API keys and tokens, AES-25
   dek_ver int not null check (dek_ver >= 1),
   last4 text check (last4 is null or length(last4) <= 4),
   updated_at timestamptz not null default now(),
-  primary key (user_id, name)
+  primary key (user_id, name),
+  -- A secret can only exist under a DEK version that exists. Checked at COMMIT (deferrable initially deferred), so a DEK rotation may write the
+  -- new ciphertexts first and replace the key row last, and a transaction that rolled back its new DEK can never leave secrets behind it.
+  -- on delete cascade: removing the key (crypto-shred) removes what it protected. Every later table that stores a dek_ver (oauth_tokens, P3) gets the same FK.
+  foreign key (user_id, dek_ver) references app.user_keys (user_id, dek_ver) on delete cascade deferrable initially deferred
 );
 select app._secure('user_secrets', 'select,insert,update,delete');
 
@@ -75,7 +80,7 @@ create table app.audit_log (                      -- append-only for the user: s
   id bigint generated always as identity,
   at timestamptz not null default now(),
   actor text not null check (actor in ('user', 'admin', 'system')),
-  actor_id uuid,
+  actor_id uuid references auth.users (id) on delete set null,   -- who did it: the user themself, an admin, or null for the system (the row stays when the admin is deleted)
   action text not null check (length(action) between 1 and 100),
   target text check (target is null or length(target) <= 300),
   meta jsonb check (meta is null or pg_column_size(meta) <= 8000),
@@ -83,7 +88,9 @@ create table app.audit_log (                      -- append-only for the user: s
 );
 select app._secure('audit_log', 'select,insert');
 -- a user (through the server) may only write entries about themselves or the system; entries by an admin come from definer functions
-create policy audit_actor on app.audit_log as restrictive for insert to authenticated with check (actor in ('user', 'system'));
+-- and the actor must be true: 'user' entries carry the caller's own id, 'system' entries carry none
+create policy audit_actor on app.audit_log as restrictive for insert to authenticated
+  with check ((actor = 'user' and actor_id = (select auth.uid())) or (actor = 'system' and actor_id is null));
 
 -- ------------------------------------------------------------------------------------------------------ the registry (docs section 7.1)
 -- One row per table that holds a user's data. The tests compare this list with the real tables in both directions: a table without a row,
@@ -139,6 +146,6 @@ insert into app.data_registry (table_name, export_as, export_exclude, editable, 
   ('profiles',   'profile.json',  '{}', true,  false, 30, $f$insert into app.profiles (user_id, profile) values ({{uid}}, '{"version":1,"owner":{"name":"fixture"}}'::jsonb)$f$),
   ('settings',   'settings.json', '{}', true,  false, 30, $f$insert into app.settings (user_id, settings) values ({{uid}}, '{"fixture":true}'::jsonb)$f$),
   ('user_keys',  'none',          '{}', false, false, 30, $f$insert into app.user_keys (user_id, kek_id, wrapped, iv) values ({{uid}}, 'fixture', decode(repeat('00', 48), 'hex'), decode(repeat('00', 12), 'hex'))$f$),
-  ('user_secrets', 'secrets.json', '{ct,iv}', true, false, 30, $f$insert into app.user_secrets (user_id, name, ct, iv, dek_ver, last4) values ({{uid}}, 'GEMINI_API_KEY', decode(repeat('11', 32), 'hex'), decode(repeat('00', 12), 'hex'), 1, 'abcd')$f$),
+  ('user_secrets', 'secrets.json', '{ct,iv}', true, false, 35, $f$insert into app.user_secrets (user_id, name, ct, iv, dek_ver, last4) values ({{uid}}, 'GEMINI_API_KEY', decode(repeat('11', 32), 'hex'), decode(repeat('00', 12), 'hex'), 1, 'abcd')$f$),
   ('devices',    'devices.json',  '{token_hash}', true, false, 30, $f$insert into app.devices (user_id, id, name, token_hash, scopes) values ({{uid}}, '0123456789abcdef', 'fixture', sha256(convert_to('fixture-device-' || {{uid}}::text, 'UTF8')), array['notif:push'])$f$),
   ('audit_log',  'audit.json',    '{}', false, false, 30, $f$insert into app.audit_log (user_id, actor, actor_id, action, target) values ({{uid}}, 'user', {{uid}}, 'fixture', 'fixture')$f$);

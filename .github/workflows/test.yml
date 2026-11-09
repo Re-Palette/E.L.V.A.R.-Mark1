@@ -28,3 +28,5 @@ jobs:
         with: { node-version: '22', cache: npm }
       - run: npm ci
       - run: npm run test:db
+        env:
+          ELVAR_TEST_DB_IMAGE: postgres:17   # pinned: the same major locally (scripts/test-db.mjs default) and in CI

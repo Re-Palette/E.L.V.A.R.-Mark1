@@ -47,9 +47,37 @@ for (const e of entries) {
   });
 
   test(`${e.table}: B cannot insert a row owned by A, and cannot hand its own row to A`, async () => {
+    const before = { a: await count(admin, e, a), b: await count(admin, e, b) };
     await denied(asRole(app, { uid: b }, (tx) => tx.unsafe(fixtureSqlFor(e, a)).simple()));
     if (g.update) await denied(asRole(app, { uid: b }, (tx) => tx.unsafe(`update app.${e.table} set ${e.ownerColumn} = '${a}' where ${e.ownerColumn} = '${b}'`)));
-    assert.equal(await count(admin, e, a), await count(admin, e, a));
+    assert.deepEqual({ a: await count(admin, e, a), b: await count(admin, e, b) }, before, 'no row appeared for A, and B still owns its own');
+  });
+
+  test(`${e.table}: B cannot reach A's row with INSERT ... ON CONFLICT DO UPDATE, and A's row is unchanged`, async () => {
+    const before = await count(admin, e, a), beforeB = await count(admin, e, b), pk = (await admin`select conname from pg_constraint where conrelid = ${'app.' + e.table}::regclass and contype = 'p'`)[0]?.conname;
+    if (!pk) return;   // every table of schema app has a primary key (the catalog test requires it); nothing to conflict on otherwise
+    // the proposed row is A's own fixture row: it conflicts with A's existing one and asks to overwrite it
+    const upsert = `${fixtureSqlFor(e, a)} on conflict on constraint ${pk} do update set ${e.ownerColumn} = excluded.${e.ownerColumn}`;
+    await denied(asRole(app, { uid: b }, (tx) => tx.unsafe(upsert).simple()));
+    assert.equal(await count(admin, e, a), before);
+    assert.equal(await count(admin, e, b), beforeB);
+  });
+
+  test(`${e.table}: B cannot reach A's rows with MERGE (update, delete, insert), and A's rows are unchanged`, async () => {
+    const before = await count(admin, e, a), snap = (await admin.unsafe(`select md5(t::text) as h from app.${e.table} t where ${e.ownerColumn} = '${a}' order by 1`)).map((r) => r.h);
+    const merged = [
+      `merge into app.${e.table} t using (select 1) s on t.${e.ownerColumn} = '${a}' when matched then delete`,
+      `merge into app.${e.table} t using (select 1) s on t.${e.ownerColumn} = '${a}' when matched then update set ${e.ownerColumn} = '${b}'`,
+    ];
+    const m = /^insert into app\.\w+ (\([^)]*\)) values (\(.*\))\s*$/is.exec(fixtureSqlFor(e, a).trim());
+    if (m) merged.push(`merge into app.${e.table} t using (select 1) s on false when not matched then insert ${m[1]} values ${m[2]}`);
+    for (const stmt of merged) {
+      let outcome = 'ok';
+      try { const r = await asRole(app, { uid: b }, (tx) => tx.unsafe(stmt)); assert.equal(r.count, 0, `MERGE touched rows: ${stmt}`); } catch (err) { if (err.code === 'ERR_ASSERTION') throw err; assert.equal(err.code, '42501', `${err.code} ${err.message} for ${stmt}`); outcome = 'denied'; }
+      assert.ok(['ok', 'denied'].includes(outcome));
+    }
+    assert.equal(await count(admin, e, a), before);
+    assert.deepEqual((await admin.unsafe(`select md5(t::text) as h from app.${e.table} t where ${e.ownerColumn} = '${a}' order by 1`)).map((r) => r.h), snap, 'A\'s rows are byte-for-byte unchanged');
   });
 
   test(`${e.table}: no claims -> zero rows; not switched to authenticated -> denied; anon -> denied`, async () => {
@@ -61,6 +89,21 @@ for (const e of entries) {
     await denied(app.begin(async (tx) => { await tx`select set_config('request.jwt.claims', ${JSON.stringify({ sub: a, role: 'anon' })}, true)`; try { await tx.unsafe('set local role anon'); } catch (err) { throw Object.assign(new Error(err.message), { code: err.code }); } return total(tx, e); }));
   });
 }
+
+test('keys that are unique without the owner (oauth state, device token) cannot be used to reach or overwrite A\'s row with ON CONFLICT or to learn that it exists', async () => {
+  const [pa] = await admin`select state_hash from app.oauth_pending where user_id = ${a}`, [da] = await admin`select token_hash from app.devices where user_id = ${a}`;
+  // B asks to take over A's oauth state / device token: the conflicting row is invisible to B, so the update half is refused (never silently applied, never "already exists")
+  await denied(asRole(app, { uid: b }, (tx) => tx`insert into app.oauth_pending (state_hash, user_id, sealed, expires_at) values (${pa.state_hash}, ${b}, decode('00', 'hex'), now() + interval '1 hour')
+    on conflict (state_hash) do update set user_id = excluded.user_id, sealed = excluded.sealed`));
+  await denied(asRole(app, { uid: b }, (tx) => tx`insert into app.devices (user_id, id, name, token_hash, scopes) values (${b}, 'fedcba9876543210', 'mine', ${da.token_hash}, array['notif:push'])
+    on conflict (token_hash) do update set user_id = excluded.user_id, name = 'taken'`));
+  assert.equal((await admin`select count(*)::int as n from app.oauth_pending where user_id = ${a}`)[0].n, 1);
+  const [still] = await admin`select user_id, name from app.devices where user_id = ${a}`; assert.deepEqual({ user_id: still.user_id, name: still.name }, { user_id: a, name: 'fixture' });
+  assert.equal((await admin`select count(*)::int as n from app.devices where user_id = ${b} and id = 'fedcba9876543210'`)[0].n, 0);
+  // DO NOTHING must not take over either (it just does nothing); the plain insert's error is a unique violation, the one thing a user can learn
+  await asRole(app, { uid: b }, (tx) => tx`insert into app.oauth_pending (state_hash, user_id, sealed, expires_at) values (${pa.state_hash}, ${b}, decode('00', 'hex'), now() + interval '1 hour') on conflict do nothing`);
+  assert.equal((await admin`select user_id from app.oauth_pending where state_hash = ${pa.state_hash}`)[0].user_id, a);
+});
 
 test('the connection cannot escalate: elvar_app cannot become anon, service_role, postgres or any other role', async () => {
   for (const role of ['anon', 'service_role', 'postgres']) await denied(asRole(app, { uid: a, role }, (tx) => tx`select 1`));
@@ -108,4 +151,10 @@ test('a user cannot lift a limit or change their own account: quota, status and 
   await denied(asRole(app, { uid: a }, (tx) => tx`update app.audit_log set action = 'forged' where user_id = ${a}`));
   await denied(asRole(app, { uid: a }, (tx) => tx`delete from app.audit_log where user_id = ${a}`));
   await denied(asRole(app, { uid: a }, (tx) => tx`insert into app.audit_log (user_id, actor, action) values (${a}, 'admin', 'forged')`));
+  // review P1-7: the actor must be true. 'user' needs actor_id = the caller, 'system' needs none; neither may name somebody else
+  await denied(asRole(app, { uid: a }, (tx) => tx`insert into app.audit_log (user_id, actor, actor_id, action) values (${a}, 'user', ${b}, 'as-b')`));
+  await denied(asRole(app, { uid: a }, (tx) => tx`insert into app.audit_log (user_id, actor, action) values (${a}, 'user', 'no-actor')`));
+  await denied(asRole(app, { uid: a }, (tx) => tx`insert into app.audit_log (user_id, actor, actor_id, action) values (${a}, 'system', ${a}, 'system-with-actor')`));
+  await asRole(app, { uid: a }, (tx) => tx`insert into app.audit_log (user_id, actor, actor_id, action) values (${a}, 'user', ${a}, 'ok-user')`);
+  await asRole(app, { uid: a }, (tx) => tx`insert into app.audit_log (user_id, actor, action) values (${a}, 'system', 'ok-system')`);
 });
