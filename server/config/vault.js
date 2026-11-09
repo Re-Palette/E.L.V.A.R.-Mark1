@@ -6,6 +6,7 @@
 // Redis (or the JSON file) holds only ciphertext plus the plain `meta` envelope.
 import crypto from 'node:crypto';
 import { promisify } from 'node:util';
+import { hkdf, seal, open, safeEqual } from '../crypto/envelope.js';
 
 const scrypt = promisify(crypto.scrypt);
 export const META_KEY = 'elvar:v1:meta', DOC_KEY = 'elvar:v1:doc';
@@ -18,28 +19,8 @@ const b64 = (b) => Buffer.from(b).toString('base64url');
 const unb64 = (s) => Buffer.from(String(s), 'base64url');
 const fail = (code, status = 400) => Object.assign(new Error(code), { code, status });
 
-export function hkdf(ikm, salt, info) { return Buffer.from(crypto.hkdfSync('sha256', ikm, salt, info, 32)); }
-
-/** AES-256-GCM with a fresh random 96-bit IV. The tag is appended to the ciphertext. */
-export function seal(key, plain, aad) {
-  const iv = crypto.randomBytes(12);
-  const c = crypto.createCipheriv('aes-256-gcm', key, iv); c.setAAD(Buffer.from(aad));
-  const ct = Buffer.concat([c.update(Buffer.isBuffer(plain) ? plain : Buffer.from(String(plain))), c.final(), c.getAuthTag()]);
-  return { iv: b64(iv), ct: b64(ct) };
-}
-/** @throws on a wrong key, tampered data or a different AAD */
-export function open(key, rec, aad) {
-  const iv = unb64(rec?.iv), all = unb64(rec?.ct);
-  if (iv.length !== 12 || all.length < 16) throw fail('bad_record');
-  const d = crypto.createDecipheriv('aes-256-gcm', key, iv); d.setAAD(Buffer.from(aad)); d.setAuthTag(all.subarray(all.length - 16));
-  return Buffer.concat([d.update(all.subarray(0, all.length - 16)), d.final()]);
-}
-
-/** Constant-time string equality (hashes first, so lengths do not leak). */
-export function safeEqual(a, b) {
-  const h = (x) => crypto.createHash('sha256').update(String(x ?? '')).digest();
-  return crypto.timingSafeEqual(h(a), h(b));
-}
+// hkdf / seal / open / safeEqual live in server/crypto/envelope.js (shared with the per-user envelope); re-exported here for the old importers.
+export { hkdf, seal, open, safeEqual };
 
 // ---- device tokens: "elv1.<deviceId 16 hex>.<secret 32 bytes base64url>"
 const TOKEN_RE = /^elv1\.([0-9a-f]{16})\.([A-Za-z0-9_-]{43})$/;
