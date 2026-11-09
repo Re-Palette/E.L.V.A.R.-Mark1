@@ -24,6 +24,7 @@ const CSS = `
   outline:1.5px solid var(--ac);outline-offset:-1px;font:15px/1.65 'Barlow Semi Condensed','Noto Sans JP','Yu Gothic UI','Meiryo',sans-serif}
 .va-top{display:flex;align-items:center;gap:10px;margin-bottom:10px}.va-top i{width:8px;height:8px;border-radius:50%;background:var(--ac);box-shadow:0 0 7px var(--ac)}
 .va-top h2{margin:0;font-size:15px;letter-spacing:2.5px;color:var(--ac);font-weight:600}.va-top span{margin-left:auto;font-size:12px;color:#7fb6d6}
+.va-via{margin:0 0 8px;padding:6px 10px;border:1px solid var(--ac);font-size:13px;color:#d9eef9;background:rgba(25,211,255,.08)}.va-via b{color:#fff}.va-via code{font:inherit;color:var(--ac);word-break:break-all}
 .va-lines{border-top:1px solid rgba(40,150,200,.35);border-bottom:1px solid rgba(40,150,200,.35);padding:10px 0;margin:6px 0 14px}
 .va-lines div{white-space:pre-wrap;word-break:break-word}.va-lines div:first-child{font-weight:700;color:#fff;margin-bottom:4px}
 .va-lines .warn{color:#ffb347}
@@ -43,6 +44,7 @@ export function createApproval() {
   back.setAttribute('role', 'alertdialog'); back.setAttribute('aria-modal', 'true'); back.setAttribute('aria-label', '承認が必要です');
   back.innerHTML = `<div class="va-wrap"><div class="va-panel">
     <div class="va-top"><i></i><h2>承認が必要です</h2><span id="va-count"></span></div>
+    <div class="va-via" id="va-via" hidden></div>
     <div class="va-lines" id="va-lines"></div>
     <div class="va-btns"><button class="va-btn" id="va-no" type="button">却下</button><button class="va-btn" id="va-edit" type="button" hidden>直す</button><button class="va-btn go" id="va-yes" type="button">承認して実行</button></div>
     <p class="va-note" id="va-note">「承認して実行」を押したときだけ、この内容のとおりに実行されます。</p>
@@ -61,12 +63,14 @@ export function createApproval() {
   function next() {
     if (current || !queue.length) return;
     current = queue.shift();
-    const { summary, danger, voice, yes, no, edit, title, placement } = current;
+    const { summary, danger, voice, yes, no, edit, title, placement, via } = current;
     back.classList.toggle('bottom', placement === 'bottom');
     $('va-yes').textContent = yes || '承認して実行'; $('va-no').textContent = no || '却下'; $('va-edit').hidden = !edit; $('va-edit').textContent = edit || '直す';
     back.querySelector('h2').textContent = title || '承認が必要です';
     $('va-note').textContent = voice ? '「はい」と声で答えても、ボタンを押しても、この内容のとおりに実行されます（短く「はい」と言ったときだけ承認になります）。' : '「承認して実行」を押したときだけ、この内容のとおりに実行されます。';
     back.querySelector('.va-wrap').classList.toggle('high', danger === 'high');
+    // an external app: who it is and where the data goes, in a fixed strip above the details (not part of the text the app could shape)
+    $('va-via').hidden = !via; if (via) $('va-via').innerHTML = `送り先：<b>${esc(via.connector)}</b>（<code>${esc(via.host)}</code>）`;
     $('va-lines').innerHTML = (summary || []).map((l) => `<div class="${/^※/.test(l) ? 'warn' : ''}">${esc(l)}</div>`).join('');
     back.classList.add('on');
     let left = TIMEOUT_MS / 1000;
@@ -82,7 +86,7 @@ export function createApproval() {
 
   return {
     /** @returns {Promise<boolean|'edit'>} true only if the owner pressed 承認 (or, on a voice-enabled card, said a plain 「はい」) */
-    ask({ id, tool, summary, danger, voice = false, yes, no, edit, title, placement }) { return new Promise((resolve) => { queue.push({ id, tool, summary, danger, voice, yes, no, edit, title, placement, resolve }); next(); }); },
+    ask({ id, tool, summary, danger, voice = false, yes, no, edit, title, placement, via }) { return new Promise((resolve) => { queue.push({ id, tool, summary, danger, voice, yes, no, edit, title, placement, via, resolve }); next(); }); },
     /** The owner's speech (transcript so far). Answers a voice-enabled card; ignored while the assistant is talking (its own echo must never approve). */
     hear(text, { modelBusy = false } = {}) {
       if (!current || !current.voice || modelBusy) return false;

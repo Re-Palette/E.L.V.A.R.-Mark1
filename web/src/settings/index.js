@@ -1,10 +1,11 @@
-// In-app settings (gear icon / Ctrl+, / ?settings=1). Tabs: アカウント, APIキー, Google, プロフィール, 機能, この端末.
+// In-app settings (gear icon / Ctrl+, / ?settings=1). Tabs: アカウント, APIキー, Google, 連携アプリ, プロフィール, 機能, この端末.
 // Server-side values (keys, profile, devices) go through /api/elvar/*; "この端末" is stored on this device only.
 import { ensureUiCss, esc } from '../elvar/ui.js';
 import { api, currentSession, loadSession } from '../elvar/auth.js';
 import { mountDevice } from './device.js';
 import { mountKeys } from './keys.js';
 import { mountGoogle } from './google.js';
+import { mountConnectors } from './connectors.js';
 import { mountAccount } from './account.js';
 import { mountProfile } from './profile.js';
 
@@ -34,7 +35,7 @@ const DEVICE_CSS = `
 @media (max-width:560px){.ev-settings .vs-row{flex-wrap:wrap}.ev-settings .vs-row>span.l{flex:1 0 100%}}
 `;
 
-const TABS = [['account', 'アカウント'], ['keys', 'APIキー'], ['google', 'Google'], ['profile', 'プロフィール'], ['features', '機能'], ['device', 'この端末']];
+const TABS = [['account', 'アカウント'], ['keys', 'APIキー'], ['google', 'Google'], ['connectors', '連携アプリ'], ['profile', 'プロフィール'], ['features', '機能'], ['device', 'この端末']];
 
 export function initSettingsPanel(app) {
   ensureUiCss();
@@ -58,6 +59,7 @@ export function initSettingsPanel(app) {
     account: mountAccount(pane('account'), { mode }),
     keys: mountKeys(pane('keys')),
     google: mountGoogle(pane('google'), { onChange: () => checkBadge() }),
+    connectors: mountConnectors(pane('connectors'), { onChange: () => checkBadge() }),
     profile: mountProfile(pane('profile'), 'profile', { onSaved: () => loadSession() }),
     features: mountProfile(pane('features'), 'features', { onSaved: () => loadSession() }),
     device,
@@ -65,7 +67,7 @@ export function initSettingsPanel(app) {
   // A dot on the Google tab when Google must be connected again (the watcher in google-watch.js raises the event; the status endpoint is the source of truth).
   const tabBtn = () => back.querySelector('[data-tab="google"]');
   const setBadge = (on) => { const b = tabBtn(); if (b) { b.classList.toggle('alert', on); b.title = on ? 'Googleの再接続が必要です' : ''; } };
-  async function checkBadge() { try { const r = await api('/api/elvar/connect/google/status'); if (r.status === 200) setBadge(r.body.state === 'reauth_required'); } catch { /* offline */ } }
+  async function checkBadge() { try { const r = await api('/api/elvar/connect/google/status'); if (r.status === 200) setBadge(r.body.state === 'reauth_required'); } catch { /* offline */ } try { const b = back.querySelector('[data-tab="connectors"]'); const att = await parts.connectors.hasAttention(); b.classList.toggle('alert', att); b.title = att ? '確認が必要な連携アプリがあります' : ''; } catch { /* offline */ } }
   addEventListener('elvar:google', (e) => { if (e.detail?.kind === 'state') setBadge(Boolean(e.detail.reauth)); else if (e.detail?.kind === 'connected') setBadge(false); });
   let current = 'keys';
   function show(id) {

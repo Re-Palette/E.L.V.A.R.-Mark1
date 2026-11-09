@@ -366,7 +366,7 @@ export function initGoogleTools({ live, approval, authHeaders, agents, systemChe
       let r = await post({ tool, args });
       if (r.ok && r.needsApproval) {
         const BUILD = tool === 'build_request' ? { voice: true, yes: '依頼する', no: 'やめる', edit: '直す', title: '製作の依頼の確認' } : {};
-        const approved = await approval.ask({ id: call.id, tool, summary: r.summary, danger: r.danger, ...BUILD });
+        const approved = await approval.ask({ id: call.id, tool, summary: r.summary, danger: r.danger, via: r.via, ...BUILD });
         if (approved === 'edit') return { error: ownerAddress() + 'は、依頼の内容の修正を希望しています。まだ送っていません。どこを直すかを聞いて、直した内容を復唱して、もう一度、build_request で確認してください。' };
         if (!approved) return { error: ownerAddress() + 'が却下されました（または時間切れ）。実行していません。同じ操作を勝手に繰り返さないでください。' };
         r = await post({ tool, args, ticket: r.ticket });
