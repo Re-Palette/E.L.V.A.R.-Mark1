@@ -25,6 +25,14 @@ migrations/            applied in file-name order
    `alter role elvar_app password '<long random>';` then `ELVAR_DB_URL=postgres://elvar_app.<project-ref>:<password>@<pooler-host>:6543/postgres`.
 3. Set `ELVAR_KEK` (see `.env.example`), `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `CRON_SECRET`, and `SUPABASE_SECRET_KEY` as Sensitive variables in Vercel.
 
+## Auth hook (required on a hosted project)
+
+The sign-up policy (open / invite / closed, the daily caps, disposable domains) lives in the table `app.platform_config` and is enforced by the Auth hook
+`app.before_user_created` for every sign-up (e-mail and Google). `supabase/config.toml` enables it for the local stack; **a hosted project does not read that file**:
+Dashboard > Authentication > Hooks > *Before User Created* > Postgres function > schema `app`, function `before_user_created` > enable. Without this step the policy is NOT enforced.
+`/api/elvar/state` (what the sign-up screen shows) reads the same table, so the screen and the enforcement cannot disagree; `ELVAR_SIGNUP` is only used when there is no database.
+Change the policy in the SQL editor, e.g. `update app.platform_config set value = 'invite' where key = 'signup_mode';`. `ip_daily_signup_limit` (default 5) caps sign-ups per network per day.
+
 ## The rules every table follows
 
 * Lives in schema `app`, has `user_id uuid not null default auth.uid() references auth.users (id) on delete cascade`, and is locked with

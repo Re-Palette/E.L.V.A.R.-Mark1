@@ -101,3 +101,21 @@ test('bootstrap admin needs a CONFIRMED e-mail; due_deletions lists only what is
   await admin`select app.record_deletion_receipt(21)`; assert.equal((await admin`select tables_checked from app.deletion_receipts order by completed_at desc limit 1`)[0].tables_checked, 21);
   await deleteUser(u);
 });
+
+test('review fix: the daily cap also has a per-address part (hashed address, ip_daily_signup_limit), and the state endpoint reads the same policy as the hook', async () => {
+  const hookIp = async (email, ip) => (await admin`select app.before_user_created(${admin.json({ user: { email }, metadata: { ip_address: ip } })}) as r`)[0].r;
+  await admin`update app.platform_config set value = '2' where key = 'ip_daily_signup_limit'`; await admin`delete from app.signup_attempts`;
+  try {
+    assert.deepEqual(await hookIp('a1@example.test', '203.0.113.9'), {}); assert.deepEqual(await hookIp('a2@example.test', '203.0.113.9'), {});
+    assert.equal((await hookIp('a3@example.test', '203.0.113.9')).error.http_code, 429, 'the third from one address is refused');
+    assert.deepEqual(await hookIp('b1@example.test', '203.0.113.10'), {}, 'another address is not affected');
+    const rows = await admin`select ip_hash from app.signup_attempts`; assert.ok(rows.every((r) => /^[0-9a-f]{64}$/.test(r.ip_hash) && !r.ip_hash.includes('203')), 'only hashes are stored');
+    await admin`update app.signup_attempts set at = now() - interval '3 days'`; await admin`select * from app.purge_expired()`; assert.equal((await admin`select count(*)::int as n from app.signup_attempts`)[0].n, 0, 'swept after two days');
+  } finally { await admin`update app.platform_config set value = '5' where key = 'ip_daily_signup_limit'`; await admin`delete from app.signup_attempts`; }
+  const { createPgDb } = await import('../../server/db/pool.js'), { appUrl } = await import('./support/pg.mjs'), db = createPgDb(appUrl);
+  try {
+    await admin`update app.platform_config set value = 'invite' where key = 'signup_mode'`;
+    assert.equal(await db.system.signupMode(), 'invite', 'what /api/elvar/state shows is what the hook enforces');
+    const { platformState } = await import('../../server/account/state.js'); assert.equal(platformState({ ELVAR_SIGNUP: 'open' }, await db.system.signupMode()).signup, 'invite', 'the database wins over ELVAR_SIGNUP');
+  } finally { await admin`update app.platform_config set value = 'open' where key = 'signup_mode'`; await db.close(); }
+});

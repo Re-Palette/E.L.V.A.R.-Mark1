@@ -8,7 +8,7 @@ import { REGISTRY, validateRegistry } from '../../server/rights/registry.js';
 test.after(() => admin.end({ timeout: 5 }));
 
 // Tables of schema app that hold no user data and therefore have no user_id (and no registry row).
-const PLATFORM_TABLES = new Set(['data_registry', 'deletion_receipts', 'platform_config', 'blocked_email_domains', 'signup_invites']);
+const PLATFORM_TABLES = new Set(['data_registry', 'deletion_receipts', 'platform_config', 'blocked_email_domains', 'signup_invites', 'signup_attempts']);
 const norm = (s) => String(s).replace(/\s+/g, ' ').trim();
 
 test('every table of schema app has row level security enabled and forced', async () => {
@@ -62,7 +62,7 @@ test('composite indexes start with user_id (the rate-limit counters are keyed by
   const idx = await admin`
     select t.relname as tbl, i.relname as idx, (select attname from pg_attribute where attrelid = t.oid and attnum = x.indkey[0]) as first, x.indnatts as n
     from pg_index x join pg_class i on i.oid = x.indexrelid join pg_class t on t.oid = x.indrelid join pg_namespace s on s.oid = t.relnamespace where s.nspname = 'app'`;
-  assert.deepEqual(idx.filter((i) => i.n >= 2 && i.first !== 'user_id' && i.tbl !== 'rate_limits').map((i) => `${i.tbl}.${i.idx}`), []);
+  assert.deepEqual(idx.filter((i) => i.n >= 2 && i.first !== 'user_id' && !['rate_limits', 'signup_attempts'].includes(i.tbl)).map((i) => `${i.tbl}.${i.idx}`), []);
 });
 
 test('no user data in schema public, and nothing of ours is executable there', async () => {
@@ -125,7 +125,7 @@ test('write-restricted tables really are: no insert/update/delete grant on accou
   const priv = async (t, p) => (await admin`select has_table_privilege('authenticated', ${'app.' + t}, ${p}) as ok`)[0].ok;
   for (const t of ['accounts', 'usage_events', 'usage_daily', 'storage_usage', 'deletion_requests']) for (const p of ['insert', 'update', 'delete']) assert.equal(await priv(t, p), false, `${t} ${p}`);
   for (const t of ['audit_log', 'ticket_uses']) { assert.equal(await priv(t, 'insert'), true); for (const p of ['update', 'delete']) assert.equal(await priv(t, p), false, `${t} ${p}`); }
-  for (const t of ['admins', 'rate_limits', 'data_registry', 'deletion_receipts', 'platform_config', 'blocked_email_domains', 'signup_invites']) for (const p of ['select', 'insert', 'update', 'delete']) assert.equal(await priv(t, p), false, `${t} ${p}`);
+  for (const t of ['admins', 'rate_limits', 'data_registry', 'deletion_receipts', 'platform_config', 'blocked_email_domains', 'signup_invites', 'signup_attempts']) for (const p of ['select', 'insert', 'update', 'delete']) assert.equal(await priv(t, p), false, `${t} ${p}`);
 });
 
 test('definer functions: fixed search_path, never executable by public or anon, and exactly the expected callers', async () => {
@@ -134,7 +134,7 @@ test('definer functions: fixed search_path, never executable by public or anon, 
   const EXPECT = {   // function -> roles that may execute it
     _secure: [], ensure_account: ['authenticated'], is_admin: ['authenticated'], device_lookup: ['elvar_app'],
     rl_hit: ['elvar_app'], purge_expired: ['elvar_app'], residual_check: ['elvar_app'],
-    account_count: ['elvar_app'],   // migration 16: how many accounts exist (single-user switch for private connector networks)
+    account_count: ['elvar_app'], platform_signup_mode: ['elvar_app'],   // migration 16: how many accounts exist (single-user switch for private connector networks)
     search_notes: ['authenticated'], search_messages: ['authenticated'],   // migrations 05 / 06: SECURITY INVOKER (RLS applies), the candidate queries of the notes / conversation search
     oauth_pending_owner: ['elvar_app'],   // migration 04: the OAuth callback finds whose flow a single-use state belongs to
     // migration 12: the Auth hook (supabase_auth_admin only, none of the roles listed here), the caller-scoped ones, the admin ones (they check is_admin themselves), the cron / purge helpers

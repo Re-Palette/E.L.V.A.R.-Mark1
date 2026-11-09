@@ -403,7 +403,7 @@ export function createMemoryDb({ now = null } = {}) {
       },
     };
   }
-  let auditSeq = 0;
+  let auditSeq = 0, signupMode = 'open';
   // user_secrets (user_id, dek_ver) -> user_keys (user_id, dek_ver), deferrable: checked when the transaction commits (a failure rolls it back)
   const checkKeyReferences = (uid) => {
     const key = find('user_keys', uid);
@@ -446,6 +446,7 @@ export function createMemoryDb({ now = null } = {}) {
       return u.id;
     },
     async oauthPendingOwner(stateHash, provider) { V.need(V.isBytes(stateHash, 32) && V.OAUTH_FLOW_KINDS.includes(provider)); const r = tables.oauth_pending.find((x) => sameBytes(x.state_hash, stateHash) && x.provider === provider && live(x)); return r ? r.user_id : null; },
+    async signupMode() { return signupMode; },
     async accountCount() { return tables.accounts.length; },
     async deviceLookup(hash) { V.need(V.isBytes(hash, 32)); const r = tables.devices.find((x) => sameBytes(x.token_hash, hash)); return r ? { userId: r.user_id, deviceId: r.id, scopes: [...r.scopes] } : null; },
   };
@@ -482,6 +483,7 @@ export function createMemoryDb({ now = null } = {}) {
       makeAdmin(uid) { if (!find('admins', uid)) tables.admins.push({ user_id: uid, granted_by: null, granted_at: clock() }); },
       advance(ms) { offset += ms; },
       now: () => clock(),
+      setSignupMode(m) { signupMode = m; },
       /** A Map-like synchronous view of one user's live notes ({ text } by path) for tests: get / has / set / keys / delete. set() writes the row directly (no quota, no revision). */
       notesView(uid) {
         const live = () => tables.notes.filter((n) => n.user_id === uid && n.deleted_at === null);

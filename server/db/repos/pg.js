@@ -513,6 +513,8 @@ export function pgSystem(sql) {
       const [r] = await sql`select app.oauth_pending_owner(${V.toBuf(stateHash)}, ${provider}) as uid`;
       return r.uid || null;
     },
+    /** The sign-up policy (open | invite | closed) the Auth hook enforces: the single source. */
+    async signupMode() { const [r] = await sql`select app.platform_signup_mode() as m`; return r.m; },
     async accountCount() { const [r] = await sql`select app.account_count() as n`; return Number(r.n); },
     async deviceLookup(hash) {
       V.need(V.isBytes(hash, 32));

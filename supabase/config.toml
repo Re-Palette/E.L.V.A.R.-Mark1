@@ -36,4 +36,9 @@ double_confirm_changes = true
 enable_confirmations = true
 secure_password_change = true
 
-# The login screen (sign-up, confirmation, password reset, Google sign-in, CAPTCHA, auth hooks) is added in P2; nothing here depends on it.
+# The sign-up policy (app.platform_config: signup_mode, daily_signup_limit, ip_daily_signup_limit, blocked e-mail domains, invites) is enforced HERE, for e-mail and
+# Google sign-ups alike. A hosted project does not read this file: enable the same hook in the dashboard (supabase/README.md, "Auth hook").
+[auth.hook.before_user_created]
+enabled = true
+uri = "pg-functions://postgres/app/before_user_created"
+
