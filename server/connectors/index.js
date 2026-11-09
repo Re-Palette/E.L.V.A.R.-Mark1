@@ -55,7 +55,7 @@ export async function runConnectorTool(cfg, c, t, args, { fetchImpl } = {}) {
 const show = (v) => { const s = typeof v === 'string' ? v : JSON.stringify(v); return trunc(String(s).replace(/\s+/g, ' '), 200); };
 export function describeCall(c, t, args) {
   const host = hostOf(c), pol = toolPolicy(c, t);
-  const lines = [`「${c.name}」（${host}）の「${t.name}」を実行します`, `送り先：${c.name}（${host}）`];
+  const lines = [`「${c.name}」（${host}）の「${t.name}」を実行します`];   // the card also shows a fixed 送り先 strip (connector + host) from `via`
   if (c.type === 'http') lines.push(`${t.method} ${trunc(t.path, 80)}`);
   const entries = Object.entries(args || {}).slice(0, 12);
   if (!entries.length) lines.push('（引数はありません）');
