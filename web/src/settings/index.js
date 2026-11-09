@@ -1,10 +1,12 @@
-// In-app settings (gear icon / Ctrl+, / ?settings=1). Tabs: アカウント, APIキー, Google (準備中), 連携アプリ (準備中), プロフィール, 機能, この端末, 管理 (admins only).
+// In-app settings (gear icon / Ctrl+, / ?settings=1). Tabs: アカウント, APIキー, Google (the user's own client), 連携アプリ (their connectors + build requests), プロフィール, 機能, この端末, 管理 (admins only).
 // Server-side values (keys, profile, devices) go through /api/elvar/*; "この端末" is stored on this device only.
 import { ensureUiCss, esc } from '../elvar/ui.js';
 import { api, currentSession, loadSession } from '../elvar/auth.js';
 import { mountDevice } from './device.js';
 import { mountKeys } from './keys.js';
-import { mountSoon } from './soon.js';
+import { mountGoogle } from './google.js';
+import { mountConnectors } from './connectors.js';
+import { mountBuilds } from './builds.js';
 import { mountAdmin } from './admin.js';
 import { mountAccount } from './account.js';
 import { mountProfile } from './profile.js';
@@ -38,6 +40,13 @@ const DEVICE_CSS = `
 const BASE_TABS = [['account', 'アカウント'], ['keys', 'APIキー'], ['google', 'Google'], ['connectors', '連携アプリ'], ['profile', 'プロフィール'], ['features', '機能'], ['device', 'この端末']];
 const TABS = [...BASE_TABS, ['admin', '管理']];   // the admin tab is shown only to admins
 
+/** 連携アプリ: the user's connectors, and below them their build requests (each in its own element: both redraw themselves). */
+function mountConnectorsPane(root) {
+  root.innerHTML = '<div data-cx></div><div data-build></div>';
+  const cx = mountConnectors(root.querySelector('[data-cx]')), builds = mountBuilds(root.querySelector('[data-build]'));
+  return { refresh: () => Promise.all([cx.refresh(), builds.refresh()]) };
+}
+
 export function initSettingsPanel(app) {
   ensureUiCss();
   const style = document.createElement('style'); style.textContent = DEVICE_CSS; document.head.appendChild(style);
@@ -59,8 +68,8 @@ export function initSettingsPanel(app) {
   const parts = {
     account: mountAccount(pane('account')),
     keys: mountKeys(pane('keys')),
-    google: mountSoon(pane('google'), { title: 'Google との連携', lines: ['カレンダー・Gmail・ドライブなどを声で頼めるようにする機能です。あなた自身のGoogleのクライアントで連携する形になります。'] }),
-    connectors: mountSoon(pane('connectors'), { title: '連携アプリ', lines: ['MCPサーバーなどの外部アプリを、あなただけの連携として登録する機能です。'] }),
+    google: mountGoogle(pane('google')),
+    connectors: mountConnectorsPane(pane('connectors')),
     admin: mountAdmin(pane('admin')),
     profile: mountProfile(pane('profile'), 'profile', { onSaved: () => loadSession() }),
     features: mountProfile(pane('features'), 'features', { onSaved: () => loadSession() }),

@@ -1,4 +1,4 @@
-// Settings > Google: connect the owner's own Google account (calendar, Gmail, Drive, Docs, Sheets, Tasks, Contacts) with no environment variables.
+// Settings > Google: connect YOUR OWN Google account with YOUR OWN OAuth client (decision O2: there is no shared platform client) (calendar, Gmail, Drive, Docs, Sheets, Tasks, Contacts) with no environment variables.
 //   1. register the redirect URI shown here in your own Google OAuth client   2. type its client id / secret (secret: write-only)
 //   3. choose the products   4. 「Googleと連携」: consent opens in the system browser / a Custom Tab; coming back, the app claims the result.
 import { esc } from '../elvar/ui.js';

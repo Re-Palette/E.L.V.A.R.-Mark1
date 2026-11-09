@@ -70,7 +70,7 @@ export function runWizard({ state, session }) {
       done: (cfg) => `
         <p class="ev-p">セットアップが終わりました。拍手2回、またはマイクのボタンで話しかけてください。</p>
         <div class="ev-kv"><span>呼び方</span><span>${esc(profile.owner.address)}</span><span>タイムゾーン</span><span>${esc(profile.locale.timeZone)}</span><span>Gemini</span><span class="ev-chip ${cfg?.set ? 'ok' : 'off'}">${esc(keyStatusText(cfg))}</span></div>
-        <p class="ev-note">設定は、HUD の歯車のアイコン（Ctrl+,）からいつでも変えられます。Googleとの連携は、準備中です。</p>
+        <p class="ev-note">設定は、HUD の歯車のアイコン（Ctrl+,）からいつでも変えられます。</p>
         <div class="ev-btns"><button class="ev-btn pri" id="ev-go" type="button">HUD を開く</button></div>`,
     };
 

@@ -1,4 +1,4 @@
-// Settings > 連携アプリ: the owner adds other apps themselves.
+// Settings > 連携アプリ: you add other apps yourself (they belong to your account only).
 //   MCPサーバー (URL + 認証なし / トークン / OAuth)  or  HTTPアプリ (URL + 道具の一覧 + 認証ヘッダー)
 //   add flow: 種類 -> 接続先 -> 認証 -> 接続を確認 -> 道具の確認（有効・承認レベル）-> 保存
 // Secrets are write-only (the server returns only { set, last4 }). Everything an app says about itself (names, descriptions) is shown as text, never as markup.

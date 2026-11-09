@@ -50,10 +50,12 @@ test('product checkboxes <-> setting: all products = nothing stored; order and u
   assert.equal(stateChipClass('connected'), 'ok'); assert.equal(stateChipClass('reauth_required'), 'warn'); assert.equal(stateChipClass('client_only'), 'off');
 });
 
-test('the callback page: strict CSP (no inline script), claim script from our own origin, nothing else', () => {
-  const claim = read('web/public/google-setup/claim.js');
-  assert.match(claim, /\/api\/elvar\/connect\/google\/claim/); assert.match(claim, /history\.replaceState/, 'the state leaves the address bar');
-  assert.doesNotMatch(claim, /eval\(|innerHTML|document\.write|location\.(href|assign|replace)\s*=/, 'no way to redirect anywhere (no open redirect)');
+test('the callback page: strict CSP, no script at all, no redirect anywhere (no open redirect); the guide has no inline script and no old owner steps', async () => {
+  const { connectCallback } = await import('../server/google/connect.js');
+  const r = await connectCallback({ req: { headers: {}, socket: { remoteAddress: '203.0.113.9' } }, query: { state: 'x' } });
+  assert.match(r.headers['content-security-policy'], /default-src 'none'/); assert.doesNotMatch(r.headers['content-security-policy'], /script-src/, 'the page runs no script');
+  assert.doesNotMatch(r.html, /<script|<meta[^>]+refresh|location\.|onload=/i);
+  assert.ok(!fs.existsSync(new URL('../web/public/google-setup/claim.js', import.meta.url)), 'the app (same browser or the Custom Tab\'s owner) claims the result, not a script on the callback page');
   const html = read('web/public/google-setup/index.html'); assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)[^>]*>/i, 'no inline script on the guide');
   for (const must of ['ウェブ アプリケーション', 'リダイレクト', 'テストユーザー', '7日', '本番', 'copy-redirect', 'id="u-redirect"']) assert.ok(html.includes(must), must);
   assert.doesNotMatch(html, /GOOGLE_REFRESH_TOKEN[^]{0,80}(Vercel|貼り付け|登録)/, 'no "paste the refresh token into Vercel" step any more');
