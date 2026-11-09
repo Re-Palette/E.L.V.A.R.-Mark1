@@ -1,7 +1,10 @@
 // Google integration config. Secrets only from the environment (never in Git, never sent to the browser).
+// On the platform (decision O2) there is NO shared Google OAuth client: every user enters their OWN client id (a setting) and secret (an encrypted secret)
+// in Settings, connects, and the refresh token is kept in their own row of app.oauth_tokens (cfg.google, loaded by server/auth/load-user-config.js).
+// Outside a request (scripts, tests) the environment variables still work:
 //   GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN   (see docs/GOOGLE_INTEGRATION.md)
 //   GOOGLE_TIMEZONE   default: the profile's time zone
-//   GOOGLE_API_MOCK_ORIGIN  (tests only) send every Google call to this origin instead
+//   GOOGLE_API_MOCK_ORIGIN  (tests and the local dev stack only) send every Google call to this origin instead
 import { cfgEnv, currentConfig } from '../config/resolve.js';
 import { TZ } from '../profile/index.js';
 
@@ -19,9 +22,11 @@ export function googleConfig(env = cfgEnv, tokOverride) {
     scopes: mine ? new Set(tok.scopes || []) : null,                                // null = unknown: nothing is filtered
     fromVault: mine, reauth, reauthReason: mine ? tok.reason || '' : reauth ? 'client_changed' : '',
     timeZone: env.GOOGLE_TIMEZONE || TZ(),
-    mock: env.GOOGLE_API_MOCK_ORIGIN || '',
+    mock: env.GOOGLE_API_MOCK_ORIGIN || devMock(),
   };
 }
+/** The local dev stack (ELVAR_DEV_AUTH=1, never on Vercel / in production) may point Google calls at a mock; a user's request never reads the platform environment otherwise. */
+const devMock = (e = process.env) => (e.ELVAR_DEV_AUTH === '1' && !e.VERCEL && e.NODE_ENV !== 'production' ? e.GOOGLE_API_MOCK_ORIGIN || '' : '');
 export const googleConfigured = (cfg = googleConfig()) => Boolean(cfg.clientId && cfg.clientSecret && cfg.refreshToken);
 /** The saved login was refused by Google (revoked, expired, a 7-day "Testing" token) or belongs to another client id: the owner must connect again. */
 export const googleReauthRequired = (cfg = googleConfig()) => Boolean(cfg.reauth);

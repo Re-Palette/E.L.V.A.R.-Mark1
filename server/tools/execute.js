@@ -23,7 +23,7 @@ export async function executeTool({ tool, args = {}, ticket }) {
   if (!t && !Object.hasOwn(TOOL_MAP, tool)) { try { t = findConnectorTool(currentConfig(), String(tool)) || undefined; } catch { t = undefined; } }
   if (!t) return { status: 404, body: { ok: false, error: `未知のツールです: ${tool}` } };
   // Only the Google services need the Google login; notes (GitHub), build requests, web search etc. work with their own settings. Connector tools have their own checks.
-  const NOT_SET = 'Googleとの連携は、準備中です（まもなく使えるようになります）';
+  const NOT_SET = 'Googleと連携していません。設定の「Google」で、ご自分のGoogleのクライアントを入れて連携してください';
   if (t.external || tool === 'connector_tools') { /* own gating in connectors/policy.js */ }
   else if (/^(calendar|gmail|drive|sheets|docs|tasks|contacts)_/.test(tool)) {
     if (!googleConfigured()) return { status: 503, body: { ok: false, error: NOT_SET } };

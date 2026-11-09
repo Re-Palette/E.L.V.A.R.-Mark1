@@ -24,10 +24,14 @@ async function readData(ctx) {
   const ring = getKeyring();
   return ctx.db(async (r) => {
     const [profile, settings, names] = await Promise.all([r.profile.get(), r.settings.get(), r.secrets.list()]);
-    const secrets = {};
-    for (const s of names) if (!/^cx:/.test(s.name)) secrets[s.name] = await ring.getSecret(r, s.name);
+    const secrets = {}, cxSecrets = {};
+    for (const s of names) { const v = await ring.getSecret(r, s.name); if (/^cx:/.test(s.name)) cxSecrets[s.name] = v; else secrets[s.name] = v; }   // cx:<connector id>:* are the connectors' own secrets
     const k = await ring.dek(r);   // created on the first request of a new user
-    return { profile: profile || null, settings: settings || {}, secrets, ticketKey: await ring.ticketKey(r), connectorKey: await ring.connectorKey(r), dekVer: k.dekVer };
+    // the user's connections (P3): their connectors with the tools they approved, and their own Google login (never anybody else's)
+    const connectors = await r.connectors.list();
+    const g = await ring.getToken(r, 'google');
+    const mcp = Object.fromEntries((await r.oauthTokens.list()).filter((t) => t.provider.startsWith('cx:')).map((t) => [t.provider.slice(3), { status: t.status, reason: t.reason }]));
+    return { profile: profile || null, settings: settings || {}, secrets, cxSecrets, connectors, google: g ? { ...g.data, scopes: g.scopes, status: g.status === 'ok' ? 'connected' : 'reauth_required', reason: g.reason || '' } : null, mcp, ticketKey: await ring.ticketKey(r), dekVer: k.dekVer };
   });
 }
 
@@ -60,7 +64,10 @@ export function buildConfig(ctx, data) {
     get, source,
     secretStatus: () => secretStatus((n) => data.secrets[n], () => 'app'),
     profile, features: profile.features || {}, version: data.dekVer,
-    ticketKey: data.ticketKey, connectorKey: data.connectorKey, notifSecret: data.secrets[NOTIF_SECRET] || null,
+    ticketKey: data.ticketKey, notifSecret: data.secrets[NOTIF_SECRET] || null,
+    // connections: only this user's (the router builds the request from THEIR rows; the platform environment never supplies a Google login or a connector secret)
+    connectors: data.connectors, google: data.google, mcpState: (id) => data.mcp[id] || null,
+    cxSecret: (id, what = 'auth') => data.cxSecrets[`cx:${id}:${what}`] || '',
     // the user's own database access and per-user counters, for code that runs deep inside a request
     uid: ctx.uid.uid, db: ctx.db,
     hit: async (bucket, windowSec, limit) => (await ctx.system.rlHit({ bucket, who: ctx.uid.uid, windowSec, userId: ctx.uid })) <= limit,

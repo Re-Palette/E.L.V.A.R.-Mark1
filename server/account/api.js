@@ -3,10 +3,10 @@
 // Secrets are write-only: no handler ever returns a secret value, only { set, source, last4 }.
 // Everything here reads and writes ONLY the caller's rows: through user.db(fn), i.e. asUser(uid) with Row Level Security.
 import { KEYS, keyInfo, isSecret } from '../config/keys.js';
-import { PROFILE_KEYS } from '../config/resolve.js';
+import { PROFILE_KEYS, cfgEnv } from '../config/resolve.js';
 import { validateProfile } from '../../shared/profile.js';
 import { testKey } from '../api-status.js';
-import { SERVICE_IDS } from '../google/config.js';
+import { SERVICE_IDS, googleConfig, googleState } from '../google/config.js';
 import { VERSION } from '../version.js';
 import { getDb } from '../db/index.js';
 import { getKeyring } from '../auth/keyring.js';
@@ -20,10 +20,11 @@ import { buildExport } from '../rights/export.js';
 const bad = (status, error, message, extra = {}) => ({ status, body: { error, ...(message ? { message } : {}), ...extra } });
 const audit = (event, extra) => console.log('[audit] ' + JSON.stringify({ at: new Date().toISOString(), event, ...extra }));
 
-// What the user can edit here. The Google client id / secret belong to the Google connection (P3): not offered yet.
-const NOT_YET = (k) => k.group === 'google';
-const SECRET_EDITABLE = (name) => { const k = keyInfo(name); return isSecret(name) && !NOT_YET(k) && name !== 'NOTIF_SECRET'; };
-const SETTING_EDITABLE = (name) => { const k = keyInfo(name); return k?.kind === 'setting' && !PROFILE_KEYS.includes(name) && !NOT_YET(k); };
+// What the user can edit here. The Google client id / secret are the user's OWN OAuth client (decision O2); the refresh token is never typed: it comes from the
+// consent flow (server/google/connect.js) and lives in app.oauth_tokens.
+const NOT_TYPED = new Set(['NOTIF_SECRET', 'GOOGLE_REFRESH_TOKEN']);
+const SECRET_EDITABLE = (name) => isSecret(name) && !NOT_TYPED.has(name);
+const SETTING_EDITABLE = (name) => { const k = keyInfo(name); return k?.kind === 'setting' && !PROFILE_KEYS.includes(name); };
 
 /** The settings screen's view of the configuration: secrets as { set, source, last4 }, settings with their values. */
 export function configView(cfg) {
@@ -39,6 +40,7 @@ export function configView(cfg) {
 const SHAPES = [
   [/^GOOGLE_SERVICES$/, new RegExp(`^(${SERVICE_IDS.join('|')})(,(${SERVICE_IDS.join('|')}))*$`), '選べないサービスが入っています'],
   [/^GOOGLE_READONLY$/, /^1$/, '1 か空にしてください'],
+  [/^GOOGLE_CLIENT_ID$/, /^[A-Za-z0-9][A-Za-z0-9._-]{4,199}$/, 'クライアントIDの形式が正しくありません'],
   [/_REPO$/, /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/, 'owner/name の形で入力してください'],
   [/MODEL/, /^[A-Za-z0-9][A-Za-z0-9_.:-]*(\/[A-Za-z0-9][A-Za-z0-9_.:-]*)?$/, 'モデル名の形式が正しくありません'],
   [/_(URL|ORIGIN|HOST|ENDPOINT)$/, /^$/, 'このアドレスはアプリからは変更できません'],
@@ -119,9 +121,9 @@ export async function getSession({ user, cfg }) {
     profile: p, features: cfg.features,
     brand: { name: p.assistant.displayName, spokenName: p.assistant.spokenName, ownerAddress: p.owner.address },
     notifSecret,
-    google: { state: 'coming_soon' },
+    google: { state: googleState(googleConfig(cfgEnv, cfg.google)) },
     missing: ['GEMINI_API_KEY'].filter((n) => !st[n]?.set),
-    comingSoon: ['google', 'connectors', 'notifications-sync', 'files-sync'],
+    comingSoon: ['notifications-sync', 'files-sync'],
     version: VERSION,
   } };
 }

@@ -1,5 +1,6 @@
 // Account deletion, the purge half (docs/ELVAR_MULTIUSER.md 7.4, principle 7). Runs for one account whose deletion is due:
-//   1. revoke what the user connected elsewhere (P3: Google refresh token, MCP OAuth). Failures are logged and do not stop the purge.
+//   1. revoke what the user connected elsewhere (P3: their Google refresh token at Google, MCP OAuth tokens where the server published a revocation
+//      endpoint; server/rights/revoke.js). Failures are logged and do not stop the purge.
 //   2. crypto-shred: remove the user's wrapped DEK (every secret, in the database and in any backup, becomes unreadable; user_secrets cascades).
 //   3. delete the Auth user (service role): `on delete cascade` removes every app.* row.
 //   4. verify: residual_check over every registered table must be zero.   5. record a receipt that carries no user id and no e-mail.
@@ -7,15 +8,17 @@
 import { mintVerifiedUid } from '../db/verified-uid.js';
 import { deleteAuthUser } from '../db/service.js';
 import { residualCheck } from './residual.js';
+import { revokeAll } from './revoke.js';
 
 /**
  * @param {object} db   the database (getDb())
  * @param {string} uid  the user's id (taken from a deletion request, never from a client)
- * @param {{ deleteUser?: Function, revoke?: Array<Function> }} [o]
+ * @param {{ deleteUser?: Function, revoke?: Array<Function>, fetchImpl?: Function }} [o]  revoke: extra revokers (the default one revokes Google and MCP tokens); fetchImpl: tests
  */
-export async function purgeAccount(db, uid, { deleteUser = deleteAuthUser, revoke = [] } = {}) {
+export async function purgeAccount(db, uid, { deleteUser = deleteAuthUser, revoke = null, fetchImpl = null } = {}) {
   const v = mintVerifiedUid(uid, 'purge');
-  for (const fn of revoke) { try { await fn(v); } catch (e) { console.error('[elvar] purge: could not revoke an external grant:', e?.code || e?.message); } }
+  const revokers = revoke || [async (vu) => { const res = await revokeAll(db, vu, { fetchImpl }); console.log('[audit] ' + JSON.stringify({ at: new Date().toISOString(), event: 'purge-revoked', google: res.google, connectors: res.connectors, failed: res.failed })); }];
+  for (const fn of revokers) { try { await fn(v); } catch (e) { console.error('[elvar] purge: could not revoke an external grant:', e?.code || e?.message); } }
   try { await db.asUser(v, (r) => r.keys.del()); } catch (e) { if (e?.code !== 'invalid_reference') throw e; }
   await deleteUser(uid);
   const res = await residualCheck(db, v);

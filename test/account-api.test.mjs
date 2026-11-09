@@ -30,7 +30,7 @@ test('session: the account is created on first use; a per-user notification key 
     assert.equal(a.status, 200); assert.equal(a.body.user.id, u); assert.equal(a.body.user.email, 'alice@example.test'); assert.equal(a.body.role, 'user');
     assert.deepEqual(a.body.missing, ['GEMINI_API_KEY'], 'the user has no key of their own, whatever the platform environment holds');
     assert.match(a.body.notifSecret, /^[A-Za-z0-9_-]{43}$/); assert.equal(b.body.notifSecret, a.body.notifSecret, 'made once');
-    assert.equal(a.body.google.state, 'coming_soon'); assert.ok(a.body.comingSoon.includes('google'));
+    assert.equal(a.body.google.state, 'unconfigured', 'no Google client of their own yet'); assert.ok(!a.body.comingSoon.includes('google') && !a.body.comingSoon.includes('connectors'), 'Google and connected apps are on the platform');
     assert.deepEqual(a.body.profile, JSON.parse(JSON.stringify(DEFAULT_PROFILE)), 'a new user starts from the neutral defaults');
     assert.ok(!JSON.stringify(a.body).includes('PLATFORM-OWNER'));
     const other = h.mkUser(), s2 = await h.call('GET', '/api/elvar/session', await h.bearer(other));
@@ -46,7 +46,8 @@ test('config: the user brings their own keys (write-only, encrypted); settings a
     assert.equal(before.body.secrets.GEMINI_API_KEY.set, false); assert.deepEqual(before.body.missing, ['GEMINI_API_KEY']);
     assert.equal(before.body.settings.GROQ_MODEL.source, 'env', 'a model name is a platform default, shown as such');
     assert.equal(before.body.settings.BRAIN_REPO.value, '', 'the owner\'s personal setting is not inherited');
-    assert.ok(!('GOOGLE_CLIENT_SECRET' in before.body.secrets) && !('GOOGLE_CLIENT_ID' in before.body.settings), 'Google keys are not offered yet');
+    assert.ok('GOOGLE_CLIENT_SECRET' in before.body.secrets && 'GOOGLE_CLIENT_ID' in before.body.settings, 'every user enters their OWN Google client (decision O2)');
+    assert.ok(!('GOOGLE_REFRESH_TOKEN' in before.body.secrets), 'the refresh token is never typed: it comes from the consent flow');
     assert.ok(!('NOTIF_SECRET' in before.body.secrets), 'internal material is not editable');
 
     const set = await h.call('PATCH', '/api/elvar/config', hd, { secrets: { GEMINI_API_KEY: ` "${GEMINI}" ` }, settings: { BRAIN_REPO: 'me/my-notes', GROQ_MODEL: 'openai/gpt-oss-20b' } });
@@ -58,7 +59,7 @@ test('config: the user brings their own keys (write-only, encrypted); settings a
     assert.ok(!stored.ct.includes(Buffer.from(GEMINI)), 'stored as ciphertext');
     assert.equal((await h.call('GET', '/api/elvar/config', hd)).body.secrets.GEMINI_API_KEY.set, true);
 
-    for (const [patch, key] of [[{ secrets: { NOT_A_KEY: 'x' } }, 'unknown_key'], [{ secrets: { NOTIF_SECRET: 'x'.repeat(20) } }, 'unknown_key'], [{ secrets: { GOOGLE_CLIENT_SECRET: 'x'.repeat(20) } }, 'unknown_key'],
+    for (const [patch, key] of [[{ secrets: { NOT_A_KEY: 'x' } }, 'unknown_key'], [{ secrets: { NOTIF_SECRET: 'x'.repeat(20) } }, 'unknown_key'], [{ secrets: { GOOGLE_REFRESH_TOKEN: 'x'.repeat(20) } }, 'unknown_key'], [{ settings: { GOOGLE_CLIENT_ID: 'bad id with spaces' } }, 'bad_value'],
       [{ settings: { SARASHINA_BASE_URL: 'https://evil.example' } }, 'unknown_key'], [{ settings: { BRAIN_REPO: 'not a repo' } }, 'bad_value'], [{ secrets: { GEMINI_API_KEY: 'has space' } }, 'bad_value'], [{ secrets: { GEMINI_API_KEY: '' } }, 'bad_value']]) {
       const r = await h.call('PATCH', '/api/elvar/config', hd, patch); assert.equal(r.status, 400, JSON.stringify(patch)); assert.equal(r.body.error, key, JSON.stringify(patch));
     }
@@ -235,13 +236,14 @@ test('cron: only with CRON_SECRET; sweeps expired rows; bootstrap admin needs th
   } finally { delete process.env.ELVAR_BOOTSTRAP_ADMIN_EMAIL; }
 }));
 
-test('features not on the platform yet answer one clear 準備中 message and never data', withHarness(async (h) => {
+test('P3 features answer for the caller only: a fresh user has no Google client and no connectors; the callbacks need a valid single-use state', withHarness(async (h) => {
   const hd = await h.bearer(h.mkUser());
-  for (const [m, p] of [['POST', '/api/elvar/connect/google/start'], ['POST', '/api/elvar/connectors'], ['GET', '/api/elvar/connectors/export'], ['GET', '/api/elvar/connectors/abc'], ['POST', '/api/elvar/connectors/abc/oauth/start']]) {
-    const r = await h.call(m, p, hd, {}); assert.equal(r.status, 503, p); assert.equal(r.body.error, 'coming_soon'); assert.match(r.body.message, /準備中/);
-  }
-  const st = await h.call('GET', '/api/elvar/connect/google/status', hd); assert.equal(st.status, 200); assert.equal(st.body.configured, false); assert.equal(st.body.comingSoon, true);
+  const st = await h.call('GET', '/api/elvar/connect/google/status', hd); assert.equal(st.status, 200); assert.equal(st.body.state, 'unconfigured'); assert.equal(st.body.configured, false); assert.equal(st.body.clientIdSet, false);
+  assert.equal((await h.call('POST', '/api/elvar/connect/google/start', hd, {})).body.error, 'client_missing');
   assert.deepEqual((await h.call('GET', '/api/elvar/connectors', hd)).body.connectors, []);
-  const cb = await h.call('GET', '/api/google/callback', {}); assert.equal(cb.status, 503); assert.match(cb.html, /準備中/);
+  assert.equal((await h.call('GET', '/api/elvar/connectors/abc', hd)).status, 404);
+  const cb = await h.call('GET', '/api/google/callback', {}); assert.equal(cb.status, 403); assert.match(cb.html, /無効/);
+  assert.equal((await h.call('GET', '/api/elvar/oauth/callback', {}, {}, { state: 'x' })).status, 403);
   assert.equal((await h.call('POST', '/api/elvar/connectors', {})).status, 401, 'and they need a login like everything else');
 }));
+

@@ -2,21 +2,22 @@
 import crypto from 'node:crypto';
 import { googleConfig, base } from './config.js';
 import { markReauth } from './tok.js';
+import { currentConfig } from '../config/resolve.js';
 
 export class GoogleError extends Error {
   constructor(status, message, code) { super(message); this.status = status; this.code = code; }
 }
 
-// Access tokens live in memory only, one per login: keyed by sha256(client id + refresh token), so a reconnect, a second owner login or a
-// changed client never reuses another login's token (and a revoked one is dropped).
-const cache = new Map();
-const cacheKey = (cfg) => crypto.createHash('sha256').update(`${cfg.clientId}\n${cfg.refreshToken}`).digest('hex');
+// Access tokens live in memory only, one per user and login: keyed by the user id AND sha256(client id + refresh token), so a reconnect, a changed client
+// or another user on the same warm instance never reuses somebody else's token (and a revoked one is dropped). Bounded: the least recently used go first.
+const cache = new Map(), CACHE_MAX = 500;
+const cacheKey = (cfg) => `${String(currentConfig().uid?.uid ?? currentConfig().uid ?? 'none')}|${crypto.createHash('sha256').update(`${cfg.clientId}\n${cfg.refreshToken}`).digest('hex')}`;
 
 export const REAUTH_MESSAGE = 'Googleとの接続が切れました（取り消し・期限切れ。「テスト中」のアプリは7日で切れます）。設定の「Google」で、もう一度「Googleと連携」を押してください。';
 
 export async function accessToken(cfg = googleConfig()) {
   const key = cacheKey(cfg), hit = cache.get(key);
-  if (hit && Date.now() < hit.exp - 60_000) return hit.token;
+  if (hit && Date.now() < hit.exp - 60_000) { cache.delete(key); cache.set(key, hit); return hit.token; }
   if (cfg.reauth) throw new GoogleError(401, REAUTH_MESSAGE, 'reauth_required');     // already known to be refused: do not ask Google again
   const r = await fetch(base('oauth', cfg), {
     method: 'POST',
@@ -36,8 +37,8 @@ export async function accessToken(cfg = googleConfig()) {
       : `Googleの認証に失敗しました（${j.error || r.status}）`;
     throw new GoogleError(401, why, j.error);
   }
-  cache.set(key, { token: j.access_token, exp: Date.now() + (j.expires_in || 3600) * 1000 });
-  if (cache.size > 20) for (const [k, v] of cache) if (v.exp < Date.now()) cache.delete(k);
+  cache.delete(key); cache.set(key, { token: j.access_token, exp: Date.now() + (j.expires_in || 3600) * 1000 });
+  while (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
   return j.access_token;
 }
 export const resetTokenCache = () => cache.clear();
