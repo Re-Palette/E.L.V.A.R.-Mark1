@@ -1,4 +1,4 @@
-// In-app settings (gear icon / Ctrl+, / ?settings=1). Tabs: アカウント, APIキー, Google (the user's own client), 連携アプリ (their connectors + build requests), プロフィール, 機能, この端末, 管理 (admins only).
+// In-app settings (gear icon / Ctrl+, / ?settings=1). Tabs: アカウント, APIキー, Google (the user's own client), 連携アプリ (their connectors + build requests), プロフィール, 機能, 記憶 (notes, conversation log, notification box, GitHub mirror), この端末, 管理 (admins only).
 // Server-side values (keys, profile, devices) go through /api/elvar/*; "この端末" is stored on this device only.
 import { ensureUiCss, esc } from '../elvar/ui.js';
 import { api, currentSession, loadSession } from '../elvar/auth.js';
@@ -10,6 +10,7 @@ import { mountBuilds } from './builds.js';
 import { mountAdmin } from './admin.js';
 import { mountAccount } from './account.js';
 import { mountProfile } from './profile.js';
+import { mountMemory } from './memory.js';
 
 // The device pane keeps its original markup (vs-* classes); restyled here in the gold palette.
 const DEVICE_CSS = `
@@ -37,7 +38,7 @@ const DEVICE_CSS = `
 @media (max-width:560px){.ev-settings .vs-row{flex-wrap:wrap}.ev-settings .vs-row>span.l{flex:1 0 100%}}
 `;
 
-const BASE_TABS = [['account', 'アカウント'], ['keys', 'APIキー'], ['google', 'Google'], ['connectors', '連携アプリ'], ['profile', 'プロフィール'], ['features', '機能'], ['device', 'この端末']];
+const BASE_TABS = [['account', 'アカウント'], ['keys', 'APIキー'], ['google', 'Google'], ['connectors', '連携アプリ'], ['profile', 'プロフィール'], ['features', '機能'], ['memory', '記憶'], ['device', 'この端末']];
 const TABS = [...BASE_TABS, ['admin', '管理']];   // the admin tab is shown only to admins
 
 /** 連携アプリ: the user's connectors, and below them their build requests (each in its own element: both redraw themselves). */
@@ -73,6 +74,7 @@ export function initSettingsPanel(app) {
     admin: mountAdmin(pane('admin')),
     profile: mountProfile(pane('profile'), 'profile', { onSaved: () => loadSession() }),
     features: mountProfile(pane('features'), 'features', { onSaved: () => loadSession() }),
+    memory: mountMemory(pane('memory'), { openBrain: () => { close(); app.openBrain?.(); }, openConversations: () => { close(); app.openConversations?.(); } }),
     device,
   };
   function checkBadge() { const b = back.querySelector('[data-tab="admin"]'); if (b) b.hidden = !isAdmin(); }

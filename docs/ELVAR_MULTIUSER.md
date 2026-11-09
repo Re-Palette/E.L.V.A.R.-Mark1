@@ -1,6 +1,6 @@
 # E.L.V.A.R. マルチユーザー化 設計（1つの共通プラットフォーム × 多数のユーザー）
 
-状態: 設計。**P1（土台）・P2（ログインとユーザー単位の設定）・P3（Google・コネクタ・ビルド依頼）は実装済み**（§12・§13・§14 に実装メモ）。P4 以降は未実装 / 前提: `docs/ELVAR_ARCHITECTURE.md` の Phase 1–4 実装済みツリー（オーナー1人用 Vault・デバイストークン・ルーター・コネクタ）
+状態: 設計。**P1（土台）・P2（ログインとユーザー単位の設定）・P3（Google・コネクタ・ビルド依頼）・P4（記憶: 第二の脳・会話・通知箱・通知中継）は実装済み**（§12〜§15 に実装メモ）。P5 以降は未実装 / 前提: `docs/ELVAR_ARCHITECTURE.md` の Phase 1–4 実装済みツリー（オーナー1人用 Vault・デバイストークン・ルーター・コネクタ）
 最優先の規則: `CLAUDE.md`「E.L.V.A.R. の基本方針」7原則。この文書のどの判断もそれより下位。
 
 ---
@@ -729,3 +729,32 @@ P3 で入ったもの: **Google をユーザーごとに**（決定 O2: 共通�
 検証: `npm test`、`npm run test:db`（postgres:17）、`npx vite build web`、public-scrub がすべて通る。開発スタック（`ELVAR_DB=memory ELVAR_DEV_AUTH=1`）に Playwright で 2 人が入り、それぞれ自分の（偽の）Google クライアントとコネクタ（テスト用 MCP サーバー）を設定して、ユーザー B の画面・API・エクスポートに A の設定・道具・秘密が一切出ないことを確認した。
 
 未着手: 本物の Google / Supabase での結合確認、Google の使用量（呼び出し数）の上限（P6）、MCP の OAuth トークンの「再認証」通知、`github-brain` コネクタ（P4）、DEK 回転の UI。
+
+
+---
+
+## 15. P4 実装メモ（設計からの差分・未着手）
+
+P4 で入ったもの: **第二の脳をユーザーごとの `app.notes` に**（GitHub のリポジトリから移行。直す前の版は `note_revisions` に新しい30版・90日、ゴミ箱は30日）、**家計・シフト・履修・プロジェクトは今までどおり `brain.js` の読み書き関数経由**（コードは無変更、テストの土台だけ差し替え）、**会話の記録を `app.conversations` / `app.messages` に**（短期記憶。残す期間はユーザーごとの設定 `MESSAGE_RETENTION_DAYS`、既定180日、7日〜無期限、期間指定・全削除・1件ずつ削除）、**通知箱 `app.inbox_items`**、**通知の中継 `app.notif_items`**（Android の端末トークン `notif:push` / `notif:pull`、暗号文だけ、3日・200件。503 `coming_soon` は廃止）、**任意の `github-brain`**（自分のリポジトリ・自分のトークンで、取り込みと一方通行のミラー）、`scripts/migrate-owner.mjs`（旧オーナーの保管庫と GitHub の脳を1つのアカウントへ。`--dry-run`、何度実行しても重複しない）。画面は金色で、第二の脳ビューア（ノートの閲覧・編集・以前の版・ゴミ箱・完全削除・検索・グラフ、会話の履歴と1件ずつの削除）、通知箱、設定の「記憶」タブ（`docs/brain.png`, `docs/conversations.png`）。AI の道具には、新しく `conversation_search`（過去の会話を探す）が入り、削除の道具は今までどおり無い。
+
+設計との違い:
+
+| 項目 | 設計 | P4 の実装 | 理由 |
+|------|------|-----------|------|
+| マイグレーション番号 | 05 / 06 / 10 | 05（notes）・06（conversations）・**13（inbox_items, notif_items）**・**14（保持期間の掃除）** | 10 は P3 で `build_requests` に使った |
+| 全文検索 | 日本語は pgroonga | 05 / 06 の中で、pgroonga が使える環境（Supabase）では pgroonga、なければ `pg_trgm` の三つ組み索引。どちらも関数 `app.search_notes` / `search_messages`（SECURITY INVOKER、RLS が効く）が「語を1つでも含むもの」を候補として返し、**順位付けは今までどおりアプリの `scoreNote`**。pgroonga の分岐は実物では未検証（`&@|`）。失敗したら ILIKE の同じ問い合わせに自動で切り替わる | 素の postgres:17 のテストと本番で同じ結果にするため |
+| ベクトル（pgvector） | 任意 | 作らない（§8.6 の第2段のまま保留） | 入れる理由がまだない |
+| `note_links` | あり | 作らない。リンクの図は今までどおり本文の `[[…]]` からその場で計算 | 表を増やさない |
+| `agent_reports` | あり | 作らない。サブエージェントの報告は `inbox_items` に入る。「声で伝える順番待ち」（`elvar_agent_reports`）は端末に残す（ユーザーごとの名前空間付き） | 本人の記録ではなく、配信待ちの一時データ |
+| 好みの学習・長期記憶 | `memory_chunks` | 学習した好みは今までどおり `00_プロフィール.md`（ノート。ユーザーごと・見て直して消せる）、要約は `brainProfileSummary` がユーザーごとにキャッシュ。`elvar_learned_at` などの「いつ実行したか」の印は端末のユーザー名前空間に残す | 表を増やさずに原則2・3・7を満たす |
+| 保存容量 | トリガーで強制（P5・P6） | P4 の書き込みはその場で「ノート＋版＋会話」の合計が `accounts.storage_quota_bytes` を超えれば 413 `storage_quota_exceeded`。`storage_usage` への記帳は P6 | 容量なしで公開しないため |
+| ユーザー単位の端末トークン | `kv` に `notif:` | 端末の repos は `notif`（push だけ / pull だけ）以外を持たない（`limitDeviceRepos`）。`clear` は本人のログインだけ | 漏れた端末トークンで読める範囲を最小に |
+| 会話ログの形 | `会話/日付.md` | `messages`（行ごと）。30分以上あくと別の会話。`brainProjectMaterial` は日ごとに、昔と同じ形の文字列に組み立て直して `project-intel` に渡す（`project-intel` は無変更） | 1件ずつ消せるように |
+| `github-brain` のミラー | 5分デバウンス + cron | 画面の5分タイマーと「今すぐ写す」ボタンが `POST /api/elvar/brain-sync/push` を呼ぶ（サーバーは `kv_ephemeral` の5分ロックで間引く）。cron は使わない（cron はユーザーの行に触れない） | RLS のもとで全員分を巡回しないため |
+| 旧オーナーの「ローカルのデータ」 | Upstash の保管庫 | `--vault store.json --password …`（ローカルの `store.json`）を読む。Upstash はファイルに書き出してから。Google と MCP のログイントークンは移さない（旧環境の鍵で封じられているため。つなぎ直し） | 旧実装を戻さずに読むため |
+
+エクスポート（`notes.json`＝ノートの全文・版・ゴミ箱、`conversations.json`、`inbox.json`、`notifications.json`＝件数だけ）と完全削除（全部 cascade）は台帳に入っており、分離テスト（`test/routes-isolation.test.mjs`、`test/db/isolation.test.mjs`）と `residual_check` が自動で見る。
+
+検証: `npm test`、`npm run test:db`（postgres:17。契約テストは MemoryDb と実 Postgres で同じ）、`npx vite build web`、public-scrub がすべて通る。開発スタック（`ELVAR_DB=memory ELVAR_DEV_AUTH=1`）に Playwright で2人が入り、それぞれがノートを書き・会話し・通知箱に入れ、ユーザー B の画面と API にユーザー A のノート・会話・通知箱が一切出ないこと、B の操作（消す・ゴミ箱）が A に届かないことを確認した。
+
+未着手: 実際の Supabase（pgroonga）での結合確認、第2段の埋め込み検索、`storage_usage` への記帳と Storage（P5・P6）、ミラーの双方向、通知中継の Android 側の画面確認（サーバーは既存のプロトコルのまま）。

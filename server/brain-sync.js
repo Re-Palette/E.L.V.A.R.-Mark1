@@ -33,17 +33,18 @@ async function gh(method, path, body, fetchImpl = globalThis.fetch) {
 }
 
 /** Bring the repository's .md files in. dryRun: only count. @returns {Promise<{created:number, updated:number, same:number, conflicts:string[], skipped:number, more:number}>} */
-export async function importFromGithub({ user, dryRun = false, fetchImpl } = {}) {
+export async function importFromGithub({ user, dryRun = false, fetchImpl, divert = null } = {}) {   // divert(rel, text) -> true: the caller takes this file (scripts/migrate-owner.mjs: conversation logs)
   const { repo, branch, dir } = cfg(), prefix = dir ? dir + '/' : '';
   const tree = await gh('GET', `/repos/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`, null, fetchImpl);
   const files = (tree.tree || []).filter((x) => x.type === 'blob' && /\.md$/i.test(x.path) && x.path.startsWith(prefix) && !x.path.slice(prefix.length).split('/').some((s) => s.startsWith('.')) && (x.size || 0) <= MAX_FILE)
     .map((x) => ({ rel: x.path.slice(prefix.length), full: x.path }));
-  const out = { created: 0, updated: 0, same: 0, conflicts: [], skipped: 0, more: Math.max(0, files.length - MAX_IMPORT) };
+  const out = { created: 0, updated: 0, same: 0, conflicts: [], skipped: 0, diverted: 0, more: Math.max(0, files.length - MAX_IMPORT) };
   for (const f of files.slice(0, MAX_IMPORT)) {
     let rel; try { rel = cleanPath(f.rel); } catch { out.skipped++; continue; }
     const j = await gh('GET', `/repos/${repo}/contents/${enc(f.full)}?ref=${encodeURIComponent(branch)}`, null, fetchImpl);
     if (Array.isArray(j) || j.type !== 'file') { out.skipped++; continue; }
     const text = Buffer.from(j.content || '', 'base64').toString('utf8'); if (!text.trim()) { out.skipped++; continue; }
+    if (divert && divert(rel, text)) { out.diverted++; continue; }
     await user.db(async (r) => {
       const cur = await r.notes.get(rel, { withTrashed: true });
       if (!cur) { out.created++; if (!dryRun) await r.notes.put({ path: rel, content: text, synced: true }); return; }

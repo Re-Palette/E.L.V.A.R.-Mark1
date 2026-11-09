@@ -37,7 +37,7 @@ test('the browser side (web/, extension/, desktop/, android/) never mentions the
 });
 
 test('only server/db/pool.js imports the Postgres driver or reads ELVAR_DB_URL (and tests / the test:db runner)', () => {
-  const ok = (f) => f === 'server/db/pool.js' || f.startsWith('test/') || f === 'scripts/test-db.mjs';
+  const ok = (f) => f === 'server/db/pool.js' || f.startsWith('test/') || f === 'scripts/test-db.mjs' || f === 'scripts/migrate-owner.mjs';   // the migration script only names the variable in its usage text (it connects through getDb)
   assert.deepEqual(hits(/from\s+['"]postgres['"]|require\(\s*['"]postgres['"]\s*\)|import\(\s*['"]postgres['"]\s*\)/).filter((f) => !ok(f)), []);
   assert.deepEqual(hits(/ELVAR_DB_URL/).filter((f) => !ok(f) && !['server/db/index.js', 'server/config/keys.js', 'server/dev/dev-auth-guard.js'].includes(f)), []);
 });

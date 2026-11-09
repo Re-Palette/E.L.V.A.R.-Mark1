@@ -5,7 +5,7 @@
 import crypto from 'node:crypto';
 import { gfetch } from './http.js';
 import { googleConfig, googleConfigured, googleToolAllowed } from './config.js';
-import { brainConfigured, brainSearch, brainRead, brainList, brainWrite, brainGraph, brainProjects, brainSecretScan, brainWarm, brainCreateProject, brainProjectMaterial, brainProjectAdd } from '../brain.js';
+import { brainConfigured, brainSearch, brainRead, brainList, brainWrite, brainGraph, brainProjects, brainSecretScan, brainWarm, brainCreateProject, brainProjectMaterial, brainProjectAdd, brainConversationSearch } from '../brain.js';
 import { analyzeProjects } from '../project-intel.js';
 import { setSubscription, updateEntry, addEntries, cancelEntry, setBudget, addAsset, addRule, financeSummary, parseCsv, parsePaymentNotification, CATEGORIES as FIN_CATS } from '../finance.js';
 import { courseSummary, courseSuggest, addCourses, updateCourses, cancelCourse, setRequirements, classEvents, parseTerm } from '../course.js';
@@ -510,6 +510,9 @@ export const TOOLS = [
   { name: 'brain_list', kind: 'read', enabled: brainConfigured, description: '第二の脳のノート一覧（フォルダ指定可）。どんなノートがあるか確かめるときに使う。',
     schema: S({ folder: str('フォルダ名（任意）。例: 人物') }),
     run: (a) => brainList(a) },
+  { name: 'conversation_search', kind: 'read', enabled: brainConfigured, description: U() + 'との過去の会話の記録（文字起こし）を探す。「さっきの話」「前に話したこと」「昨日何を話した？」に使う。query を省くと、最近の発言を返す。',
+    schema: S({ query: str('探す言葉（省略すると最近の発言）'), days: num('何日前までか（省略すると14日。query があるときは全期間）'), maxResults: num('最大件数（省略すると12）') }),
+    run: (a) => brainConversationSearch(a) },
   { name: 'brain_graph', kind: 'read', hidden: true, enabled: brainConfigured, description: '（画面の第二の脳ビューア用）ノート同士のリンクの図のデータ。',
     schema: S({}), run: () => brainGraph() },
   { name: 'brain_projects', kind: 'read', hidden: true, enabled: brainConfigured, description: '（プロジェクト担当用）プロジェクト/ の各フォルダの状態（ノート数、最終更新日、未完了のチェック項目、次にやること）を計算して返す。',

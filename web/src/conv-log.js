@@ -1,6 +1,7 @@
-// Records every conversation turn (the owner's words and the assistant's replies, as transcribed) in the second brain: 会話/<日付>.md.
+// Records every conversation turn (the user's words and the assistant's replies, as transcribed) in the user's own conversation log on the server
+// (POST /api/elvar/messages: short-term memory, kept for the retention the user chose in Settings > 記憶).
 // Turns are queued on this device and sent in batches (every 4 minutes, when a conversation ends, when the page is hidden); a failed send is retried later.
-// The server masks secrets (keys, passwords, card numbers) and refuses to write to a public repository. Off with the setting 「会話を第二の脳に記録する」.
+// The server masks secrets (keys, passwords, card numbers) before anything is stored. Off with the setting 「この端末の会話を記録する」.
 const QKEY = 'elvar_conv_queue', ON = 'elvar_conv_log';
 const read = () => { try { const j = JSON.parse(localStorage.getItem(QKEY) || '[]'); return Array.isArray(j) ? j : []; } catch { return []; } };
 const write = (q) => { try { localStorage.setItem(QKEY, JSON.stringify(q.slice(-200))); } catch {} };
@@ -14,7 +15,7 @@ export function loggable(turn) {
   return { user, model, at: Number(turn.at) || Date.now() };
 }
 
-export function initConvLog({ live, run, hudLive, intervalMs = 240_000, isOn = convLogOn }) {
+export function initConvLog({ live, authHeaders = () => live.authHeaders?.() || {}, hudLive, intervalMs = 240_000, isOn = convLogOn, fetchImpl = (...a) => fetch(...a) }) {
   let busy = false, failures = 0;
   async function flush({ force = false } = {}) {
     if (busy) return false;
@@ -23,8 +24,9 @@ export function initConvLog({ live, run, hudLive, intervalMs = 240_000, isOn = c
     busy = true;
     try {
       const batch = q.slice(0, 40);
-      const r = await run('conversation_log', { turns: batch });
-      if (!r || !r.written) { failures++; if (failures === 3) try { hudLive?.logActivity({ icon: 'gear', title: '会話を記録できません', sub: '第二の脳の設定を確認' }); } catch {} return false; }
+      const res = await fetchImpl('/api/elvar/messages', { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders() }, body: JSON.stringify({ turns: batch, channel: 'voice' }) });
+      const r = res.ok ? await res.json().catch(() => null) : null;
+      if (!r || !r.written) { failures++; if (failures === 3) try { hudLive?.logActivity({ icon: 'gear', title: '会話を記録できません', sub: 'ログインし直してください' }); } catch {} return false; }
       failures = 0; write(read().slice(batch.length)); return true;
     } catch (e) { failures++; return false; }
     finally { busy = false; }

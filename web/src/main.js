@@ -450,7 +450,7 @@ const systemCheck = initSystemCheck({ live, bgm, standby, store, keys: { STANDBY
 if (DEBUG) window.__elvar.systemCheck = systemCheck;
 // 通知欄 + proactive reports: when E.L.V.A.R. is open (the page is visible, the device unlocked) and a report / finished work arrives, it speaks up by itself.
 // With no conversation running it opens a voice-only session (the mic stays OFF), reports, and closes again; the clap standby keeps working. Off with elvar_proactive=0.
-const inbox = initInbox({ openNote: (p) => brainViewer.open({ path: p }) });
+const inbox = initInbox({ openNote: (p) => brainViewer.open({ path: p }), authHeaders: () => live.authHeaders() });
 let announcing = false;
 async function announceReady() {
   if (live.session) return true;
@@ -507,7 +507,7 @@ if (DEBUG) { window.__elvar.agents = agents; window.__elvar.hudLive = hudLive; }
 setInterval(() => { if (live.session && !window.__elvarDeviceLocked) agents.deliver(); }, 5000);   // reports that finished while no session was open
 initBuilds({ inbox, run: (t, a) => googleTools.runServerTool(t, a).catch(() => null), hudLive, queueNote: (t) => agents.queueNote(t) });   // progress of the builds handed to Claude Code
 initPredict({ inbox, run: (t, a) => googleTools.runServerTool(t, a).catch(() => null), hudLive, queueNote: (t) => agents.queueNote(t), agents, store, available: () => !!hudLive?.getServer()?.agentsAvailable?.predict, availableAgent: (id) => !!hudLive?.getServer()?.agentsAvailable?.[id] });   // looks ahead: deadlines at risk, overloaded days, tomorrow's preparation
-initConvLog({ live, run: (t, a) => googleTools.runServerTool(t, a).catch(() => null), hudLive });   // every conversation turn is kept in the second brain (会話/日付.md)
+initConvLog({ live, authHeaders: () => live.authHeaders(), hudLive });   // every conversation turn is kept in the user's own conversation log (POST /api/elvar/messages)
 if (DEBUG) { window.__elvar.approval = approval; window.__elvar.files = googleTools.files; window.__elvar.handleTool = googleTools.handleTool; }
 
 // ---------------------------------------------------------------- in-app settings panel (gear icon / Ctrl+,)
@@ -515,6 +515,7 @@ const brainViewer = initBrainViewer({ authHeaders: () => live.authHeaders() });
 initSettingsPanel({
   hud, live, bgm, standby, store, qs,
   openBrain: () => brainViewer.open(),
+  openConversations: () => brainViewer.openConversations(),
   openCheck: () => systemCheck.run(false),
   notifications,
   keys: { STANDBY_KEY, SENS_KEY },

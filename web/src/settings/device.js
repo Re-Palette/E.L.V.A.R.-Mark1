@@ -30,10 +30,9 @@ export function mountDevice(root, app, { close }) {
       <p class="vs-note">話す速さは声の高さを変えずに速くします（1.00 倍＝そのまま）。変更は、次に話すときから反映されます。</p>
     </section>
 
-    <section class="vs-sec"><h3>第二の脳への記録</h3>
-      <label class="vs-row"><input id="vs-convlog" type="checkbox"><span>会話を第二の脳に記録する（${ownerAddressHtml()}の言葉と、${escHtml(brand().spokenName)}の返事を、文字にして 会話/日付.md に残す）</span></label>
+    <section class="vs-sec"><h3>家計の自動記録</h3>
       <label class="vs-row"><input id="vs-fincap" type="checkbox"><span>スマホの決済通知（PayPay・カードアプリなど）を、家計簿に自動で記録する（金額と店名だけ。通知の文面は保存しません）</span></label>
-      <p class="vs-note">音声認識の文字起こしを、数分ごと・会話が終わったとき・画面を閉じるときに、まとめて保存します。パスワード・APIキー・カード番号らしき文字列は、伏せて保存します。第二の脳のリポジトリが「公開」の場合は、保存しません。オフにすると、以降の会話は記録されません。</p>
+      <p class="vs-note">会話の記録の設定（残す期間・消す）は、設定の「記憶」にあります。
     </section>
 
     <section class="vs-sec"><h3>ELVARが開いた画面</h3>
@@ -120,7 +119,6 @@ export function mountDevice(root, app, { close }) {
     $('vs-delay').value = d; $('vs-delay-o').textContent = (d / 1000).toFixed(2) + ' 秒';
     $('vs-standby').checked = store.get(keys.STANDBY_KEY) !== '0';
     $('vs-phonemic').checked = store.get('elvar_mic_phone') === '1';
-    $('vs-convlog').checked = store.get('elvar_conv_log') !== '0';
     $('vs-autoclose').checked = store.get('elvar_autoclose') !== '0'; $('vs-autoclose-s').value = store.get('elvar_autoclose_s') || '5';
     $('vs-fincap').checked = store.get('elvar_finance_capture') !== '0';
     $('vs-fillers').checked = store.get('elvar_fillers') !== '0';
@@ -207,7 +205,6 @@ export function mountDevice(root, app, { close }) {
   $('vs-voicemode').onchange = () => store.set('elvar_voice_mode', $('vs-voicemode').value);
   $('vs-fillers').onchange = () => store.set('elvar_fillers', $('vs-fillers').checked ? '1' : '0');
   $('vs-phonemic').onchange = () => store.set('elvar_mic_phone', $('vs-phonemic').checked ? '1' : '0');
-  $('vs-convlog').onchange = () => store.set('elvar_conv_log', $('vs-convlog').checked ? '1' : '0');
   $('vs-autoclose').onchange = () => store.set('elvar_autoclose', $('vs-autoclose').checked ? '1' : '0');
   $('vs-autoclose-s').onchange = () => store.set('elvar_autoclose_s', String(Math.max(2, Math.min(60, Number($('vs-autoclose-s').value) || 5))));
   $('vs-fincap').onchange = () => store.set('elvar_finance_capture', $('vs-fincap').checked ? '1' : '0');

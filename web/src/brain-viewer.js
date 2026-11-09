@@ -1,6 +1,6 @@
-// In-app viewer for the second brain (read-only). Notes come through the same /api/google/execute tools the voice model uses
-// (brain_list / brain_read / brain_search), so it needs no extra server code. Opens from the phone HUD's folder icon, the settings
-// panel, Ctrl+B or ?brain=1.
+// In-app viewer for the user's own second brain and conversation history (gold HUD style). Everything comes from the server for the signed-in user only
+// (/api/elvar/notes, /api/elvar/conversations): notes can be read, edited (the old text stays as a version), trashed, restored and deleted for good, and
+// conversations can be read and deleted message by message (principle 7). Opens from the HUD's folder icon, the settings panel, Ctrl+B or ?brain=1.
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 /** Small, safe Markdown renderer: everything is HTML-escaped first; only a fixed set of tags is produced. */
@@ -36,45 +36,45 @@ export function renderMarkdown(src) {
 }
 
 const CSS = `
-.vb-back{position:fixed;inset:0;z-index:45;display:none;background:rgba(0,8,20,.82);-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)}
+.vb-back{position:fixed;inset:0;z-index:45;display:none;background:rgba(4,3,2,.9);-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)}
 .vb-back.on{display:flex;animation:vs-in .16s ease-out}
-.vb{display:flex;flex-direction:column;width:min(1200px,100%);height:100%;margin:0 auto;color:#d9eef9;font:15px/1.65 'Barlow Semi Condensed','Noto Sans JP','Yu Gothic UI','Meiryo',sans-serif;
-  background:linear-gradient(180deg,rgba(3,26,52,.97),rgba(1,14,30,.98));outline:1.5px solid rgba(30,166,216,.9);outline-offset:-1px}
-.vb-top{display:flex;align-items:center;gap:10px;padding:max(12px,env(safe-area-inset-top)) 14px 10px;border-bottom:1px solid rgba(40,150,200,.32)}
-.vb-top h2{margin:0;font-size:16px;letter-spacing:3px;color:#8fe3ff;font-weight:600;white-space:nowrap}
-.vb-top i{width:7px;height:7px;border-radius:50%;background:#19d3ff;box-shadow:0 0 6px #19d3ff}
-.vb-btn{white-space:nowrap;background:transparent;color:#8fe3ff;border:1px solid rgba(25,211,255,.6);border-radius:3px;padding:3px 12px;cursor:pointer;font:inherit;font-size:14px}
-.vb-btn:hover,.vb-btn.on{background:rgba(25,211,255,.2);color:#fff}
+.vb{display:flex;flex-direction:column;width:min(1200px,100%);height:100%;margin:0 auto;color:#f6efe2;font:15px/1.65 'Barlow Semi Condensed','Noto Sans JP','Yu Gothic UI','Meiryo',sans-serif;
+  background:linear-gradient(180deg,rgba(21,16,10,.98),rgba(8,6,4,.99));outline:1.5px solid rgba(232,185,106,.9);outline-offset:-1px}
+.vb-top{display:flex;align-items:center;gap:10px;padding:max(12px,env(safe-area-inset-top)) 14px 10px;border-bottom:1px solid rgba(232,185,106,.32)}
+.vb-top h2{margin:0;font:400 18px/1.2 'Cinzel','Times New Roman',serif;letter-spacing:5px;color:#FFD99A;font-weight:600;white-space:nowrap}
+.vb-top i{width:7px;height:7px;border-radius:50%;background:#E8B96A;box-shadow:0 0 6px #E8B96A}
+.vb-btn{white-space:nowrap;background:transparent;color:#FFD99A;border:1px solid rgba(232,185,106,.6);border-radius:3px;padding:3px 12px;cursor:pointer;font:inherit;font-size:14px}
+.vb-btn:hover,.vb-btn.on{background:rgba(232,185,106,.2);color:#fff}
 .vb-x{margin-left:auto}
-.vb-q{flex:1;min-width:0;background:#021a30;color:#d9eef9;border:1px solid rgba(25,211,255,.45);border-radius:3px;padding:5px 10px;font:inherit}
+.vb-q{flex:1;min-width:0;background:#0d0a06;color:#f6efe2;border:1px solid rgba(232,185,106,.45);border-radius:3px;padding:5px 10px;font:inherit}
 .vb-body{flex:1;min-height:0;display:flex;position:relative}
-.vb-list{flex:0 0 300px;overflow:auto;border-right:1px solid rgba(40,150,200,.32);padding:8px 0}
+.vb-list{flex:0 0 300px;overflow:auto;border-right:1px solid rgba(232,185,106,.32);padding:8px 0}
 .vb-doc{flex:1;min-width:0;overflow:auto;padding:16px 22px 40px}
 .vb-gwrap{flex:1;min-width:0;display:none;position:relative}
 .vb-gwrap canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:grab}
-.vb-gnote{position:absolute;left:10px;bottom:8px;font-size:12px;color:#7fb6d6;pointer-events:none}
+.vb-gnote{position:absolute;left:10px;bottom:8px;font-size:12px;color:#b99b6a;pointer-events:none}
 .vb.graph .vb-doc{display:none}.vb.graph .vb-gwrap{display:block}
-.vb-pjh{padding:10px 10px 4px;color:#8fe3ff;font-size:12.5px;letter-spacing:2px;border-bottom:1px solid rgba(40,150,200,.25)}
-.vb-pj{display:block;width:calc(100% - 12px);margin:6px;padding:8px 10px;text-align:left;background:rgba(25,211,255,.06);border:1px solid rgba(40,150,200,.4);border-radius:3px;color:#e6f6ff;cursor:pointer;font:inherit}
-.vb-pj:hover,.vb-pj.on{background:rgba(25,211,255,.16);border-color:rgba(25,211,255,.8)}
-.vb-pj b{display:block;font-size:14.5px;font-weight:600}.vb-pj span{display:block;margin-top:3px;color:#8fb5cc;font-size:12.5px;line-height:1.5}
+.vb-pjh{padding:10px 10px 4px;color:#FFD99A;font-size:12.5px;letter-spacing:2px;border-bottom:1px solid rgba(232,185,106,.25)}
+.vb-pj{display:block;width:calc(100% - 12px);margin:6px;padding:8px 10px;text-align:left;background:rgba(232,185,106,.06);border:1px solid rgba(232,185,106,.4);border-radius:3px;color:#f6efe2;cursor:pointer;font:inherit}
+.vb-pj:hover,.vb-pj.on{background:rgba(232,185,106,.16);border-color:rgba(232,185,106,.8)}
+.vb-pj b{display:block;font-size:14.5px;font-weight:600}.vb-pj span{display:block;margin-top:3px;color:#b99b6a;font-size:12.5px;line-height:1.5}
 .vb-pj i{display:inline-block;margin-right:6px;padding:0 7px;border:1px solid currentColor;border-radius:9px;font-style:normal;font-size:11.5px}
-.vb-pj i.run{color:#5ee08a}.vb-pj i.stale{color:#ffb347}.vb-pj i.new{color:#8fe3ff}.vb-pj i.done{color:#7f9bb0}
-.vb-fo{display:flex;align-items:center;gap:6px;width:100%;text-align:left;background:none;border:0;color:#3ac9ef;padding:6px 10px;cursor:pointer;font:inherit;font-size:13px;letter-spacing:1.5px}
-.vb-fo:hover{background:rgba(25,211,255,.1)}.vb-fo b{display:inline-block;width:1em;font-weight:400;color:#7fb6d6}.vb-fo em{margin-left:auto;font-style:normal;color:#5c93b3;font-size:12px}
-.vb-n{display:block;width:100%;text-align:left;background:none;border:0;color:#cfe9f6;padding:6px 14px;cursor:pointer;font:inherit;font-size:14.5px;word-break:break-all}
-.vb-n:hover{background:rgba(25,211,255,.12)}.vb-n.on{background:rgba(25,211,255,.22);color:#fff}
-.vb-n small{display:block;color:#7fb6d6;font-size:12px;line-height:1.4}
-.vb-msg{padding:16px;color:#7fb6d6;font-size:14px}.vb-msg.warn{color:#ffb347}
-.vb-doc h2,.vb-doc h3,.vb-doc h4,.vb-doc h5{color:#8fe3ff;margin:1.2em 0 .4em;font-weight:600}
+.vb-pj i.run{color:#9fe3a8}.vb-pj i.stale{color:#ffb347}.vb-pj i.new{color:#FFD99A}.vb-pj i.done{color:#7f9bb0}
+.vb-fo{display:flex;align-items:center;gap:6px;width:100%;text-align:left;background:none;border:0;color:#E8B96A;padding:6px 10px;cursor:pointer;font:inherit;font-size:13px;letter-spacing:1.5px}
+.vb-fo:hover{background:rgba(232,185,106,.1)}.vb-fo b{display:inline-block;width:1em;font-weight:400;color:#b99b6a}.vb-fo em{margin-left:auto;font-style:normal;color:#8a7350;font-size:12px}
+.vb-n{display:block;width:100%;text-align:left;background:none;border:0;color:#e9dcc4;padding:6px 14px;cursor:pointer;font:inherit;font-size:14.5px;word-break:break-all}
+.vb-n:hover{background:rgba(232,185,106,.12)}.vb-n.on{background:rgba(232,185,106,.22);color:#fff}
+.vb-n small{display:block;color:#b99b6a;font-size:12px;line-height:1.4}
+.vb-msg{padding:16px;color:#b99b6a;font-size:14px}.vb-msg.warn{color:#ffb347}
+.vb-doc h2,.vb-doc h3,.vb-doc h4,.vb-doc h5{color:#FFD99A;margin:1.2em 0 .4em;font-weight:600}
 .vb-doc h2{font-size:21px;margin-top:0}.vb-doc h3{font-size:18px}.vb-doc h4,.vb-doc h5{font-size:16px}
-.vb-doc a{color:#19d3ff}.vb-doc code,.vb-doc pre{background:rgba(25,211,255,.1);border-radius:3px}.vb-doc code{padding:1px 5px}
-.vb-doc pre{padding:10px 12px;overflow:auto;white-space:pre-wrap}.vb-doc blockquote{margin:.6em 0;padding:2px 12px;border-left:3px solid #1ea6d8;color:#a9cfe3}
-.vb-doc hr{border:0;border-top:1px solid rgba(40,150,200,.4)}.vb-path{color:#7fb6d6;font-size:12.5px;margin-bottom:6px;word-break:break-all}
-.vb-links{margin-top:28px;padding-top:12px;border-top:1px solid rgba(40,150,200,.32)}
-.vb-links h4{margin:0 0 6px;font-size:12.5px;letter-spacing:2px;color:#3ac9ef;font-weight:600}
-.vb-links button{display:block;background:none;border:0;color:#19d3ff;cursor:pointer;font:inherit;font-size:14.5px;padding:3px 0;text-align:left;word-break:break-all}
-.vb-links button:hover{text-decoration:underline}.vb-links p{margin:0 0 12px;color:#7fb6d6;font-size:13px}
+.vb-doc a{color:#E8B96A}.vb-doc code,.vb-doc pre{background:rgba(232,185,106,.1);border-radius:3px}.vb-doc code{padding:1px 5px}
+.vb-doc pre{padding:10px 12px;overflow:auto;white-space:pre-wrap}.vb-doc blockquote{margin:.6em 0;padding:2px 12px;border-left:3px solid #E8B96A;color:#cdb88e}
+.vb-doc hr{border:0;border-top:1px solid rgba(232,185,106,.4)}.vb-path{color:#b99b6a;font-size:12.5px;margin-bottom:6px;word-break:break-all}
+.vb-links{margin-top:28px;padding-top:12px;border-top:1px solid rgba(232,185,106,.32)}
+.vb-links h4{margin:0 0 6px;font-size:12.5px;letter-spacing:2px;color:#E8B96A;font-weight:600}
+.vb-links button{display:block;background:none;border:0;color:#E8B96A;cursor:pointer;font:inherit;font-size:14.5px;padding:3px 0;text-align:left;word-break:break-all}
+.vb-links button:hover{text-decoration:underline}.vb-links p{margin:0 0 12px;color:#b99b6a;font-size:13px}
 .vb-back-btn{display:none}
 @media (max-width:700px){
   .vb-top{flex-wrap:wrap;row-gap:8px}.vb-top h2{font-size:14px;letter-spacing:2px}.vb-q{order:9;flex:1 0 100%}
@@ -82,10 +82,24 @@ const CSS = `
   .vb.show-doc .vb-list{display:none}.vb.show-doc .vb-doc{display:block;flex:1}
   .vb.show-doc .vb-back-btn,.vb.graph .vb-back-btn{display:inline-block}
   .vb.graph .vb-list{display:none}
-}`;
+}
+.vb-seg{display:flex;gap:0}.vb-seg .vb-btn{border-radius:0;margin-left:-1px}.vb-seg .vb-btn:first-child{margin-left:0}
+.vb-bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 10px}.vb-bar .vb-path{flex:1 1 12em;margin:0}
+.vb-btn.danger{border-color:rgba(255,122,74,.6);color:#ff9a6a}.vb-btn.danger:hover{background:rgba(255,122,74,.16);color:#fff}
+.vb-btn.pri{background:linear-gradient(180deg,#FFD99A,#E8B96A 45%,#b07a32);color:#1a1006;border-color:#FFD99A}
+.vb-edit{width:100%;min-height:52vh;background:#0d0a06;color:#f6efe2;border:1px solid rgba(232,185,106,.45);padding:10px 12px;font:14px/1.7 'Noto Sans JP',monospace;resize:vertical;outline:none}
+.vb-edit:focus{border-color:#FFD99A}
+.vb-ver{display:block;width:100%;text-align:left;background:none;border:0;border-bottom:1px solid rgba(232,185,106,.18);color:#e9dcc4;padding:6px 4px;cursor:pointer;font:inherit;font-size:14px}.vb-ver:hover{background:rgba(232,185,106,.1)}.vb-ver.on{background:rgba(232,185,106,.2);color:#fff}
+.vb-ver small{color:#b99b6a;margin-left:8px}
+.vb-cv{display:block;width:100%;text-align:left;background:none;border:0;border-bottom:1px solid rgba(232,185,106,.16);color:#e9dcc4;padding:8px 12px;cursor:pointer;font:inherit}.vb-cv:hover{background:rgba(232,185,106,.1)}.vb-cv.on{background:rgba(232,185,106,.2)}
+.vb-cv b{display:block;font-size:14px;font-weight:600;color:#FFD99A}.vb-cv span{display:block;color:#b99b6a;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vb-m{margin:10px 0;padding:8px 12px;border-left:3px solid #E8B96A;background:rgba(232,185,106,.06)}.vb-m.assistant{border-left-color:#8a7350;background:rgba(255,255,255,.03)}
+.vb-m small{display:flex;gap:10px;align-items:center;color:#b99b6a;font-size:12px}.vb-m small button{margin-left:auto;background:none;border:1px solid rgba(255,122,74,.5);color:#ff9a6a;cursor:pointer;font:inherit;font-size:12px;padding:0 8px}
+.vb-m div{white-space:pre-wrap;word-break:break-word;color:#f6efe2}
+`;
 
 // ---------------------------------------------------------------- graph layout (force-directed, small N)
-const hueOf = (folder) => { let h = 0; for (const c of folder) h = (h * 31 + c.charCodeAt(0)) % 360; return 170 + (h % 70); };   // cyan..blue family, folder-dependent
+const hueOf = (folder) => { let h = 0; for (const c of folder) h = (h * 31 + c.charCodeAt(0)) % 360; return 28 + (h % 24); };   // gold .. amber family, folder-dependent
 export function layoutGraph(nodes, edges, iterations = 260) {
   const N = nodes.length, idx = new Map(nodes.map((n, i) => [n.id, i]));
   const px = new Float32Array(N), py = new Float32Array(N), vx = new Float32Array(N), vy = new Float32Array(N);
@@ -112,34 +126,38 @@ export function layoutGraph(nodes, edges, iterations = 260) {
   return { x: px, y: py, edges: E };
 }
 
-export function initBrainViewer({ authHeaders }) {
+export function initBrainViewer({ authHeaders, fetchImpl = (...a) => fetch(...a) }) {
   const style = document.createElement('style'); style.textContent = CSS; document.head.appendChild(style);
   const back = document.createElement('div'); back.className = 'vb-back';
   back.setAttribute('role', 'dialog'); back.setAttribute('aria-modal', 'true'); back.setAttribute('aria-label', '第二の脳');
   back.innerHTML = `<div class="vb">
     <div class="vb-top"><i></i><h2>SECOND BRAIN</h2>
       <button class="vb-btn vb-back-btn" type="button" data-back>◀ 一覧</button>
-      <input class="vb-q" type="search" placeholder="ノートを検索" aria-label="ノートを検索">
+      <div class="vb-seg" role="tablist"><button class="vb-btn on" type="button" data-mode="notes">ノート</button><button class="vb-btn" type="button" data-mode="trash">ゴミ箱</button><button class="vb-btn" type="button" data-mode="conv">会話</button></div>
+      <input class="vb-q" type="search" placeholder="検索" aria-label="検索">
+      <button class="vb-btn" type="button" data-new title="新しいノート">＋ 新規</button>
       <button class="vb-btn" type="button" data-graph title="ノートのつながりの図">グラフ</button>
       <button class="vb-btn" type="button" data-reload title="再読み込み">↻</button>
       <button class="vb-btn vb-x" type="button" data-x>閉じる</button></div>
-    <div class="vb-body"><div class="vb-list"></div><div class="vb-doc"><div class="vb-msg">左の一覧からノートを選んでください。</div></div>
+    <div class="vb-body"><div class="vb-list"></div><div class="vb-doc"><div class="vb-msg">左の一覧から選んでください。</div></div>
       <div class="vb-gwrap"><canvas></canvas><div class="vb-gnote"></div></div></div></div>`;
   document.body.appendChild(back);
   const $ = (s) => back.querySelector(s);
   const vb = $('.vb'), listEl = $('.vb-list'), docEl = $('.vb-doc'), q = $('.vb-q'), gBtn = $('[data-graph]'), cv = $('.vb-gwrap canvas'), gNote = $('.vb-gnote');
-  let notes = [], current = '', graph = null, searching = false, projInfo = null;
+  let notes = [], current = '', currentNote = null, graph = null, searching = false, projInfo = null, mode = 'notes', convs = [], currentConv = null;
   const closed = new Set(); let openedDefault = false;
+  const byPath = () => new Map(notes.map((n) => [n.path, n]));
 
-  async function call(tool, args) {
+  /** One call to the server as the signed-in user. Throws a Japanese message the viewer shows. */
+  async function call(path, { method = 'GET', body } = {}) {
     if (window.__elvarDeviceLocked) throw new Error('スマホのロックを解除してから開いてください。');
-    const r = await fetch('/api/google/execute', { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders() }, body: JSON.stringify({ tool, args }) });
+    const r = await fetchImpl(path, { method, headers: { ...(body ? { 'content-type': 'application/json' } : {}), ...authHeaders() }, body: body ? JSON.stringify(body) : undefined });
     const j = await r.json().catch(() => ({}));
-    if (r.status === 401) throw new Error('アクセストークンが違います（設定を確認してください）。');
-    if (r.status === 503) throw new Error('サーバー側の設定が未完了です（Google連携・第二の脳）。');
-    if (!j.ok) throw new Error(j.error || `サーバーエラー (${r.status})`);
-    return j.result;
+    if (r.status === 401) throw new Error('ログインし直してください。');
+    if (!r.ok) throw Object.assign(new Error(j.message || ({ not_found: '見つかりません（すでに消えているかもしれません）', changed: '別の場所で変更されました。開き直してください', exists: 'すでに同じ名前のノートがあります', storage_quota_exceeded: '保存容量がいっぱいです', rate_limited: '少し待ってください' })[j.error] || `サーバーエラー (${r.status})`), { code: j.error, status: r.status });
+    return j;
   }
+  const fmt = (iso) => { const d = new Date(iso); return Number.isNaN(+d) ? '' : `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 
   // ---------------- folder tree
   function tree(items) {
@@ -159,10 +177,10 @@ export function initBrainViewer({ authHeaders }) {
     }
   }
   function renderList(items, snippets = false) {
-    if (!items.length) { listEl.innerHTML = '<div class="vb-msg">ノートがありません。「覚えておいて」と話しかけると、ここに増えていきます。</div>'; return; }
+    if (!items.length) { listEl.innerHTML = `<div class="vb-msg">${mode === 'trash' ? 'ゴミ箱は空です。' : 'ノートがありません。「覚えておいて」と話しかけると、ここに増えていきます。'}</div>`; return; }
     if (!snippets && !openedDefault) { openedDefault = true; if (items.length > 40) collectDirs(tree(items), '').forEach((d) => closed.add(d)); }
     const out = []; renderTree(snippets ? { dirs: new Map(), files: items } : tree(items), '', 0, snippets, out);
-    listEl.innerHTML = (snippets ? '' : projectCards(items)) + out.join('');
+    listEl.innerHTML = (snippets || mode === 'trash' ? '' : projectCards(items)) + out.join('');
   }
   const collectDirs = (n, prefix) => [...n.dirs].flatMap(([k, v]) => [prefix + k + '/', ...collectDirs(v, prefix + k + '/')]);
 
@@ -186,43 +204,106 @@ export function initBrainViewer({ authHeaders }) {
     return `<div class="vb-pjh">プロジェクト（${by.size}）</div>${cards}`;
   }
   async function loadProjects() {
-    try { const r = await call('brain_projects', {}); projInfo = r.projects || []; if (!searching) renderList(notes); } catch { projInfo = null; }
+    try { const r = await call('/api/elvar/notes/projects'); projInfo = r.projects || []; if (!searching && mode === 'notes') renderList(notes); } catch { projInfo = null; }
   }
 
   async function loadList() {
     listEl.innerHTML = '<div class="vb-msg">読み込み中…</div>';
     try {
-      const r = await call('brain_list', {}); notes = (r.notes || []).map((path) => ({ path })); renderList(notes);
-      if (r.note) listEl.insertAdjacentHTML('beforeend', `<div class="vb-msg">${esc(r.note)}。検索で絞り込んでください。</div>`);
-      loadGraph(); loadProjects();
+      const r = await call(mode === 'trash' ? '/api/elvar/notes?trash=1' : '/api/elvar/notes'); notes = (r.notes || []).map((n) => ({ path: n.path, id: n.id, rev: n.rev, updatedAt: n.updatedAt })); renderList(notes);
+      if (mode === 'notes') { loadGraph(); loadProjects(); }
     } catch (e) { listEl.innerHTML = `<div class="vb-msg warn">${esc(e.message)}</div>`; }
   }
   async function loadGraph() {
-    try { graph = await call('brain_graph', {}); if (vb.classList.contains('graph')) drawGraphSoon(true); if (current) renderLinks(); } catch { graph = null; }
+    try { graph = await call('/api/elvar/notes/graph'); if (vb.classList.contains('graph')) drawGraphSoon(true); if (current && mode === 'notes') renderLinks(); } catch { graph = null; }
   }
 
-  // ---------------- note + backlinks
+  // ---------------- note: read, edit, versions, trash
   function renderLinks() {
     const old = docEl.querySelector('.vb-links'); if (old) old.remove();
-    if (!graph || !current) return;
+    if (!graph || !current || editing) return;
     const back = graph.edges.filter(([, b]) => b === current).map(([a]) => a), out = graph.edges.filter(([a]) => a === current).map(([, b]) => b);
     const btns = (arr) => arr.length ? arr.map((p) => `<button type="button" data-path="${esc(p)}">${esc(p.replace(/\.md$/i, ''))}</button>`).join('') : '<p>なし</p>';
     docEl.insertAdjacentHTML('beforeend', `<div class="vb-links"><h4>このノートへのリンク（バックリンク） ${back.length}</h4>${btns(back)}<h4 style="margin-top:14px">このノートからのリンク ${out.length}</h4>${btns(out)}</div>`);
   }
+  let editing = false, revs = [];
+  const bar = (n) => `<div class="vb-bar"><div class="vb-path">${esc(n.path)}　<small>版 ${esc(n.rev)}・${esc(fmt(n.updatedAt))}</small></div>${mode === 'trash'
+    ? '<button class="vb-btn" type="button" data-restore>元に戻す</button><button class="vb-btn danger" type="button" data-purge>完全に削除</button>'
+    : '<button class="vb-btn" type="button" data-edit>編集</button><button class="vb-btn" type="button" data-versions>以前の版</button><button class="vb-btn danger" type="button" data-trash>ゴミ箱へ</button>'}</div>`;
   async function openNote(path) {
-    current = path; vb.classList.add('show-doc'); vb.classList.remove('graph'); gBtn.classList.remove('on');
+    current = path; editing = false; vb.classList.add('show-doc'); vb.classList.remove('graph'); gBtn.classList.remove('on');
     docEl.innerHTML = '<div class="vb-msg">読み込み中…</div>';
     listEl.querySelectorAll('.vb-n').forEach((b) => b.classList.toggle('on', b.dataset.path === path));
     try {
-      const r = await call('brain_read', { path });
-      docEl.innerHTML = `<div class="vb-path">${esc(r.path)}</div>` + renderMarkdown(r.content) + (r.truncated ? '<div class="vb-msg">（長いため、途中までを表示しています。全文はGitHubで開けます）</div>' : '');
-      docEl.scrollTop = 0; renderLinks();
-    } catch (e) { docEl.innerHTML = `<div class="vb-msg warn">${esc(e.message)}</div>`; }
+      let meta = byPath().get(path);
+      if (!meta) { await loadList(); meta = byPath().get(path); }
+      if (!meta) throw new Error('このノートはありません');
+      const r = await call(`/api/elvar/notes/${meta.id}`); currentNote = r.note; revs = r.revisions || [];
+      docEl.innerHTML = bar(r.note) + renderMarkdown(r.note.content);
+      docEl.scrollTop = 0; if (mode === 'notes') renderLinks();
+    } catch (e) { currentNote = null; docEl.innerHTML = `<div class="vb-msg warn">${esc(e.message)}</div>`; }
   }
+  function startEdit() {
+    if (!currentNote) return; editing = true;
+    docEl.innerHTML = `<div class="vb-bar"><div class="vb-path">${esc(currentNote.path)}　<small>編集中（直す前の版は残ります）</small></div><button class="vb-btn pri" type="button" data-save>保存</button><button class="vb-btn" type="button" data-cancel>キャンセル</button></div>
+      <textarea class="vb-edit" aria-label="ノートの本文" spellcheck="false"></textarea><div class="vb-msg" data-emsg></div>`;
+    const ta = docEl.querySelector('.vb-edit'); ta.value = currentNote.content; ta.focus();
+  }
+  async function saveEdit() {
+    const ta = docEl.querySelector('.vb-edit'), msg = docEl.querySelector('[data-emsg]');
+    if (!ta.value.trim()) { msg.textContent = '内容が空です。消したいときは、「ゴミ箱へ」を使ってください。'; msg.className = 'vb-msg warn'; return; }
+    try { const r = await call(`/api/elvar/notes/${currentNote.id}`, { method: 'PUT', body: { content: ta.value, baseRev: currentNote.rev } }); currentNote = r.note; editing = false; await loadList(); await openNote(currentNote.path); }
+    catch (e) { msg.textContent = e.message; msg.className = 'vb-msg warn'; }
+  }
+  async function showVersions() {
+    if (!currentNote) return;
+    const r = await call(`/api/elvar/notes/${currentNote.id}`).catch(() => null); revs = r?.revisions || revs;
+    docEl.innerHTML = `<div class="vb-bar"><div class="vb-path">${esc(currentNote.path)}　<small>以前の版（新しい30版まで）</small></div><button class="vb-btn" type="button" data-cancel>◀ 戻る</button></div>
+      ${revs.length ? revs.map((v) => `<button class="vb-ver" type="button" data-rev="${esc(v.rev)}">版 ${esc(v.rev)}<small>${esc(fmt(v.at))}・${esc(v.bytes)} バイト</small></button>`).join('') : '<div class="vb-msg">以前の版は、まだありません（直すたびに、直す前の版が残ります）。</div>'}<div data-rv></div>`;
+  }
+  async function showRevision(rev) {
+    const box = docEl.querySelector('[data-rv]'); docEl.querySelectorAll('.vb-ver').forEach((b) => b.classList.toggle('on', b.dataset.rev === String(rev)));
+    try { const r = await call(`/api/elvar/notes/${currentNote.id}/revisions/${rev}`); box.innerHTML = `<div class="vb-bar" style="margin-top:14px"><div class="vb-path">版 ${esc(rev)} の内容</div><button class="vb-btn pri" type="button" data-rev-restore="${esc(rev)}">この版に戻す</button></div>${renderMarkdown(r.revision.content)}`; }
+    catch (e) { box.innerHTML = `<div class="vb-msg warn">${esc(e.message)}</div>`; }
+  }
+  const doAct = async (fn, after) => { try { await fn(); await after(); } catch (e) { docEl.insertAdjacentHTML('afterbegin', `<div class="vb-msg warn">${esc(e.message)}</div>`); } };
   const resolve = (name) => {
     const n = name.toLowerCase().replace(/\.md$/, ''), k = (x) => x.path.toLowerCase().replace(/\.md$/, '');
     return (notes.find((x) => k(x) === n) || notes.find((x) => k(x).split('/').pop() === n.split('/').pop()))?.path;
   };
+
+  // ---------------- conversations
+  async function loadConvs() {
+    listEl.innerHTML = '<div class="vb-msg">読み込み中…</div>';
+    try {
+      const r = await call('/api/elvar/conversations?limit=100'); convs = r.conversations || [];
+      listEl.innerHTML = convs.length ? convs.map((c) => `<button class="vb-cv${currentConv?.id === c.id ? ' on' : ''}" type="button" data-conv="${esc(c.id)}"><b>${esc(fmt(c.startedAt))}</b><span>${esc(c.preview || '（返事だけ）')}・${esc(c.count)} 件</span></button>`).join('') : '<div class="vb-msg">会話の記録は、まだありません。話すと、ここに残ります（設定の「記憶」で、残す期間を選べます）。</div>';
+    } catch (e) { listEl.innerHTML = `<div class="vb-msg warn">${esc(e.message)}</div>`; }
+  }
+  const msgHtml = (m) => `<div class="vb-m ${esc(m.role)}" data-mid="${esc(m.id)}"><small>${m.role === 'user' ? 'あなた' : 'E.L.V.A.R.'}・${esc(fmt(m.at))}<button type="button" data-delmsg>この発言を消す</button></small><div>${esc(m.text)}</div></div>`;
+  async function openConv(id) {
+    vb.classList.add('show-doc'); docEl.innerHTML = '<div class="vb-msg">読み込み中…</div>';
+    try {
+      const r = await call(`/api/elvar/conversations/${id}`); currentConv = r.conversation;
+      docEl.innerHTML = `<div class="vb-bar"><div class="vb-path">${esc(fmt(currentConv.startedAt))}　<small>${esc(currentConv.messages.length)} 件</small></div><button class="vb-btn danger" type="button" data-delconv>この会話を消す</button></div>${currentConv.messages.map(msgHtml).join('')}`;
+      listEl.querySelectorAll('.vb-cv').forEach((b) => b.classList.toggle('on', b.dataset.conv === id));
+    } catch (e) { docEl.innerHTML = `<div class="vb-msg warn">${esc(e.message)}</div>`; }
+  }
+  async function searchConvs(v) {
+    listEl.innerHTML = '<div class="vb-msg">検索中…</div>';
+    try {
+      const r = await call(`/api/elvar/messages?q=${encodeURIComponent(v)}&limit=50`);
+      listEl.innerHTML = (r.messages || []).length ? r.messages.map((m) => `<button class="vb-cv" type="button" data-conv="${esc(m.conversationId)}"><b>${esc(fmt(m.at))}・${m.role === 'user' ? 'あなた' : 'E.L.V.A.R.'}</b><span>${esc(m.text)}</span></button>`).join('') : '<div class="vb-msg">見つかりませんでした。</div>';
+    } catch (e) { listEl.innerHTML = `<div class="vb-msg warn">${esc(e.message)}</div>`; }
+  }
+
+  function setMode(m) {
+    mode = m; current = ''; currentNote = null; currentConv = null; searching = false; q.value = ''; vb.classList.remove('graph', 'show-doc'); gBtn.classList.remove('on');
+    back.querySelectorAll('[data-mode]').forEach((b) => b.classList.toggle('on', b.dataset.mode === m));
+    $('[data-new]').style.display = m === 'notes' ? '' : 'none'; gBtn.style.display = m === 'notes' ? '' : 'none'; q.placeholder = m === 'conv' ? '会話を検索' : 'ノートを検索';
+    docEl.innerHTML = `<div class="vb-msg">${m === 'conv' ? '左の一覧から、会話を選んでください。' : '左の一覧からノートを選んでください。'}</div>`;
+    if (m === 'conv') loadConvs(); else loadList();
+  }
 
   // ---------------- graph view
   let view = { x: 0, y: 0, s: 1 }, lay = null, hover = -1, raf = 0;
@@ -249,14 +330,14 @@ export function initBrainViewer({ authHeaders }) {
     if (cur !== undefined) for (const [a, b] of lay.edges) { if (a === cur) nb.add(b); if (b === cur) nb.add(a); }
     const X = (i) => lay.x[i] * view.s + view.x, Y = (i) => lay.y[i] * view.s + view.y;
     c.lineWidth = 1;
-    for (const [a, b] of lay.edges) { const hot = a === cur || b === cur; c.strokeStyle = hot ? 'rgba(143,227,255,.85)' : 'rgba(60,160,210,.28)'; c.beginPath(); c.moveTo(X(a), Y(a)); c.lineTo(X(b), Y(b)); c.stroke(); }
+    for (const [a, b] of lay.edges) { const hot = a === cur || b === cur; c.strokeStyle = hot ? 'rgba(255,217,154,.9)' : 'rgba(232,185,106,.3)'; c.beginPath(); c.moveTo(X(a), Y(a)); c.lineTo(X(b), Y(b)); c.stroke(); }
     c.font = '12px "Noto Sans JP","Yu Gothic UI",sans-serif'; c.textAlign = 'center';
     for (let i = 0; i < graph.nodes.length; i++) {
       const id = graph.nodes[i].id, folder = id.includes('/') ? id.slice(0, id.lastIndexOf('/')) : '', r = (3.2 + Math.min(7, lay.deg[i] * 1.1)) * Math.min(1.6, Math.max(0.7, view.s));
       const isCur = i === cur, isNb = nb.has(i), isHover = i === hover, h0 = hueOf(folder);
       c.beginPath(); c.arc(X(i), Y(i), r, 0, Math.PI * 2);
-      c.fillStyle = isCur ? '#ffffff' : `hsl(${h0},90%,${isNb || isHover ? 72 : 58}%)`; c.shadowColor = isCur ? '#8fe3ff' : 'transparent'; c.shadowBlur = isCur ? 14 : 0; c.fill(); c.shadowBlur = 0;
-      if (isCur || isNb || isHover || view.s > 1.15 || lay.deg[i] >= 3) { c.fillStyle = isCur || isHover ? '#fff' : 'rgba(207,233,246,.85)'; c.fillText(id.split('/').pop().replace(/\.md$/i, ''), X(i), Y(i) - r - 5); }
+      c.fillStyle = isCur ? '#ffffff' : `hsl(${h0},90%,${isNb || isHover ? 72 : 58}%)`; c.shadowColor = isCur ? '#FFD99A' : 'transparent'; c.shadowBlur = isCur ? 14 : 0; c.fill(); c.shadowBlur = 0;
+      if (isCur || isNb || isHover || view.s > 1.15 || lay.deg[i] >= 3) { c.fillStyle = isCur || isHover ? '#fff' : 'rgba(233,220,196,.88)'; c.fillText(id.split('/').pop().replace(/\.md$/i, ''), X(i), Y(i) - r - 5); }
     }
   }
   const pick = (mx, my) => {
@@ -284,12 +365,6 @@ export function initBrainViewer({ authHeaders }) {
   cv.addEventListener('wheel', (e) => { e.preventDefault(); const f = Math.max(0.3, Math.min(4, view.s * (e.deltaY < 0 ? 1.12 : 1 / 1.12))) / view.s; view.x = e.offsetX - (e.offsetX - view.x) * f; view.y = e.offsetY - (e.offsetY - view.y) * f; view.s *= f; drawGraphSoon(); }, { passive: false });
   addEventListener('resize', () => { if (vb.classList.contains('graph')) drawGraphSoon(true); });
 
-  function toggleGraph() {
-    const on = !vb.classList.contains('graph');
-    vb.classList.toggle('graph', on); gBtn.classList.toggle('on', on);
-    if (on) { vb.classList.remove('show-doc'); if (!graph) { gNote.textContent = '読み込み中…'; loadGraph(); } else drawGraphSoon(true); }
-    else if (current) vb.classList.add('show-doc');
-  }
 
   // ---------------- wiring
   let timer = 0;
@@ -298,13 +373,15 @@ export function initBrainViewer({ authHeaders }) {
     timer = setTimeout(async () => {
       const v = q.value.trim();
       vb.classList.remove('graph'); gBtn.classList.remove('on');
+      if (mode === 'conv') { if (v) searchConvs(v); else loadConvs(); return; }
       if (!v) { searching = false; renderList(notes); return; }
       searching = true; listEl.innerHTML = '<div class="vb-msg">検索中…</div>'; vb.classList.remove('show-doc');
-      try { const r = await call('brain_search', { query: v, maxResults: 10 }); if (!(r.results || []).length) listEl.innerHTML = '<div class="vb-msg">見つかりませんでした。</div>'; else renderList(r.results, true); }
+      try { const r = await call(`/api/elvar/notes?q=${encodeURIComponent(v)}`); if (!(r.results || []).length) listEl.innerHTML = '<div class="vb-msg">見つかりませんでした。</div>'; else renderList(r.results, true); }
       catch (e) { listEl.innerHTML = `<div class="vb-msg warn">${esc(e.message)}</div>`; }
     }, 350);
   });
   listEl.addEventListener('click', (e) => {
+    const cvb = e.target.closest('[data-conv]'); if (cvb) { openConv(cvb.dataset.conv); return; }
     const f = e.target.closest('[data-folder]');
     if (f) { const p = f.dataset.folder; closed.has(p) ? closed.delete(p) : closed.add(p); renderList(notes); return; }
     const pj = e.target.closest('[data-project]');
@@ -312,26 +389,55 @@ export function initBrainViewer({ authHeaders }) {
     const b = e.target.closest('[data-path]'); if (b) openNote(b.dataset.path);
   });
   docEl.addEventListener('click', (e) => {
-    const l = e.target.closest('.vb-links [data-path]'); if (l) { openNote(l.dataset.path); return; }
-    const a = e.target.closest('a[data-note]'); if (!a) return;
+    const t = e.target, af = (m) => async () => { await loadList(); if (m) await openNote(currentNote?.path || current); };
+    if (t.closest('[data-edit]')) return startEdit();
+    if (t.closest('[data-save]')) return saveEdit();
+    if (t.closest('[data-cancel]')) return openNote(current);
+    if (t.closest('[data-versions]')) return showVersions();
+    const rv = t.closest('[data-rev]'); if (rv) return showRevision(Number(rv.dataset.rev));
+    const rr = t.closest('[data-rev-restore]'); if (rr) { if (confirm('この版に戻します（いまの内容も、版として残ります）。')) doAct(() => call(`/api/elvar/notes/${currentNote.id}/revisions/${rr.dataset.revRestore}/restore`, { method: 'POST', body: {} }), af(true)); return; }
+    if (t.closest('[data-trash]')) { if (confirm(`「${currentNote.path}」をゴミ箱に入れます（30日は元に戻せます）。`)) doAct(() => call(`/api/elvar/notes/${currentNote.id}`, { method: 'DELETE' }), async () => { current = ''; currentNote = null; vb.classList.remove('show-doc'); docEl.innerHTML = '<div class="vb-msg">ゴミ箱に入れました。</div>'; await loadList(); }); return; }
+    if (t.closest('[data-restore]')) { doAct(() => call(`/api/elvar/notes/${currentNote.id}/restore`, { method: 'POST', body: {} }), async () => { current = ''; vb.classList.remove('show-doc'); docEl.innerHTML = '<div class="vb-msg">元に戻しました。</div>'; await loadList(); }); return; }
+    if (t.closest('[data-purge]')) { if (confirm(`「${currentNote.path}」を完全に削除します。以前の版も消え、元に戻せません。`)) doAct(() => call(`/api/elvar/notes/${currentNote.id}?permanent=1`, { method: 'DELETE' }), async () => { current = ''; vb.classList.remove('show-doc'); docEl.innerHTML = '<div class="vb-msg">完全に削除しました。</div>'; await loadList(); }); return; }
+    const dm = t.closest('[data-delmsg]'); if (dm) { const el = dm.closest('[data-mid]'); if (confirm('この発言を消します。')) doAct(() => call(`/api/elvar/messages/${el.dataset.mid}`, { method: 'DELETE' }), async () => { el.remove(); }); return; }
+    if (t.closest('[data-delconv]')) { if (confirm('この会話を、すべて消します。')) doAct(() => call(`/api/elvar/conversations/${currentConv.id}`, { method: 'DELETE' }), async () => { currentConv = null; vb.classList.remove('show-doc'); docEl.innerHTML = '<div class="vb-msg">消しました。</div>'; await loadConvs(); }); return; }
+    const l = t.closest('.vb-links [data-path]'); if (l) { openNote(l.dataset.path); return; }
+    const a = t.closest('a[data-note]'); if (!a) return;
     e.preventDefault(); const p = resolve(a.dataset.note);
     if (p) openNote(p); else { a.style.opacity = '.5'; a.title = 'このノートはまだありません'; }
   });
-  back.addEventListener('click', (e) => {
+  back.addEventListener('click', async (e) => {
+    const m = e.target.closest('[data-mode]');
     if (e.target === back || e.target.closest('[data-x]')) close();
+    else if (m) setMode(m.dataset.mode);
     else if (e.target.closest('[data-back]')) { vb.classList.remove('show-doc', 'graph'); gBtn.classList.remove('on'); }
     else if (e.target.closest('[data-graph]')) toggleGraph();
-    else if (e.target.closest('[data-reload]')) { graph = null; loadList(); if (current && !vb.classList.contains('graph')) openNote(current); }
+    else if (e.target.closest('[data-new]')) {
+      const p = prompt('新しいノートの名前（フォルダは / で区切れます。例：好み/コーヒー）'); if (!p || !p.trim()) return;
+      const title = p.trim().split('/').pop().replace(/\.md$/i, '');
+      try { const r = await call('/api/elvar/notes', { method: 'POST', body: { path: p.trim(), content: `# ${title}\n\n` } }); await loadList(); await openNote(r.note.path); startEdit(); }
+      catch (err) { docEl.innerHTML = `<div class="vb-msg warn">${esc(err.message)}</div>`; vb.classList.add('show-doc'); }
+    } else if (e.target.closest('[data-reload]')) { graph = null; if (mode === 'conv') loadConvs(); else { loadList(); if (current && !vb.classList.contains('graph')) openNote(current); } }
   });
+  function toggleGraph() {
+    const on = !vb.classList.contains('graph');
+    vb.classList.toggle('graph', on); gBtn.classList.toggle('on', on);
+    if (on) { vb.classList.remove('show-doc'); if (!graph) { gNote.textContent = '読み込み中…'; loadGraph(); } else drawGraphSoon(true); }
+    else if (current) vb.classList.add('show-doc');
+  }
 
   const isOpen = () => back.classList.contains('on');
-  function open(opts = {}) { back.classList.add('on'); vb.classList.remove('show-doc', 'graph'); gBtn.classList.remove('on'); q.value = ''; loadList(); if (opts && typeof opts.path === 'string' && opts.path) openNote(opts.path); }
+  function open(opts = {}) {
+    back.classList.add('on'); vb.classList.remove('show-doc', 'graph'); gBtn.classList.remove('on');
+    setMode(opts?.mode === 'conv' ? 'conv' : 'notes');
+    if (opts && typeof opts.path === 'string' && opts.path) openNote(opts.path);
+  }
   function close() { back.classList.remove('on'); }
   addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && isOpen()) { e.stopImmediatePropagation(); e.preventDefault(); close(); }
+    if (e.key === 'Escape' && isOpen()) { e.stopImmediatePropagation(); e.preventDefault(); if (editing) { openNote(current); return; } close(); }
     else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') { e.preventDefault(); isOpen() ? close() : open(); }
   }, true);
   document.addEventListener('click', (e) => { if (e.target.closest?.('.vm-nav-folder, [data-vh-nav="folder"]')) { e.preventDefault(); open(); } }, true);
   if (new URLSearchParams(location.search).get('brain') === '1') setTimeout(open, 600);
-  return { open, close };
+  return { open, close, openConversations: () => open({ mode: 'conv' }) };
 }
