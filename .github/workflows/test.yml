@@ -17,3 +17,14 @@ jobs:
           # Newline-separated list of private terms the public repo must never contain (kept in a repository secret, never in the repo).
           ELVAR_SCRUB_TERMS: ${{ secrets.ELVAR_SCRUB_TERMS }}
       - run: npm run build
+  # Migrations + RLS / isolation / contract tests against a real Postgres (docs/ELVAR_MULTIUSER.md section 9). The runner starts a throw-away
+  # postgres container itself (Docker is on the runner); plain Postgres is enough because test/db/support/supabase-emulation.sql stands in for the Supabase parts.
+  test-db:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: npm }
+      - run: npm ci
+      - run: npm run test:db

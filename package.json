@@ -10,7 +10,8 @@
     "dev:web": "vite web --host",
     "build": "node scripts/pack-extension.mjs && vite build web",
     "start": "node --env-file-if-exists=.env server/index.js",
-    "test": "node --import ./test/_env.mjs --test \"test/*.test.mjs\""
+    "test": "node --import ./test/_env.mjs --test \"test/*.test.mjs\"",
+    "test:db": "node scripts/test-db.mjs"
   },
   "dependencies": {
     "@fontsource/barlow-semi-condensed": "^5.3.0",
