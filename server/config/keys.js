@@ -67,7 +67,9 @@ export const KEYS = [
   infra('SARASHINA_BASE_URL', 'sarashina', 'Sarashina base URL (env only; default https://api.sarashina.ai/v1)', { platform: true }),
   infra('VERCEL', 'server', 'Set by Vercel', { platform: true }),
   infra('ELVAR_PUBLIC_ORIGIN', 'server', 'The app\'s public address (https://...): the base of the Google redirect URI. Needed off Vercel when the app is not opened as localhost', { platform: true }),
-  infra('GOOGLE_API_MOCK_ORIGIN', 'test', 'Test only: mock Google origin'),
+  infra('GOOGLE_API_MOCK_ORIGIN', 'test', 'Test and the local dev stack only (ELVAR_DEV_AUTH=1): mock Google origin'),
+  infra('ELVAR_ALLOW_PRIVATE_CONNECTORS', 'server', 'Single-user installs only: lets a connector reach a private network (never on a shared platform, never on Vercel)'),
+  infra('ELVAR_UNSAFE_TEST_NETWORK', 'test', 'Test mode / local dev stack only: loopback for connector tests'),
   // Multi-user platform (docs/ELVAR_MULTIUSER.md). Platform-level values only: every user's own keys live encrypted in the database.
   infra('ELVAR_DB', 'platform', 'Force the database layer: memory (tests)'),
   infra('ELVAR_DB_URL', 'platform', 'Postgres connection string of the elvar_app role (Supavisor transaction mode)'),

@@ -1,6 +1,6 @@
 # E.L.V.A.R. マルチユーザー化 設計（1つの共通プラットフォーム × 多数のユーザー）
 
-状態: 設計。**P1（土台）と P2（ログインとユーザー単位の設定）は実装済み**（§12・§13 に実装メモ）。P3 以降は未実装 / 前提: `docs/ELVAR_ARCHITECTURE.md` の Phase 1–4 実装済みツリー（オーナー1人用 Vault・デバイストークン・ルーター・コネクタ）
+状態: 設計。**P1（土台）・P2（ログインとユーザー単位の設定）・P3（Google・コネクタ・ビルド依頼）は実装済み**（§12・§13・§14 に実装メモ）。P4 以降は未実装 / 前提: `docs/ELVAR_ARCHITECTURE.md` の Phase 1–4 実装済みツリー（オーナー1人用 Vault・デバイストークン・ルーター・コネクタ）
 最優先の規則: `CLAUDE.md`「E.L.V.A.R. の基本方針」7原則。この文書のどの判断もそれより下位。
 
 ---
@@ -702,3 +702,30 @@ P2 で入ったもの: サインアップ・ログイン（メール＋パスワ
 | メモリ内の共有状態 | — | brain のキャッシュ、LLM の「落ちている」印、廃止モデルの印をユーザー単位に（`server/auth/user-state.js`） | warm インスタンスが次のユーザーに渡さない |
 
 未着手: Supabase 本物での結合確認（Auth フック設定、Turnstile、SMTP）、`seed.sql`、通知の中継（P4）、Google／コネクタ（P3）、削除完了メール、Storage の掃除（P5）、DEK 回転 UI、`record_usage` の計測点の拡大（P6）。
+
+
+---
+
+## 14. P3 実装メモ（設計からの差分・未着手）
+
+P3 で入ったもの: **Google をユーザーごとに**（決定 O2: 共通クライアントなし。各自が自分の OAuth クライアント ID / シークレットを設定の「Google」タブに入れ、自分の同意で接続。トークンは本人の `oauth_tokens` に本人の DEK で暗号化。スコープ選択・スコープに応じた道具の絞り込み・`invalid_grant` はその人だけ「再接続が必要」・切断とアカウント削除で Google に失効）、**コネクタ（MCP / HTTP）をユーザーごとに**（マニフェスト・道具のハッシュと承認・秘密・MCP の OAuth・セッションが本人の行。プラットフォームではプライベートネットワークへは常に不可）、**ビルド依頼をユーザーごとに**（本人の GitHub リポジトリとトークン、`build_requests` に記録）、承認チケットは P2 のとおり本人の鍵（承認カードは今までどおり動く）。設定の「Google」「連携アプリ」タブは「準備中」をやめて実機能（`docs/google-connect.png`, `docs/connectors.png`）。
+
+設計との違い:
+
+| 項目 | 設計 | P3 の実装 | 理由 |
+|------|------|-----------|------|
+| テーブル | `connectors`, `connector_tools`, `connector_tool_changes`, `oauth_tokens`, `build_requests`（`inbox_items` などと同じ 10 番） | `connectors` / `connector_tools`（`pos` 列で並び順）/ `oauth_tokens`（`reason` 列を追加）はマイグレーション 04、`build_requests` だけを 10 番の最初の部分に。`connector_tool_changes` は作らない | 道具の変更履歴は「ハッシュが変わったら無効 + 差分を `prevDef` に持つ」で足りる（既存の仕組み）。10 番の残り（通知箱など）は P4 |
+| トークン列 | `ct, iv, dek_ver, scopes, status, revoke_url` | 同じ + `reason`。AAD は `elvar:oauth:v2｜uid｜provider｜dek_ver`。`user_secrets` と同じ複合 FK（deferrable）。DEK 回転は `oauth_tokens` も再暗号化 | トークンも秘密と同じ守り方。表の追加でも DEK 回転が漏れない |
+| `oauth_pending` | 表だけ（`state_hash, user_id, sealed, expires_at`） | `phase`（started → exchanging → done / error）を追加。コールバックは「誰の流れか」を定義者関数 `app.oauth_pending_owner(hash)`（`elvar_app` だけが実行可）で調べ、`VerifiedUid('oauth_pending')` で**その本人として**1回だけ `begin` → コード交換 → `settle`。claim は本人の行しか見えない | 1 回限りをアトミックに保証（Redis の SET NX の代わり）。他人の state を知っても横取りできない（テストで固定） |
+| 一時データ | 専用の KV | 既存の `kv_ephemeral` に `setNx`（期限切れなら取り直せるロック）を追加。MCP のセッション ID・トークン更新ロックは本人の行、呼び出し回数は `rl_hit`（本人の `uid`） | 新しい表を作らない |
+| 保存先の窓口 | `connectors/data.js` を repos に | `data.js` は名前（`cx:<id>:auth` など）とエクスポート・削除の窓口だけ。サーバーの旧 KV ストア（`getStore`）は Google・コネクタから消えた | 1 つの窓口に集約 |
+| Google の `GOOGLE_API_MOCK_ORIGIN` | テスト用 | テストと、ローカル開発の偽ログイン（`ELVAR_DEV_AUTH=1`、本番では不可）でだけ読む | ユーザーのリクエストはプラットフォームの環境変数を読まない（M5）が、開発スタックの検証には必要 |
+| ループバックの抜け道 | `ELVAR_UNSAFE_TEST_NETWORK=loopback` のみ | **テストモード（`ELVAR_TEST_MODE=1`）か開発スタック（`ELVAR_DEV_AUTH=1`）でなければ無効**（Vercel・本番では今までどおり無効）。`allowPrivate` は `ELVAR_ALLOW_PRIVATE_CONNECTORS=1` の単独運用だけ | 「プラットフォームでは localhost の抜け道を使わせない」を機械で固定 |
+| 失効 | `revoke_url` があれば失効 | Google: 保存した失効 URL（実体は固定の Google）。MCP: 認可サーバーが `revocation_endpoint` を公開していれば `safeFetch` で。失敗は記録して続行（鍵を壊すので残りのトークンは読めなくなる）。`purgeAccount` が既定で呼ぶ（`server/rights/revoke.js`） | 設計 §7.4 の手順 1 |
+| Google のコールバック画面 | 本人のトークン付きスクリプトで自動 claim | スクリプトなし（CSP `default-src 'none'`）。アプリ（同じブラウザ、または戻ってきたとき）が `google-watch.js` で claim | ブラウザのログインはユーザーごとの名前空間にあり、コールバックのページから読まない |
+
+エクスポート（`connections.json` = 連携の状態とスコープ、`connectors.json` = マニフェストと道具（秘密は「設定済み」だけ）、`builds.json`）と完全削除（台帳の `deleteVia: 'cascade+external'` = トークンは Google / MCP で失効してから消える）はすべて台帳に入っていて、分離テスト（`test/routes-isolation.test.mjs`、DB の `test/db/isolation.test.mjs`）と削除の残り確認（`residual_check`）が自動でこの表を見る。
+
+検証: `npm test`、`npm run test:db`（postgres:17）、`npx vite build web`、public-scrub がすべて通る。開発スタック（`ELVAR_DB=memory ELVAR_DEV_AUTH=1`）に Playwright で 2 人が入り、それぞれ自分の（偽の）Google クライアントとコネクタ（テスト用 MCP サーバー）を設定して、ユーザー B の画面・API・エクスポートに A の設定・道具・秘密が一切出ないことを確認した。
+
+未着手: 本物の Google / Supabase での結合確認、Google の使用量（呼び出し数）の上限（P6）、MCP の OAuth トークンの「再認証」通知、`github-brain` コネクタ（P4）、DEK 回転の UI。
