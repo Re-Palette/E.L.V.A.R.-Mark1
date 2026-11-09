@@ -27,6 +27,13 @@
                 <action android:name="android.intent.action.ASSIST" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
+            <!-- Sign-in with Google returns here (Supabase Auth redirect URL com.elvar.mark1://auth-callback). -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="com.elvar.mark1" android:host="auth-callback" />
+            </intent-filter>
             <!-- Other ways glasses / headsets / buttons ask for "the voice assistant". -->
             <intent-filter>
                 <action android:name="android.intent.action.VOICE_COMMAND" />

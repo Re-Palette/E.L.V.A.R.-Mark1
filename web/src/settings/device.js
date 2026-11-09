@@ -140,6 +140,7 @@ export function mountDevice(root, app, { close }) {
       const r = await fetch('/api/google/status?probe=1', { headers: live.authHeaders() });
       const j = await r.json().catch(() => ({}));
       if (r.status === 401) el.innerHTML = '<span style="color:#ff9a6a">ログインし直してください</span>';
+      else if (j.comingSoon) el.innerHTML = '<span style="color:#b99b6a">準備中です</span>（まもなく使えるようになります）';
       else if (!j.configured) el.innerHTML = '<span style="color:#ff9a6a">未設定</span>（設定の「Google」タブでつなぎます）';
       else if (j.authenticated === false) el.innerHTML = `<span style="color:#ff9a6a">再接続が必要です</span>：設定の「Google」タブで、もう一度つなぎます`;
       else el.innerHTML = `<b style="color:#9fe3a8">接続済み ✓</b>（読み取り ${j.read} ／ 書き込み ${j.write}・要承認）`;

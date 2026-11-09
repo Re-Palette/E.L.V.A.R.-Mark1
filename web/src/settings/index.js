@@ -1,11 +1,11 @@
-// In-app settings (gear icon / Ctrl+, / ?settings=1). Tabs: アカウント, APIキー, Google, 連携アプリ, プロフィール, 機能, この端末.
+// In-app settings (gear icon / Ctrl+, / ?settings=1). Tabs: アカウント, APIキー, Google (準備中), 連携アプリ (準備中), プロフィール, 機能, この端末, 管理 (admins only).
 // Server-side values (keys, profile, devices) go through /api/elvar/*; "この端末" is stored on this device only.
 import { ensureUiCss, esc } from '../elvar/ui.js';
 import { api, currentSession, loadSession } from '../elvar/auth.js';
 import { mountDevice } from './device.js';
 import { mountKeys } from './keys.js';
-import { mountGoogle } from './google.js';
-import { mountConnectors } from './connectors.js';
+import { mountSoon } from './soon.js';
+import { mountAdmin } from './admin.js';
 import { mountAccount } from './account.js';
 import { mountProfile } from './profile.js';
 
@@ -35,7 +35,8 @@ const DEVICE_CSS = `
 @media (max-width:560px){.ev-settings .vs-row{flex-wrap:wrap}.ev-settings .vs-row>span.l{flex:1 0 100%}}
 `;
 
-const TABS = [['account', 'アカウント'], ['keys', 'APIキー'], ['google', 'Google'], ['connectors', '連携アプリ'], ['profile', 'プロフィール'], ['features', '機能'], ['device', 'この端末']];
+const BASE_TABS = [['account', 'アカウント'], ['keys', 'APIキー'], ['google', 'Google'], ['connectors', '連携アプリ'], ['profile', 'プロフィール'], ['features', '機能'], ['device', 'この端末']];
+const TABS = [...BASE_TABS, ['admin', '管理']];   // the admin tab is shown only to admins
 
 export function initSettingsPanel(app) {
   ensureUiCss();
@@ -52,23 +53,20 @@ export function initSettingsPanel(app) {
   const pane = (id) => back.querySelector(`[data-pane="${id}"]`);
   const isOpen = () => !back.hidden;
   const close = () => { back.hidden = true; device.stop(); };
-  const mode = () => currentSession()?.mode || 'local';
+  const isAdmin = () => currentSession()?.role === 'admin';
 
   const device = mountDevice(pane('device'), app, { close });
   const parts = {
-    account: mountAccount(pane('account'), { mode }),
+    account: mountAccount(pane('account')),
     keys: mountKeys(pane('keys')),
-    google: mountGoogle(pane('google'), { onChange: () => checkBadge() }),
-    connectors: mountConnectors(pane('connectors'), { onChange: () => checkBadge() }),
+    google: mountSoon(pane('google'), { title: 'Google との連携', lines: ['カレンダー・Gmail・ドライブなどを声で頼めるようにする機能です。あなた自身のGoogleのクライアントで連携する形になります。'] }),
+    connectors: mountSoon(pane('connectors'), { title: '連携アプリ', lines: ['MCPサーバーなどの外部アプリを、あなただけの連携として登録する機能です。'] }),
+    admin: mountAdmin(pane('admin')),
     profile: mountProfile(pane('profile'), 'profile', { onSaved: () => loadSession() }),
     features: mountProfile(pane('features'), 'features', { onSaved: () => loadSession() }),
     device,
   };
-  // A dot on the Google tab when Google must be connected again (the watcher in google-watch.js raises the event; the status endpoint is the source of truth).
-  const tabBtn = () => back.querySelector('[data-tab="google"]');
-  const setBadge = (on) => { const b = tabBtn(); if (b) { b.classList.toggle('alert', on); b.title = on ? 'Googleの再接続が必要です' : ''; } };
-  async function checkBadge() { try { const r = await api('/api/elvar/connect/google/status'); if (r.status === 200) setBadge(r.body.state === 'reauth_required'); } catch { /* offline */ } try { const b = back.querySelector('[data-tab="connectors"]'); const att = await parts.connectors.hasAttention(); b.classList.toggle('alert', att); b.title = att ? '確認が必要な連携アプリがあります' : ''; } catch { /* offline */ } }
-  addEventListener('elvar:google', (e) => { if (e.detail?.kind === 'state') setBadge(Boolean(e.detail.reauth)); else if (e.detail?.kind === 'connected') setBadge(false); });
+  function checkBadge() { const b = back.querySelector('[data-tab="admin"]'); if (b) b.hidden = !isAdmin(); }
   let current = 'keys';
   function show(id) {
     current = id;

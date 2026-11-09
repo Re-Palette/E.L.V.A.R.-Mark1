@@ -1,6 +1,6 @@
 # E.L.V.A.R. マルチユーザー化 設計（1つの共通プラットフォーム × 多数のユーザー）
 
-状態: 設計。**P1（土台）は実装済み**（§12 に実装メモ）。P2 以降は未実装 / 前提: `docs/ELVAR_ARCHITECTURE.md` の Phase 1–4 実装済みツリー（オーナー1人用 Vault・デバイストークン・ルーター・コネクタ）
+状態: 設計。**P1（土台）と P2（ログインとユーザー単位の設定）は実装済み**（§12・§13 に実装メモ）。P3 以降は未実装 / 前提: `docs/ELVAR_ARCHITECTURE.md` の Phase 1–4 実装済みツリー（オーナー1人用 Vault・デバイストークン・ルーター・コネクタ）
 最優先の規則: `CLAUDE.md`「E.L.V.A.R. の基本方針」7原則。この文書のどの判断もそれより下位。
 
 ---
@@ -682,3 +682,23 @@ P1 で入ったもの: `supabase/`（マイグレーション 01・02・03・09�
 | 拡張機能 | 01 で pgroonga・vector・pg_cron・pgcrypto | 作らない（必要になる 05 / 08 / 13 で） | P1 の表は不要。素の Postgres で通る |
 
 未着手（それぞれのフェーズで）: Storage のバケットとポリシー・予約関数（P5）、`record_usage` と容量トリガー（P5・P6）、管理者用の definer 関数（P2.7）、`pg_cron` のスケジュール（13）、`seed.sql`（P2 の本物のログインと一緒に。Supabase スタックなしでは検証できないため）、`rewrap_batch`（KEK 回転の一括処理。ユーザー単位の `rewrap()` はあり）、DEK 回転での `oauth_tokens` の再暗号化（表が入る P3）。
+
+
+---
+
+## 13. P2 実装メモ（設計からの差分・未着手）
+
+P2 で入ったもの: サインアップ・ログイン（メール＋パスワード、確認メール、Google、パスワード再設定、Turnstile 任意）、金色のサインイン／サインアップ画面（`docs/signin.png`, `docs/signup.png`）、ユーザー単位の設定（`server/auth/load-user-config.js`: 自分の `app.settings` / `app.user_secrets` / `app.profiles`、プラットフォーム既定は台帳の `platform: true` だけ）、自分の Gemini キー（ウィザードで必須＋疎通確認）、Live トークンは本人のキーで発行（発行数は本人単位、`usage_daily` に記録）、承認チケットは本人の DEK から導いた鍵（`uid` 入り、使用済み記録は本人の `ticket_uses`）、最小の管理者（一覧・停止／解除。メタデータのみ）、アカウント削除（即時／7日、取り消し、cron で実行）、データの書き出し、`/api/elvar/cron/daily`、ローカル開発用の偽の認証（`ELVAR_DB=memory ELVAR_DEV_AUTH=1`）。旧オーナー方式（Vault・セットアップコード・端末トークン・Upstash・ファイルストア）は削除（O8）。
+
+設計との違い:
+
+| 項目 | 設計 | P2 の実装 | 理由 |
+|---|---|---|---|
+| ブラウザの認証クライアント | `@supabase/auth-js` | 依存なしの小さな REST クライアント（`web/src/elvar/gotrue.js`: PKCE・更新の排他・fetch ラッパー） | 同じコードで本物の Supabase と偽の発行元に話せる。**本物の Supabase では未検証** |
+| `store/pg.js` | 追加 | 追加せず。承認は `tickets`、レート制限は `rl_hit`、OAuth は P3 の専用表 | 使い手がいない汎用 KV を作らない |
+| Google / コネクタ / 通知の中継 | P3・P4 | 「準備中」（503 `coming_soon`、設定画面にも表示）。`connectors/api.js`・`google/connect.js`・`notif-sync.js` は削除（P3・P4 で DB 上に作り直す） | 他人・オーナーのデータに触れない形で止める |
+| ブラウザ内データ | `elvar/local.js` 名前空間 | `web/public/ns.js`（全 localStorage キー・IndexedDB 名にユーザーの名前空間を付ける）。ログアウトで本人分を消す | 30 か所を書き換えずに分離 |
+| 管理者の停止 | `accounts.status` ＋ ban | 同じ。DB の状態は warm cache で最大30秒遅れる（機微な操作は `freshAccount`＋`requireFresh`） | 文書化 |
+| メモリ内の共有状態 | — | brain のキャッシュ、LLM の「落ちている」印、廃止モデルの印をユーザー単位に（`server/auth/user-state.js`） | warm インスタンスが次のユーザーに渡さない |
+
+未着手: Supabase 本物での結合確認（Auth フック設定、Turnstile、SMTP）、`seed.sql`、通知の中継（P4）、Google／コネクタ（P3）、削除完了メール、Storage の掃除（P5）、DEK 回転 UI、`record_usage` の計測点の拡大（P6）。

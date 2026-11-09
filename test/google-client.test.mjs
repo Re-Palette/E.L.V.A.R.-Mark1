@@ -65,7 +65,7 @@ test('desktop: the page can only hand Google\'s authorize URL to the system brow
   const h = main.slice(main.indexOf("ipcMain.on('elvar:open-external'")); const body = h.slice(0, h.indexOf('});') + 3);
   assert.match(body, /e\.sender === win\.webContents/); assert.match(body, /OUR_ORIGIN/); assert.match(body, /GOOGLE_AUTH_URL\.test/); assert.match(body, /shell\.openExternal/);
   assert.match(main, /GOOGLE_AUTH_URL = \/\^https:\\\/\\\/accounts\\\.google\\\.com\\\/o\\\/oauth2/);
-  assert.equal((main.match(/shell\.openExternal/g) || []).length, 1, 'one place only');
+  assert.equal((main.match(/shell\.openExternal/g) || []).length, 2, 'two places only: Google consent (open-external) and Supabase sign-in (open-auth, own test)');
 });
 
 test('android: openExternal takes only Google\'s URL, uses a Custom Tab, and the page is told when the app is back', () => {

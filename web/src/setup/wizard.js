@@ -1,40 +1,37 @@
-// First-run setup wizard: storage check -> setup code + owner password -> Gemini key (+ check) -> name / address / language / time zone / city
-// -> speaking style + greeting preview -> optional services -> optional Google connect (skippable) -> done. Each step is saved on the server as it is completed; the step reached is kept
-// on this device (elvar_setup_step), so a reload continues where it stopped. Keys are write-only: never shown again, only "設定済み・末尾4桁".
+// Sign-up wizard (docs/ELVAR_MULTIUSER.md 2.5): shown to a signed-in user who has no Gemini key yet. Gemini key (REQUIRED, checked against Google) -> name / address /
+// language / time zone / city -> speaking style + greeting preview (the user's own persona, principle 2) -> optional services -> done. Each step is saved on the
+// server as it is completed (the user's own profile and encrypted keys); the step reached is kept on this device (elvar_setup_step, per user), so a reload
+// continues where it stopped. Keys are write-only: never shown again, only "設定済み・末尾4桁". Everyone brings their own AI keys: the platform has none.
 import { overlay, esc } from '../elvar/ui.js';
-import { api, setToken, getToken, setSetupStep, setupStep, defaultDeviceName, loadSession } from '../elvar/auth.js';
+import { api, setSetupStep, setupStep, loadSession, logout } from '../elvar/auth.js';
 import { validateProfile, DEFAULT_PROFILE } from '../../../shared/profile.js';
 import { renderFields, readFields, mergeInto, errorText, browserTimeZone } from '../settings/profile-form.js';
 import { greetingLine } from '../live/clap-standby.js';
 import { setProfileCache } from '../brand.js';
 import { keyStatusText } from './wizard-text.js';
-import { mountGoogle } from '../settings/google.js';
 export { keyStatusText };
 
-export const STEPS = ['storage', 'owner', 'gemini', 'profile', 'persona', 'services', 'google', 'done'];
-const TITLES = { storage: '保存先の確認', owner: 'オーナーの登録', gemini: 'Gemini の APIキー', profile: 'あなたについて', persona: '話し方と挨拶', services: 'ほかのサービス（任意）', google: 'Google と連携（任意）', done: '準備ができました' };
+export const STEPS = ['gemini', 'profile', 'persona', 'services', 'done'];
+const TITLES = { gemini: 'Gemini の APIキー', profile: 'あなたについて', persona: '話し方と挨拶', services: 'ほかのサービス（任意）', done: '準備ができました' };
 
-/** Where to start: the saved step (resume), or the first step that is not done yet. Pure (tested). */
-export function startStep(state, saved, hasToken) {
-  if (state?.storage === 'none') return 'storage';
-  if (!state?.initialized) return 'owner';
-  if (saved && STEPS.includes(saved) && hasToken && saved !== 'storage' && saved !== 'owner') return saved;
+/** Where to start: the saved step (resume), or the Gemini key step (the first thing a new user needs). Pure (tested). */
+export function startStep(session, saved) {
+  if (saved && STEPS.includes(saved) && saved !== 'done') return saved;
   return 'gemini';
 }
 
-export function runWizard({ state, setupCode = '' }) {
+export function runWizard({ state, session }) {
   return new Promise((resolve) => {
-    const o = overlay({ title: 'E.L.V.A.R. SETUP', sub: '最初の設定', label: 'セットアップ' });
+    const o = overlay({ title: 'E.L.V.A.R. SETUP', sub: 'あなた専用の設定', label: 'セットアップ' });
     o.back.classList.add('ev-setup');
-    let st = state, step = startStep(st, setupStep(), Boolean(getToken()));
+    let step = startStep(session, setupStep());
     let profile = structuredClone(DEFAULT_PROFILE);
     if (!profile.locale.timeZone || profile.locale.timeZone === 'Asia/Tokyo') profile.locale.timeZone = browserTimeZone();
 
-    const bar = () => `<div class="ev-steps">${STEPS.slice(1).map((s) => `<span class="${s === step ? 'on' : STEPS.indexOf(s) < STEPS.indexOf(step) ? 'done' : ''}"></span>`).join('')}</div>`;
+    const bar = () => `<div class="ev-steps">${STEPS.map((s) => `<span class="${s === step ? 'on' : STEPS.indexOf(s) < STEPS.indexOf(step) ? 'done' : ''}"></span>`).join('')}</div>`;
     const $ = (id) => o.panel.querySelector('#' + id);
     const msg = (t, cls = '') => { const m = $('ev-msg'); if (m) { m.textContent = t; m.className = 'ev-msg ' + cls; } };
-    if (setupCode) setupCode = String(setupCode).toUpperCase();
-    const go = (s) => { step = s; if (s !== 'storage' && s !== 'owner') setSetupStep(s); render(); };
+    const go = (s) => { step = s; setSetupStep(s); render(); };
     const busy = (on) => o.panel.querySelectorAll('button').forEach((b) => { b.disabled = on; });
 
     async function loadProfile() {
@@ -49,26 +46,12 @@ export function runWizard({ state, setupCode = '' }) {
     }
 
     const views = {
-      storage: () => `
-        <p class="ev-p">設定を暗号化して保存する場所がありません。</p>
-        <p class="ev-p">Vercel では、ダッシュボードの <b>Storage</b> から <b>Upstash（Redis）</b> を追加し、このプロジェクトにつないで再デプロイしてください。環境変数は自動で入ります。</p>
-        <p class="ev-note">ローカルで動かしている場合は、この画面は出ません（設定は ~/.elvar に保存されます）。</p>
-        <div class="ev-btns"><button class="ev-btn pri" id="ev-go" type="button">もう一度確認</button></div>`,
-      owner: () => `
-        <p class="ev-p">このアシスタントの持ち主（オーナー）を登録します。パスワードは、新しい端末でログインするときに使います。</p>
-        <label class="ev-field"><span>セットアップコード</span><input class="ev-input ev-code" id="ev-code" type="text" autocomplete="one-time-code" maxlength="12" placeholder="XXXX-XXXX" spellcheck="false" value="${esc(setupCode)}"></label>
-        <p class="ev-note">${setupCode ? 'セットアップ用のリンクから入力しました。' : 'サーバーのログに <b>ELVAR SETUP CODE</b> として出ています（Vercel: Project → Logs、ローカル: サーバーを起動したターミナル。そこに出るリンクを開くと自動で入ります）。'}60分有効です。</p>
-        <label class="ev-field"><span>パスワード（10文字以上）</span><input class="ev-input" id="ev-pw" type="password" autocomplete="new-password" minlength="10"></label>
-        <label class="ev-field"><span>パスワード（確認）</span><input class="ev-input" id="ev-pw2" type="password" autocomplete="new-password"></label>
-        <label class="ev-field"><span>この端末の名前</span><input class="ev-input" id="ev-dev" type="text" maxlength="40" value="${esc(defaultDeviceName())}"></label>
-        <p class="ev-note">パスワードとすべての端末を失うと、保存した設定は開けなくなります。忘れないものにしてください。</p>
-        <div class="ev-btns"><button class="ev-btn pri" id="ev-go" type="button">登録する</button></div>`,
       gemini: (cfg) => `
-        <p class="ev-p">音声会話には Google の <b>Gemini API キー</b>が必要です。<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" style="color:#FFD99A">Google AI Studio</a> で無料で作れます。</p>
+        <p class="ev-p">E.L.V.A.R. は、あなた自身の <b>Gemini API キー</b>で動きます。<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" style="color:#FFD99A">Google AI Studio</a> で無料で作れます。AIの利用は、あなたのキーの枠で数えられます（運営はAIのキーを持ちません）。</p>
         <div class="ev-row"><span class="l">状態</span><span class="ev-chip ${cfg?.set ? 'ok' : 'off'}" id="ev-kst">${esc(keyStatusText(cfg))}</span></div>
         <label class="ev-field"><span>APIキー${cfg?.set ? '（入れ直すときだけ）' : ''}</span><input class="ev-input" id="ev-key" type="password" autocomplete="off" spellcheck="false" placeholder="AIza..."></label>
         <p class="ev-note">キーはサーバーで暗号化して保存します。保存したあとは画面に表示されません。</p>
-        <div class="ev-btns"><button class="ev-btn pri" id="ev-go" type="button">保存して確認</button><button class="ev-btn" id="ev-skip" type="button">${cfg?.set ? '次へ' : 'あとで設定'}</button></div>`,
+        <div class="ev-btns"><button class="ev-btn pri" id="ev-go" type="button">保存して確認</button>${cfg?.set ? '<button class="ev-btn" id="ev-skip" type="button">次へ</button>' : ''}</div>`,
       profile: () => `
         <p class="ev-p">呼び方や時間の基準に使います。あとから設定で変えられます。</p>
         <div class="ev-grid2">${renderFields(['owner.name', 'owner.address', 'locale.language', 'locale.timeZone', 'home.city', 'home.labelEn'], profile)}</div>
@@ -84,14 +67,10 @@ export function runWizard({ state, setupCode = '' }) {
         <p class="ev-p">なくても使えます。入れると、難しい推論（Groq）や本格的な調べもの（Exa）が使えます。</p>
         ${['GROQ_API_KEY', 'EXA_API_KEY'].map((k) => `<label class="ev-field"><span>${k === 'GROQ_API_KEY' ? 'Groq API キー' : 'Exa API キー'} <span class="ev-chip ${cfg?.[k]?.set ? 'ok' : 'off'}">${esc(keyStatusText(cfg?.[k]))}</span></span><input class="ev-input" data-key="${k}" type="password" autocomplete="off" spellcheck="false"></label>`).join('')}
         <div class="ev-btns"><button class="ev-btn pri" id="ev-go" type="button">保存して次へ</button><button class="ev-btn" id="ev-skip" type="button">スキップ</button></div>`,
-      google: () => `
-        <p class="ev-p">Googleのカレンダー・Gmail・ドライブなどを、声で頼めるようにします。なくても使えます。あとから、設定の「Google」でもつなげます。</p>
-        <div id="ev-gpane"></div>
-        <div class="ev-btns"><button class="ev-btn pri" id="ev-go" type="button">次へ</button><button class="ev-btn" id="ev-back" type="button">戻る</button></div>`,
       done: (cfg) => `
         <p class="ev-p">セットアップが終わりました。拍手2回、またはマイクのボタンで話しかけてください。</p>
-        <div class="ev-kv"><span>オーナー</span><span>${esc(profile.owner.address)}</span><span>タイムゾーン</span><span>${esc(profile.locale.timeZone)}</span><span>Gemini</span><span class="ev-chip ${cfg?.set ? 'ok' : 'off'}">${esc(keyStatusText(cfg))}</span></div>
-        <p class="ev-note">設定は、HUD の歯車のアイコン（Ctrl+,）からいつでも変えられます。</p>
+        <div class="ev-kv"><span>呼び方</span><span>${esc(profile.owner.address)}</span><span>タイムゾーン</span><span>${esc(profile.locale.timeZone)}</span><span>Gemini</span><span class="ev-chip ${cfg?.set ? 'ok' : 'off'}">${esc(keyStatusText(cfg))}</span></div>
+        <p class="ev-note">設定は、HUD の歯車のアイコン（Ctrl+,）からいつでも変えられます。Googleとの連携は、準備中です。</p>
         <div class="ev-btns"><button class="ev-btn pri" id="ev-go" type="button">HUD を開く</button></div>`,
     };
 
@@ -100,30 +79,19 @@ export function runWizard({ state, setupCode = '' }) {
       if (['gemini', 'services', 'done'].includes(step)) { const r = await api('/api/elvar/config'); cfg = r.status === 200 ? r.body.secrets : null; }
       if (['profile', 'persona', 'done'].includes(step)) await loadProfile();
       const view = step === 'gemini' || step === 'done' ? views[step](cfg?.GEMINI_API_KEY) : views[step](cfg);
-      o.panel.innerHTML = `${bar()}<h3 class="ev-h3" style="margin-top:14px">${esc(TITLES[step])}</h3>${view}<div class="ev-msg" id="ev-msg" role="status"></div>`;
+      o.panel.innerHTML = `${bar()}<h3 class="ev-h3" style="margin-top:14px">${esc(TITLES[step])}</h3>${view}<div class="ev-msg" id="ev-msg" role="status"></div><p class="ev-note" style="text-align:right"><button class="ev-link" id="ev-out" type="button" style="background:none;border:0;color:#b99b6a;text-decoration:underline;cursor:pointer;font:inherit">ログアウト</button></p>`;
       bind();
       setTimeout(() => o.panel.querySelector('input,select')?.focus(), 0);
     }
 
     function bind() {
-      const back = $('ev-back'); if (back) back.onclick = () => go(STEPS[STEPS.indexOf(step) - 1]);
+      const back = $('ev-back'); if (back) back.onclick = () => go(STEPS[Math.max(0, STEPS.indexOf(step) - 1)]);
       const skip = $('ev-skip'); if (skip) skip.onclick = () => go(STEPS[STEPS.indexOf(step) + 1]);
       const btn = $('ev-go');
       const run = async (fn) => { busy(true); try { await fn(); } catch { msg('サーバーに接続できません', 'warn'); } finally { busy(false); } };
-      o.panel.onkeydown = (e) => { if (e.key === 'Enter' && step !== 'google' && e.target.tagName !== 'TEXTAREA' && btn && !btn.disabled) btn.click(); };
+      o.panel.onkeydown = (e) => { if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA' && e.target.id !== 'ev-out' && btn && !btn.disabled) btn.click(); };
 
-      if (step === 'storage') btn.onclick = () => run(async () => { const r = await api('/api/elvar/state'); if (r.status === 200) { st = r.body; if (st.storage !== 'none') go(startStep(st, null, Boolean(getToken()))); else msg('まだ見つかりません。追加して再デプロイしたあと、もう一度押してください', 'warn'); } });
-      if (step === 'owner') btn.onclick = () => run(async () => {
-        const pw = $('ev-pw').value, pw2 = $('ev-pw2').value;
-        if (pw.length < 10) return msg('パスワードは10文字以上にしてください', 'warn');
-        if (pw !== pw2) return msg('確認のパスワードが一致しません', 'warn');
-        const code = $('ev-code').value.trim(); if (!code) return msg('セットアップコードを入力してください', 'warn');
-        const r = await api('/api/elvar/setup/claim', { method: 'POST', body: { setupCode: code, password: pw, deviceName: $('ev-dev').value } });
-        if (r.status === 409) { msg('すでに登録されています。ログインしてください', 'warn'); setTimeout(() => { o.close(); setSetupStep(''); resolve(); }, 1200); return; }
-        if (r.status !== 200) return msg(r.body?.message || '登録できませんでした', 'warn');
-        setToken(r.body.token); st = { ...st, initialized: true };
-        go('gemini');
-      });
+      $('ev-out').onclick = () => logout({ erase: false });
       if (step === 'gemini') btn.onclick = () => run(async () => {
         const key = $('ev-key').value.trim();
         if (key) {
@@ -135,7 +103,7 @@ export function runWizard({ state, setupCode = '' }) {
         msg('つながるか確認しています…');
         const t = await api('/api/elvar/config/test', { method: 'POST', body: { name: 'GEMINI_API_KEY' } });
         if (t.body?.status === 'ok') { msg('保存しました。' + t.body.detail, 'ok'); setTimeout(() => go('profile'), 700); }
-        else { msg(`保存しました。ただし確認できませんでした：${t.body?.detail || ''}　このまま進むこともできます。`, 'warn'); $('ev-skip').textContent = '次へ'; }
+        else { msg(`保存しました。ただし確認できませんでした：${t.body?.detail || ''}　このまま進むこともできます。`, 'warn'); if (!$('ev-skip')) { const n = document.createElement('button'); n.className = 'ev-btn'; n.id = 'ev-skip'; n.type = 'button'; n.textContent = '次へ'; n.onclick = () => go('profile'); $('ev-go').after(n); } }
       });
       if (step === 'profile') btn.onclick = () => run(async () => { if (await saveProfile(readFields(o.panel))) go('persona'); });
       if (step === 'persona') {
@@ -152,9 +120,8 @@ export function runWizard({ state, setupCode = '' }) {
           o.panel.querySelectorAll('[data-key]').forEach((el) => { el.value = ''; });
           if (r.status !== 200) return msg(r.body?.message || '保存できませんでした', 'warn');
         }
-        go('google');
+        go('done');
       });
-      if (step === 'google') { mountGoogle($('ev-gpane'), { compact: true }).refresh(); btn.onclick = () => go('done'); }
       if (step === 'done') btn.onclick = () => run(async () => { setSetupStep(''); await loadSession(); o.close(); resolve(); });
     }
 

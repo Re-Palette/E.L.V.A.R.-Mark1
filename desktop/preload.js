@@ -2,11 +2,10 @@
 const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('elvarDesktop', {
   isDesktop: true,
-  // A device token (elv1....) or, in env mode, the shared access token, from the main process (environment, our origin only).
-  // Used as the x-elvar-token header by web/src/elvar/auth.js when this device has not signed in itself.
-  accessToken: (() => { try { return ipcRenderer.sendSync('elvar:token') || ''; } catch { return ''; } })(),
   /** Ask the OS to put the HUD window in front of everything, right now. */
   bringToFront: () => ipcRenderer.send('elvar:bring-to-front'),
+  /** Sign in with Google through Supabase Auth in the system browser; the result returns through elvar://auth-callback (the main process checks the URL). */
+  openAuth: (url) => ipcRenderer.send('elvar:open-auth', String(url)),
   /** Open Google's consent screen in the system browser (the main process refuses any other URL). */
   openExternal: (url) => ipcRenderer.send('elvar:open-external', String(url)),
 });

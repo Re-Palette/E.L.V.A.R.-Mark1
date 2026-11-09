@@ -84,6 +84,20 @@ class MainActivity : Activity() {
             }
         }
 
+        /**
+         * Sign-in with Google through Supabase Auth (docs/ELVAR_MULTIUSER.md 2.3). Google refuses WebViews, so the authorize URL opens in the user's browser; the
+         * browser comes back through com.elvar.mark1://auth-callback?code=... (see handleAuthIntent). The PKCE verifier stays in this WebView's storage, so only
+         * this app can finish the sign-in. Only https URLs of Supabase's /auth/v1/authorize for provider=google are accepted.
+         */
+        @JavascriptInterface fun openAuth(url: String) {
+            val u = try { Uri.parse(url) } catch (e: Exception) { return }
+            if (u.scheme != "https" || u.path != "/auth/v1/authorize" || u.getQueryParameter("provider") != "google") return
+            runOnUiThread {
+                try { startActivity(Intent(Intent.ACTION_VIEW, u)) }
+                catch (e: Exception) { Toast.makeText(this@MainActivity, "ブラウザを開けませんでした", Toast.LENGTH_LONG).show() }
+            }
+        }
+
         @JavascriptInterface
         fun saveFile(name: String, mime: String, base64: String): Boolean {
             return try {
@@ -157,13 +171,23 @@ class MainActivity : Activity() {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 1)
         }
         registerReceiver(unlockReceiver, IntentFilter(Intent.ACTION_USER_PRESENT))
-        open(intent)
+        if (!handleAuthIntent(intent)) open(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        if (handleAuthIntent(intent)) return
         open(intent)
+    }
+
+    /** com.elvar.mark1://auth-callback?code=... : hand the one-time code to the page (it holds the PKCE verifier). Only a plain code is passed on. */
+    private fun handleAuthIntent(intent: Intent?): Boolean {
+        val d = intent?.data ?: return false
+        if (d.scheme != "com.elvar.mark1" || d.host != "auth-callback") return false
+        val code = d.getQueryParameter("code") ?: ""
+        if (Regex("^[A-Za-z0-9_-]{8,200}$").matches(code)) web.evaluateJavascript("window.__elvarAuthCode&&window.__elvarAuthCode('$code')", null)
+        return true
     }
 
     /** Resolve the E.L.V.A.R. URL (build-time, else saved, else ask once) and load it. */

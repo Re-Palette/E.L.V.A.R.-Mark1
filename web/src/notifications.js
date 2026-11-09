@@ -65,7 +65,7 @@ export function initNotifications({ live, hudLive, store, onNew = null }) {
     const t = key(); if (!t) { cloudErr = 'ログインしていないため、復号できません'; return; }
     try {
       const r = await fetch(`/api/notif?since=${Math.max(0, cloudSince - 1)}`, { headers: live.authHeaders(), cache: 'no-store' });
-      if (!r.ok) { cloudErr = r.status === 503 ? 'サーバーのRedis（Upstash）が未設定です' : r.status === 403 ? 'サーバーにアクセストークンが未設定です' : `同期に失敗しました (${r.status})`; return; }
+      if (!r.ok) { cloudErr = r.status === 503 ? 'クラウドでの通知の同期は、準備中です' : r.status === 403 ? 'このアカウントでは、いま使えません' : `同期に失敗しました (${r.status})`; return; }
       cloudErr = '';
       for (const it of (await r.json()).items || []) {
         cloudSince = Math.max(cloudSince, it.at); if (seenCloud.has(it.id)) continue; seenCloud.add(it.id);

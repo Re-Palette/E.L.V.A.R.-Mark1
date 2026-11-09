@@ -8,11 +8,7 @@ const path = require('node:path');
 
 const arg = (n) => process.argv.find((a) => a.startsWith(`--${n}=`))?.slice(n.length + 3);
 const START_URL = arg('url') || process.env.ELVAR_URL || 'http://localhost:8787';
-// Optional pre-set credential (the app also has its own sign-in screen): a device token (elv1....) in ELVAR_DEVICE_TOKEN, or the env-mode
-// ELVAR_ACCESS_TOKEN. From the environment only, never from the command line (other users of the computer can read process arguments).
-// It reaches the page over IPC, and only for our own origin.
-const ACCESS_TOKEN = process.env.ELVAR_DEVICE_TOKEN || process.env.ELVAR_ACCESS_TOKEN || '';
-if (arg('token')) console.warn('[elvar] --token is no longer read (process arguments are visible to other users). Use ELVAR_DEVICE_TOKEN, or sign in inside the app.');
+if (process.env.ELVAR_DEVICE_TOKEN || process.env.ELVAR_ACCESS_TOKEN || arg('token')) console.warn('[elvar] device / access tokens are gone: sign in inside the app (e-mail + password or Google).');
 const TEST_LOG = process.env.ELVAR_TEST_LOG === '1'; // prints machine-readable events for automated checks
 const log = (o) => { if (TEST_LOG) console.log('ELVAR_EVT ' + JSON.stringify({ t: Date.now(), ...o })); };
 
@@ -23,13 +19,23 @@ app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
 if (!app.requestSingleInstanceLock()) { app.quit(); }
-app.on('second-instance', () => bringToFront('second-instance'));
+app.on('second-instance', (_e, argv) => { const u = argv.find((a) => String(a).startsWith('elvar://')); if (u) handleAuthUrl(u); bringToFront('second-instance'); });
 
 let win = null, tray = null, quitting = false, topTimer = null;
 const origin = (u) => { try { return new URL(u).origin; } catch { return ''; } };
 const OUR_ORIGIN = origin(START_URL);
 const GOOGLE_AUTH_URL = /^https:\/\/accounts\.google\.com\/o\/oauth2\/(v2\/)?auth\?/;
-ipcMain.on('elvar:token', (e) => { e.returnValue = origin(e.senderFrame?.url || '') === OUR_ORIGIN ? ACCESS_TOKEN : ''; });
+// Sign-in with Google (Supabase Auth, docs/ELVAR_MULTIUSER.md 2.3): the authorize URL opens in the system browser and the browser returns through elvar://auth-callback?code=...
+const AUTH_URL = (u) => { try { const x = new URL(u); return x.protocol === 'https:' && x.pathname === '/auth/v1/authorize' && x.searchParams.get('provider') === 'google'; } catch { return false; } };
+if (process.defaultApp) { if (process.argv.length >= 2) app.setAsDefaultProtocolClient('elvar', process.execPath, [path.resolve(process.argv[1])]); } else app.setAsDefaultProtocolClient('elvar');
+function handleAuthUrl(u) {
+  try {
+    const x = new URL(u); if (x.protocol !== 'elvar:' || x.hostname !== 'auth-callback') return;
+    const code = x.searchParams.get('code') || '';
+    if (win && !win.isDestroyed() && /^[A-Za-z0-9_-]{8,200}$/.test(code)) { win.webContents.executeJavaScript(`window.__elvarAuthCode&&window.__elvarAuthCode(${JSON.stringify(code)})`).catch(() => {}); bringToFront('auth'); }
+  } catch { /* not ours */ }
+}
+app.on('open-url', (e, u) => { e.preventDefault(); handleAuthUrl(u); });   // macOS
 
 function createWindow() {
   win = new BrowserWindow({
@@ -107,6 +113,7 @@ app.whenReady().then(async () => {
   if (process.platform === 'darwin') { try { await systemPreferences.askForMediaAccess('microphone'); } catch {} }
 
   ipcMain.on('elvar:bring-to-front', (e) => { if (win && e.sender === win.webContents) bringToFront('ipc'); });
+  ipcMain.on('elvar:open-auth', (e, url) => { if (win && e.sender === win.webContents && origin(e.senderFrame?.url || '') === OUR_ORIGIN && AUTH_URL(url)) shell.openExternal(String(url)); });
   // Google refuses sign-in inside an embedded window, so the consent screen opens in the system browser. Only Google's own authorize URL, only from our window.
   ipcMain.on('elvar:open-external', (e, url) => {
     if (win && e.sender === win.webContents && origin(e.senderFrame?.url || '') === OUR_ORIGIN && GOOGLE_AUTH_URL.test(String(url))) shell.openExternal(String(url));
