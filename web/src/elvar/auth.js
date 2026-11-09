@@ -1,22 +1,28 @@
-// Client side of owner authentication. One place for the device token, the x-elvar-token header, the sign-in screen and 401 handling.
-// The token is a per-device credential (elv1.<deviceId>.<secret>) issued by the server at setup / sign-in; the desktop app may pass one at launch.
-import { overlay, esc } from './ui.js';
+// Client side of authentication on the multi-user platform. One place for the Supabase Auth session (web/src/elvar/gotrue.js), the Authorization header,
+// the sign-in / sign-up screens (web/src/auth/screens.js), per-user local data (web/src/elvar/local.js) and the start-up decision:
+//   not configured -> a notice            not signed in -> sign in / sign up            account pending deletion -> offer to cancel
+//   suspended -> a notice                  no Gemini key yet -> the setup wizard          otherwise -> the HUD
+// Every call to our own /api/ gets `Authorization: Bearer <access token>` (the fetch wrapper in gotrue.js also refreshes it and retries once).
 import { setProfileCache } from '../brand.js';
+import { createAuthClient, installAuthFetch } from './gotrue.js';
+import { adoptUser, clearUserLocal, leaveUser, activeNs } from './local.js';
 
-const TOKEN_KEY = 'elvar_device_token', LEGACY_KEY = 'elvar_access_token', SECRET_KEY = 'elvar_notif_secret';
+const SECRET_KEY = 'elvar_notif_secret', FLOW_KEY = 'elvar_auth_flow';
 const ls = {
   get: (k) => { try { return localStorage.getItem(k) || ''; } catch { return ''; } },
   set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
   del: (k) => { try { localStorage.removeItem(k); } catch {} },
 };
 
-export const getToken = () => ls.get(TOKEN_KEY) || ls.get(LEGACY_KEY) || (typeof window !== 'undefined' && window.elvarDesktop?.accessToken) || '';
-export function setToken(t) { ls.set(TOKEN_KEY, String(t || '')); ls.del(LEGACY_KEY); }
-export function clearToken() { ls.del(TOKEN_KEY); ls.del(LEGACY_KEY); ls.del(SECRET_KEY); }
+let client = null, session = null, platform = null, lastError = '';
+export const authClient = () => client;
+export const platformState = () => platform;
+export const getAccessToken = () => client?.token() || '';
 /** Headers that authorise calls to our own /api. */
-export function authHeaders() { const t = getToken(); return t ? { 'x-elvar-token': t } : {}; }
-/** Key material for the phone-notification encryption: the vault's notifSecret, or the access token in env mode. */
-export const notifSecret = () => ls.get(SECRET_KEY) || getToken();
+export function authHeaders() { const t = getAccessToken(); return t ? { authorization: `Bearer ${t}` } : {}; }
+/** Key material for the phone-notification encryption: made once per user on the server, returned with the session. */
+export const notifSecret = () => ls.get(SECRET_KEY);
+export const lastSessionError = () => lastError;
 
 /** JSON call to our API. @returns {Promise<{status:number, body:any}>} */
 export async function api(path, { method = 'GET', body } = {}) {
@@ -24,16 +30,15 @@ export async function api(path, { method = 'GET', body } = {}) {
   return { status: r.status, body: await r.json().catch(() => ({})) };
 }
 
-export const getState = () => api('/api/elvar/state').then((r) => (r.status === 200 ? r.body : null)).catch(() => null);
-
-let session = null;
+export const getState = () => fetch('/api/elvar/state', { cache: 'no-store' }).then((r) => (r.status === 200 ? r.json() : null)).catch(() => null);
 export const currentSession = () => session;
-/** GET /api/elvar/session: caches the profile (for brand / time zone / greetings) and the notification key. null = not signed in. */
+
+/** GET /api/elvar/session: caches the profile (for brand / time zone / greetings) and the notification key. null = not usable; lastSessionError() says why. */
 export async function loadSession() {
+  lastError = '';
   const r = await api('/api/elvar/session').catch(() => null);
-  if (!r) return null;
-  if (r.status === 401) return null;
-  if (r.status !== 200) return null;
+  if (!r) { lastError = 'offline'; return null; }
+  if (r.status !== 200) { lastError = r.body?.error || 'error'; return null; }
   session = r.body;
   setProfileCache(session.profile);
   if (session.notifSecret) ls.set(SECRET_KEY, session.notifSecret); else ls.del(SECRET_KEY);
@@ -49,92 +54,95 @@ const defaultDeviceName = () => {
 };
 export { defaultDeviceName };
 
-let loginPromise = null;
-/**
- * Show the sign-in screen (once, even if several calls hit 401 at the same time) and resolve when this device has a working token.
- * Env mode asks for the shared access token instead of the password.
- */
-export function requireLogin({ envMode } = {}) {
-  if (loginPromise) return loginPromise;
-  loginPromise = (async () => {
-    const st = envMode === undefined ? await getState() : { envMode };
-    await new Promise((resolve) => showLogin(Boolean(st?.envMode), resolve));
-    await loadSession();
-  })().finally(() => { loginPromise = null; });
-  return loginPromise;
+/** Which shell hosts the page: the Android WebView and the Electron desktop shell must send Google sign-in to the system browser. */
+export function hostPlatform() {
+  if (typeof window === 'undefined') return 'web';
+  if (window.ElvarAndroid?.openAuth) return 'android';
+  if (window.elvarDesktop?.openAuth) return 'desktop';
+  return 'web';
 }
-
-function showLogin(envMode, done) {
-  const o = overlay({ title: 'SIGN IN', sub: envMode ? 'アクセストークンで接続' : 'オーナーのパスワードでログイン' });
-  o.panel.innerHTML = envMode ? `
-    <p class="ev-p">このサーバーは環境変数のアクセストークンで保護されています。</p>
-    <label class="ev-field"><span>アクセストークン</span><input class="ev-input" id="ev-l-tok" type="password" autocomplete="off" spellcheck="false"></label>
-    <div class="ev-btns"><button class="ev-btn pri" id="ev-l-go" type="button">接続する</button></div><div class="ev-msg" id="ev-l-msg"></div>` : `
-    <p class="ev-p">この端末はまだログインしていません。セットアップで決めたパスワードを入力してください。</p>
-    <label class="ev-field"><span>パスワード</span><input class="ev-input" id="ev-l-pw" type="password" autocomplete="current-password"></label>
-    <label class="ev-field"><span>この端末の名前</span><input class="ev-input" id="ev-l-name" type="text" maxlength="40" value="${esc(defaultDeviceName())}"></label>
-    <div class="ev-btns"><button class="ev-btn pri" id="ev-l-go" type="button">ログイン</button></div><div class="ev-msg" id="ev-l-msg"></div>
-    <p class="ev-note">パスワードを忘れたときは、ログイン済みの別の端末の設定から変更できます。</p>`;
-  const $ = (id) => o.panel.querySelector('#' + id), msg = (t, c = '') => { $('ev-l-msg').textContent = t; $('ev-l-msg').className = 'ev-msg ' + c; };
-  const go = async () => {
-    $('ev-l-go').disabled = true; msg('確認しています…');
-    try {
-      if (envMode) {
-        const t = $('ev-l-tok').value.trim(); if (!t) { msg('入力してください', 'warn'); return; }
-        setToken(t);
-        const r = await api('/api/elvar/session');
-        if (r.status !== 200) { clearToken(); msg('トークンが違います', 'warn'); return; }
-      } else {
-        const r = await api('/api/elvar/auth/login', { method: 'POST', body: { password: $('ev-l-pw').value, deviceName: $('ev-l-name').value } });
-        if (r.status !== 200) { msg(r.body?.message || 'ログインできませんでした', 'warn'); $('ev-l-pw').select(); return; }
-        setToken(r.body.token);
-      }
-      o.close(); done();
-    } catch { msg('サーバーに接続できません', 'warn'); }
-    finally { if ($('ev-l-go')) $('ev-l-go').disabled = false; }
-  };
-  $('ev-l-go').onclick = go;
-  o.panel.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
-  setTimeout(() => o.panel.querySelector('input')?.focus(), 0);
-}
+export const redirectFor = (p = hostPlatform()) => (p === 'android' ? 'com.elvar.mark1://auth-callback' : p === 'desktop' ? 'elvar://auth-callback' : `${location.origin}/auth/callback/`);
 
 const SETUP_STEP_KEY = 'elvar_setup_step';
 export const setupStep = () => ls.get(SETUP_STEP_KEY);
 export const setSetupStep = (s) => (s ? ls.set(SETUP_STEP_KEY, s) : ls.del(SETUP_STEP_KEY));
+export const markFlow = (f) => (f ? ls.set(FLOW_KEY, f) : ls.del(FLOW_KEY));
 
+const absolute = (u) => { try { return new URL(u, location.href).toString().replace(/\/+$/, ''); } catch { return u; } };
+let loginPromise = null;
 /**
- * Start-up: make sure this device can talk to the server before the HUD starts.
- *   - not set up yet -> the setup wizard (lazy loaded)
- *   - set up, wizard not finished on this device -> the wizard continues where it stopped
- *   - set up, no valid token -> the sign-in screen
- * Offline / server down: returns null and the HUD starts anyway (it shows what fails).
+ * Show the sign-in screen (once, even if several calls hit 401 at the same time) and resolve when somebody is signed in.
+ * A different person than before gets a fresh namespace (the page reloads so every module starts in it).
  */
-/** The one-time setup link printed by the local server (http://localhost:8787/?setup=XXXX-XXXX): read once, then removed from the address bar. */
-export function takeSetupCodeFromUrl() {
-  try {
-    const u = new URL(location.href), c = u.searchParams.get('setup');
-    if (c === null) return '';
-    u.searchParams.delete('setup'); history.replaceState(null, '', u.pathname + (u.search || '') + u.hash);
-    return /^[A-Za-z0-9-]{4,20}$/.test(c) ? c : '';
-  } catch { return ''; }
+export function requireLogin({ notice = '', initial = 'signin' } = {}) {
+  if (loginPromise) return loginPromise;
+  loginPromise = (async () => {
+    const st = platform || await getState();
+    const { runAuthScreens } = await import('../auth/screens.js');
+    await runAuthScreens({ client, state: st, notice, initial });
+    if (await adoptUser(client.session().user.id)) { location.reload(); await new Promise(() => {}); }
+  })().finally(() => { loginPromise = null; });
+  return loginPromise;
 }
 
+/** A code handed over by the Android / desktop shell after Google sign-in in the system browser (the PKCE verifier is in this page's storage). */
+async function handleHandoff(code) {
+  try { await client.exchangeCode(String(code)); } catch { return; }
+  location.reload();
+}
+
+/** Start-up: decide what to show before the HUD starts. Offline / server down: returns null and the HUD starts anyway (it shows what fails). */
 export async function bootAuth() {
-  const setupCode = takeSetupCodeFromUrl();
-  const st = await getState();
-  if (!st) return null;
-  const needWizard = (!st.initialized && !st.envMode) || (st.initialized && setupStep() && getToken());
-  if (needWizard) {
-    const { runWizard } = await import('../setup/wizard.js');
-    await runWizard({ state: st, setupCode });
+  platform = await getState();
+  if (!platform) return null;
+  const screens = () => import('../auth/screens.js');
+  if (!platform.configured) { (await screens()).showNotice({ title: 'SETUP REQUIRED', sub: 'サーバーの設定が未完了です', lines: ['このサーバーには、ログインの設定（Supabase）がまだありません。', '運営者向け: docs/ELVAR_MULTIUSER.md の「ローカル開発とテスト」を確認してください。'] }); await new Promise(() => {}); }
+  client = createAuthClient({ url: absolute(platform.supabaseUrl), anonKey: platform.publishableKey });
+  installAuthFetch(client, { onSignedOut: (why) => { if (!client.session()) requireLogin({ notice: why === 'account_deleted' ? 'このアカウントは削除されました' : '' }); } });
+  window.__elvarAuthCode = handleHandoff;
+
+  // a flow that came back to this page (Google, the confirmation link, the password-reset link)
+  let notice = '', initial = 'signin';
+  const flow = client.parseRedirect(location.href);
+  if (flow) {
+    try { const u = new URL(location.href); for (const k of ['code', 'error', 'error_code', 'error_description']) u.searchParams.delete(k); u.hash = ''; history.replaceState(null, '', u.pathname + (u.search || '')); } catch { /* keep the address */ }
+    const recovery = ls.get(FLOW_KEY) === 'recovery';
+    if (flow.code) {
+      try { await client.exchangeCode(flow.code); if (recovery) initial = 'reset'; markFlow(''); }
+      catch (e) { markFlow(''); notice = e.code === 'no_verifier' ? 'メールの確認が終わりました。ログインしてください' : '手続きを完了できませんでした。もう一度お試しください'; }
+    } else { markFlow(''); notice = flow.description || '手続きを完了できませんでした。もう一度お試しください'; }
   }
-  let s = await loadSession();
-  if (!s) { await requireLogin({ envMode: st.envMode }); s = currentSession(); }
-  return s;
+  if (!client.session() || initial === 'reset') await requireLogin({ notice, initial });
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const s = await loadSession();
+    if (s) {
+      const needWizard = Boolean(s.missing?.includes('GEMINI_API_KEY')) || Boolean(setupStep());   // the Gemini key is required: everyone brings their own
+      if (needWizard) {
+        const { runWizard } = await import('../setup/wizard.js');
+        await runWizard({ state: platform, session: s });
+        return await loadSession() || s;
+      }
+      return s;
+    }
+    if (lastError === 'offline') return null;
+    if (lastError === 'account_pending_deletion') { const r = await api('/api/elvar/account/deletion'); await (await screens()).showCancelDeletion({ deletion: r.body?.deletion, api }); continue; }
+    if (lastError === 'account_suspended') { (await screens()).showNotice({ title: 'SUSPENDED', sub: 'アカウントが停止されています', lines: ['このアカウントは、運営者によって停止されています。心当たりがない場合は、運営者にお問い合わせください。'], actions: [{ label: 'ログアウト', run: () => logout() }] }); await new Promise(() => {}); }
+    if (lastError === 'platform_unconfigured' || lastError === 'db_unavailable') { (await screens()).showNotice({ title: 'UNAVAILABLE', sub: 'サービスを利用できません', lines: ['サーバーの設定またはデータベースに問題があります。しばらくしてからもう一度お試しください。'], actions: [{ label: '再読み込み', run: () => location.reload() }] }); await new Promise(() => {}); }
+    // account_deleted, login_required, invalid_token ...: this session is no good
+    await client.signOut();
+    await requireLogin({ notice: lastError === 'account_deleted' ? 'このアカウントは削除されました' : 'もう一度ログインしてください' });
+  }
+  return null;
 }
 
-/** Sign out this device (revokes its token on the server). */
-export async function logout() {
-  await api('/api/elvar/auth/logout', { method: 'POST', body: {} }).catch(() => {});
-  clearToken(); setProfileCache(null);
+/** Sign out. everywhere = every device; the data this browser holds for the user is erased (shared computers keep nothing). */
+export async function logout({ everywhere = false, erase = true } = {}) {
+  const ns = activeNs();
+  try { await client?.signOut({ scope: everywhere ? 'global' : 'local' }); } catch { /* dropped locally anyway */ }
+  ls.del(SECRET_KEY); setProfileCache(null);
+  if (erase) await clearUserLocal(ns);
+  leaveUser();
+  location.reload();
+  await new Promise(() => {});
 }
