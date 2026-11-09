@@ -32,16 +32,29 @@ test('every function but health refuses a request without a login, and a token o
   } finally { await h.stop(); }
 });
 
-test('/api/notif: a user or a device token with the right scope; the relay itself is "coming soon" for everybody', async () => {
+test('/api/notif: the encrypted relay per user - the phone (push token) uploads, the PC (login, or a pull token) downloads; B never reaches A\'s items; a push token cannot read or clear', async () => {
   const h = await startHarness();
   try {
-    const a = h.mkUser(), hd = await h.bearer(a), av = mintVerifiedUid(a, 'test');
-    const mk = async (scopes) => { const t = newDeviceToken(); await h.db.asUser(av, (r) => r.devices.create({ id: t.deviceId, name: 'p', tokenHash: t.hash, scopes })); return { 'x-elvar-token': t.token }; };
-    const push = await mk(['notif:push']), pull = await mk(['notif:pull']);
-    for (const [hdrs, method, want] of [[hd, 'GET', 503], [hd, 'POST', 503], [push, 'POST', 503], [pull, 'GET', 503], [push, 'GET', 401], [pull, 'POST', 401], [{ 'x-elvar-token': 'elv2.0000000000000000.' + 'a'.repeat(43) }, 'GET', 401]]) {
-      const r = await run('notif', method, hdrs); assert.equal(r.status, want, `${method} ${JSON.stringify(Object.keys(hdrs))}`);
-      if (want === 503) { assert.equal(r.body.error, 'coming_soon'); assert.match(r.body.message, /準備中/); }
-    }
+    const a = h.mkUser(), b = h.mkUser(), hA = await h.bearer(a), hB = await h.bearer(b), av = mintVerifiedUid(a, 'test'), bv = mintVerifiedUid(b, 'test');
+    const mk = async (v, scopes) => { const t = newDeviceToken(); await h.db.asUser(v, (r) => r.devices.create({ id: t.deviceId, name: 'p', tokenHash: t.hash, scopes })); return { 'x-elvar-token': t.token }; };
+    const push = await mk(av, ['notif:push']), pull = await mk(av, ['notif:pull']), pushB = await mk(bv, ['notif:push']);
+    const now = Date.now(), it = (id, at, ct) => ({ id, at, iv: 'AAAAAAAAAAAAAAAA', ct });
+    const A_CT = 'QUFBQS1SRUxBWS1DSVBIRVJURVhU';
+    assert.deepEqual((await run('notif', 'POST', push, { items: [it('n1-aaaa', now - 2000, A_CT), it('n2-aaaa', now - 1000, A_CT), { id: 'bad id', at: now, iv: 'x', ct: 'y' }] })).body, { stored: 2 });
+    assert.equal((await run('notif', 'POST', push, { items: [it('n1-aaaa', now - 2000, A_CT)] })).body.stored, 1, 'the same id is stored once (checked below)');
+    for (const hdr of [hA, pull]) { const r = await run('notif', 'GET', hdr, {}, '/api/notif?since=0'); assert.equal(r.status, 200); assert.deepEqual(r.body.items.map((x) => x.id), ['n1-aaaa', 'n2-aaaa']); }
+    assert.deepEqual((await run('notif', 'GET', hA, {}, '/api/notif?status=1')).body, { configured: true, reachable: true, stored: 2, keepDays: 3 });
+    // B: own login, and B's own phone, see and change only B's relay
+    assert.deepEqual((await run('notif', 'GET', hB, {}, '/api/notif?since=0')).body.items, [], 'B sees nothing of A\'s');
+    assert.equal((await run('notif', 'POST', pushB, { items: [it('n1-aaaa', now, 'QkJCQg-B-RELAY-CIPHERTEXT')] })).body.stored, 1, 'the same id as A\'s is B\'s own item');
+    assert.deepEqual((await run('notif', 'GET', hA, {}, '/api/notif?since=0')).body.items.map((x) => x.ct), [A_CT, A_CT], 'A\'s items are unchanged');
+    assert.equal((await run('notif', 'POST', hB, { action: 'clear' })).status, 200);
+    assert.equal((await run('notif', 'GET', hA, {}, '/api/notif?status=1')).body.stored, 2, 'B clearing the relay did not clear A\'s');
+    // scopes: a push token can neither read nor clear; a pull token cannot upload; unknown / forged tokens are refused
+    assert.equal((await run('notif', 'GET', push)).status, 401); assert.equal((await run('notif', 'POST', pull, { items: [it('n9-aaaa', now, A_CT)] })).status, 401);
+    assert.equal((await run('notif', 'POST', push, { action: 'clear' })).status, 403, 'the phone cannot wipe the relay');
+    assert.equal((await run('notif', 'GET', { 'x-elvar-token': 'elv2.0000000000000000.' + 'a'.repeat(43) })).status, 401);
+    assert.equal((await run('notif', 'POST', hA, { action: 'clear' })).body.cleared, true); assert.deepEqual((await run('notif', 'GET', hA, {}, '/api/notif?since=0')).body.items, []);
     assert.equal((await run('google-execute', 'POST', push, { tool: 'current_datetime' })).status, 401, 'a device token opens nothing but /api/notif');
   } finally { await h.stop(); }
 });

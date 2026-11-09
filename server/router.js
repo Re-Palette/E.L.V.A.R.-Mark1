@@ -14,6 +14,8 @@ import { getState } from './account/state.js';
 import * as GOOGLE from './google/connect.js';
 import * as CX from './connectors/api.js';
 import * as BUILDS from './account/builds.js';
+import * as MEM from './account/notes.js';
+import * as SYNC from './brain-sync.js';
 import * as ADMIN from './admin/api.js';
 import { dailyCron } from './admin/cron.js';
 import { authenticate } from './auth/with-user.js';
@@ -65,6 +67,38 @@ export const ROUTES = [
   { method: 'POST', path: '/api/elvar/connectors/:id/oauth/start', auth: 'user', handler: CX.oauthStart },
   { method: 'POST', path: '/api/elvar/connectors/:id/oauth/claim', auth: 'user', handler: CX.oauthClaim },
   { method: 'GET', path: '/api/elvar/oauth/callback', auth: 'state', handler: CX.oauthCallback },
+  // ---- the second brain (P4): the user's own notes - view, edit, trash, delete, older versions, search. The AI tools use the same notes but cannot delete.
+  { method: 'GET', path: '/api/elvar/notes', auth: 'user', handler: MEM.listNotes },
+  { method: 'POST', path: '/api/elvar/notes', auth: 'user', handler: MEM.createNote },
+  { method: 'GET', path: '/api/elvar/notes/graph', auth: 'user', handler: MEM.notesGraph },
+  { method: 'GET', path: '/api/elvar/notes/projects', auth: 'user', handler: MEM.notesProjects },
+  { method: 'POST', path: '/api/elvar/notes/trash/empty', auth: 'user', handler: MEM.emptyTrash },
+  { method: 'POST', path: '/api/elvar/notes/delete-all', auth: 'user', handler: MEM.deleteAllNotes },
+  { method: 'GET', path: '/api/elvar/notes/:id', auth: 'user', handler: MEM.getNote },
+  { method: 'PUT', path: '/api/elvar/notes/:id', auth: 'user', handler: MEM.updateNote },
+  { method: 'DELETE', path: '/api/elvar/notes/:id', auth: 'user', handler: MEM.deleteNote },
+  { method: 'POST', path: '/api/elvar/notes/:id/restore', auth: 'user', handler: MEM.restoreNote },
+  { method: 'GET', path: '/api/elvar/notes/:id/revisions/:rev', auth: 'user', handler: MEM.getRevision },
+  { method: 'POST', path: '/api/elvar/notes/:id/revisions/:rev/restore', auth: 'user', handler: MEM.restoreRevision },
+  // ---- the conversation log (short-term memory): per user, with a retention setting, one-by-one and bulk deletion
+  { method: 'POST', path: '/api/elvar/messages', auth: 'user', handler: MEM.postMessages },
+  { method: 'GET', path: '/api/elvar/messages', auth: 'user', handler: MEM.listMessages },
+  { method: 'POST', path: '/api/elvar/messages/purge', auth: 'user', handler: MEM.purgeMessages },
+  { method: 'DELETE', path: '/api/elvar/messages/:id', auth: 'user', handler: MEM.deleteMessage },
+  { method: 'GET', path: '/api/elvar/conversations', auth: 'user', handler: MEM.listConversations },
+  { method: 'GET', path: '/api/elvar/conversations/:id', auth: 'user', handler: MEM.getConversation },
+  { method: 'DELETE', path: '/api/elvar/conversations/:id', auth: 'user', handler: MEM.deleteConversation },
+  // ---- the notification box (the bell panel)
+  { method: 'GET', path: '/api/elvar/inbox', auth: 'user', handler: MEM.listInbox },
+  { method: 'POST', path: '/api/elvar/inbox', auth: 'user', handler: MEM.addInbox },
+  { method: 'DELETE', path: '/api/elvar/inbox', auth: 'user', handler: MEM.clearInbox },
+  { method: 'POST', path: '/api/elvar/inbox/read-all', auth: 'user', handler: MEM.readAllInbox },
+  { method: 'PATCH', path: '/api/elvar/inbox/:id', auth: 'user', handler: MEM.patchInbox },
+  { method: 'DELETE', path: '/api/elvar/inbox/:id', auth: 'user', handler: MEM.deleteInbox },
+  // ---- optional: mirror / import the notes with the user's OWN GitHub repository and token (connector github-brain)
+  { method: 'GET', path: '/api/elvar/brain-sync/status', auth: 'user', handler: SYNC.syncStatusRoute },
+  { method: 'POST', path: '/api/elvar/brain-sync/import', auth: 'user', handler: SYNC.syncImportRoute },
+  { method: 'POST', path: '/api/elvar/brain-sync/push', auth: 'user', handler: SYNC.syncPushRoute },
   // ---- build requests (Claude Code through the user's own GitHub repository)
   { method: 'GET', path: '/api/elvar/builds', auth: 'user', handler: BUILDS.listBuilds },
   { method: 'DELETE', path: '/api/elvar/builds/:id', auth: 'user', handler: BUILDS.deleteBuild },

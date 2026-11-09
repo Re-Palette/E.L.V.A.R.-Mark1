@@ -39,6 +39,8 @@ export const KEYS = [
   setting('BRAIN_REPO', 'brain', 'Second-brain repository (owner/name)', ''),
   setting('BRAIN_BRANCH', 'brain', 'Second-brain branch', 'main'),
   setting('BRAIN_DIR', 'brain', 'Second-brain sub folder', ''),
+  setting('BRAIN_MIRROR', 'brain', 'Mirror my notes to my own GitHub repository (1 = on; needs BRAIN_REPO and BRAIN_GITHUB_TOKEN)', ''),
+  setting('MESSAGE_RETENTION_DAYS', 'memory', 'Days the conversation log is kept (7 to 99999; 0 = for ever; default 180)', '180'),
   setting('BUILD_REPO', 'build', 'Build repository (owner/name)', ''),
   setting('BUILD_SELF_REPO', 'build', 'Repository for requests about this app itself (owner/name)', ''),
   setting('CLAUDE_SESSION_RUN_LIMIT', 'build', 'Claude Code runs per 5 hours (guide)', ''),

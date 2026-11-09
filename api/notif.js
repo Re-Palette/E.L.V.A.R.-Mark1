@@ -1,9 +1,10 @@
-// Vercel Function: GET/POST /api/notif  (see vercel.json rewrites). Relay of phone notifications to the PC: a signed-in user, or the user's own device token
-// (scope notif:push to upload, notif:pull to download). The relay itself moves to the database in P4; until then it answers "coming soon" after the caller has
-// been authenticated (nothing is read or written).
+// Vercel Function: GET/POST /api/notif  (see vercel.json rewrites). Encrypted relay of phone notifications to the PC, per user: a signed-in user, or the user's
+// own device token (scope notif:push to upload, notif:pull to download). Ciphertext only (server/notif-relay.js).
 import { sendJson } from '../server/http.js';
 import { withUserOrDevice } from '../server/auth/with-user.js';
-import { comingSoon } from '../server/account/coming-soon.js';
+import { handleNotif } from '../server/notif-relay.js';
 
-const soon = comingSoon('notifications');
-export default withUserOrDevice((req) => (req.method === 'GET' ? 'notif:pull' : 'notif:push'))(async (req, res) => { sendJson(res, soon()); });
+export default withUserOrDevice((req) => (req.method === 'GET' ? 'notif:pull' : 'notif:push'))(async (req, res, ctx) => {
+  const q = Object.fromEntries(new URL(req.url, 'http://x').searchParams);
+  sendJson(res, await handleNotif({ user: ctx, method: req.method, query: q, body: req.body && typeof req.body === 'object' ? req.body : {} }));
+});

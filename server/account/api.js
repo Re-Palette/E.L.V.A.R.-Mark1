@@ -41,6 +41,8 @@ const SHAPES = [
   [/^GOOGLE_SERVICES$/, new RegExp(`^(${SERVICE_IDS.join('|')})(,(${SERVICE_IDS.join('|')}))*$`), '選べないサービスが入っています'],
   [/^GOOGLE_READONLY$/, /^1$/, '1 か空にしてください'],
   [/^GOOGLE_CLIENT_ID$/, /^[A-Za-z0-9][A-Za-z0-9._-]{4,199}$/, 'クライアントIDの形式が正しくありません'],
+  [/^MESSAGE_RETENTION_DAYS$/, /^(0|[7-9]|[1-9][0-9]{1,4})$/, '7〜99999 日、または 0（ずっと残す）で入力してください'],
+  [/^BRAIN_MIRROR$/, /^1$/, '1 か空にしてください'],
   [/_REPO$/, /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/, 'owner/name の形で入力してください'],
   [/MODEL/, /^[A-Za-z0-9][A-Za-z0-9_.:-]*(\/[A-Za-z0-9][A-Za-z0-9_.:-]*)?$/, 'モデル名の形式が正しくありません'],
   [/_(URL|ORIGIN|HOST|ENDPOINT)$/, /^$/, 'このアドレスはアプリからは変更できません'],
@@ -123,7 +125,7 @@ export async function getSession({ user, cfg }) {
     notifSecret,
     google: { state: googleState(googleConfig(cfgEnv, cfg.google)) },
     missing: ['GEMINI_API_KEY'].filter((n) => !st[n]?.set),
-    comingSoon: ['notifications-sync', 'files-sync'],
+    comingSoon: ['files-sync'],
     version: VERSION,
   } };
 }

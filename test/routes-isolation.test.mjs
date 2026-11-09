@@ -12,6 +12,8 @@ const A_NAME = 'A-PRIVATE-PERSONA-NAME';
 // P3: A's own Google client (decision O2), Google login, connector and build request
 const A_CLIENT = 'a-private-client-0001.apps.googleusercontent.com', B_CLIENT = 'b-own-client-0002.apps.googleusercontent.com', A_GSECRET = 'google-secret-A-PRIVATE-0001', B_GSECRET = 'google-secret-B-OWN-0002';
 const A_REFRESH = 'A-GOOGLE-REFRESH-TOKEN-xyz', A_CX_NAME = 'A-PRIVATE-CONNECTOR', A_CX_TOKEN = 'A-CONNECTOR-BEARER-TOKEN-777', A_CX_HOST = 'a-private.example.com', A_BUILD = 'A-PRIVATE-BUILD', A_BUILD_REPO = 'a-user/private-builds';
+// P4: A's notes (with an older version), conversation, notification box and relay item
+const A_NOTE_PATH = 'A-PRIVATE-FOLDER/secret-plan.md', A_NOTE_TEXT = 'A-PRIVATE-NOTE-BODY-12345', A_NOTE_OLD = 'A-PRIVATE-OLDER-VERSION-777', A_MSG = 'A-PRIVATE-MESSAGE-WORDS', A_INBOX = 'A-PRIVATE-INBOX-TITLE', A_RELAY_CT = 'QUFBQS1SRUxBWS1DSVBIRVJURVhU';
 const ORIGIN = 'https://elvar.example.test';
 
 /** A stand-in for Google's token and revoke endpoints (the only network the Google routes use here). */
@@ -52,13 +54,23 @@ async function world(h) {
   try { await connectGoogle(h, A, A_CLIENT, A_GSECRET); } finally { g.restore(); }
   const cx = (await h.call('POST', '/api/elvar/connectors', A, cxDraft(A_CX_NAME, A_CX_TOKEN))); assert.equal(cx.status, 200, JSON.stringify(cx.body));
   const build = await h.db.asUser(mintVerifiedUid(a, 'test'), (r) => r.builds.record({ repo: A_BUILD_REPO, issueNumber: 7, title: A_BUILD }));
+  const mem = await h.db.asUser(mintVerifiedUid(a, 'test'), async (r) => {
+    await r.notes.put({ path: A_NOTE_PATH, content: A_NOTE_OLD }); const note = await r.notes.put({ path: A_NOTE_PATH, content: A_NOTE_TEXT });
+    const trashed = await r.notes.put({ path: 'A-PRIVATE-FOLDER/trashed.md', content: 'A-TRASHED-BODY' }); await r.notes.trash(trashed.id);
+    const c = await r.messages.append({ turns: [{ role: 'user', text: A_MSG, at: Date.now() }] });
+    const msg = (await r.messages.conversation(c.conversationId)).messages[0];
+    const inbox = await r.inbox.add({ title: A_INBOX, body: 'A-INBOX-BODY' });
+    await r.notif.push([{ id: 'n1-aaaa', at: Date.now(), iv: 'AAAAAAAAAAAAAAAA', ct: A_RELAY_CT }]);
+    return { noteId: note.id, trashedId: trashed.id, convId: c.conversationId, msgId: msg.id, inboxId: inbox.id };
+  });
   const snapshotA = async () => JSON.stringify([(await h.call('GET', '/api/elvar/config', A)).body, (await h.call('GET', '/api/elvar/profile', A)).body, (await h.call('GET', '/api/elvar/devices', A)).body, (await h.call('GET', '/api/elvar/usage', A)).body,
-    (await h.call('GET', '/api/elvar/connect/google/status', A)).body, (await h.call('GET', '/api/elvar/connectors', A)).body, (await h.call('GET', '/api/elvar/builds', A)).body]);
-  return { a, b, A, B, dev, snapshotA, cx: cx.body.connector, build };
+    (await h.call('GET', '/api/elvar/connect/google/status', A)).body, (await h.call('GET', '/api/elvar/connectors', A)).body, (await h.call('GET', '/api/elvar/builds', A)).body,
+    await h.db.asUser(mintVerifiedUid(a, 'test'), async (r) => [await r.notes.list(), await r.notes.list({ trash: true }), await r.notes.revisions(mem.noteId), await r.messages.conversations({}), await r.messages.count(), await r.inbox.list({}), await r.notif.pull({ since: 0 })])]);
+  return { a, b, A, B, dev, snapshotA, cx: cx.body.connector, build, mem };
 }
 const noA = (value, w) => {
   const t = typeof value === 'string' ? value : JSON.stringify(value);
-  for (const s of [A_KEY, A_NAME, 'Alice-Secret-Name', 'a-user/private-notes', 'a-phone', w.dev.id, w.dev.token, w.a, A_CLIENT, A_GSECRET, A_REFRESH, A_CX_NAME, A_CX_TOKEN, A_CX_HOST, A_BUILD, A_BUILD_REPO, w.cx.id, w.build.id]) assert.ok(!t.includes(s), `B's answer contains ${s}`);
+  for (const s of [A_KEY, A_NAME, 'Alice-Secret-Name', 'a-user/private-notes', 'a-phone', w.dev.id, w.dev.token, w.a, A_CLIENT, A_GSECRET, A_REFRESH, A_CX_NAME, A_CX_TOKEN, A_CX_HOST, A_BUILD, A_BUILD_REPO, w.cx.id, w.build.id, A_NOTE_PATH, A_NOTE_TEXT, A_NOTE_OLD, A_MSG, A_INBOX, A_RELAY_CT, 'A-TRASHED-BODY', 'A-INBOX-BODY', w.mem.noteId, w.mem.convId, w.mem.inboxId]) assert.ok(!t.includes(s), `B's answer contains ${s}`);
 };
 
 // "METHOD /path" -> async (h, w) => void
@@ -172,6 +184,94 @@ Object.assign(CASES, {
     assert.equal((await h.call('GET', '/api/elvar/builds', w.A)).body.builds.length, 1, 'A\'s build request is still there');
   },
 });
+
+// ---- P4: notes, conversation log, notification box, GitHub mirror. B calls each route with A's ids and A's words and reaches nothing of A's.
+const U = (id) => id;
+Object.assign(CASES, {
+  'GET /api/elvar/notes': async (h, w) => {
+    const r = await h.call('GET', '/api/elvar/notes', w.B); assert.deepEqual(r.body.notes, []); noA(r.body, w);
+    assert.deepEqual((await h.call('GET', '/api/elvar/notes', w.B, {}, { trash: '1' })).body.notes, [], 'A\'s trash is not B\'s trash');
+    const q = await h.call('GET', '/api/elvar/notes', w.B, {}, { q: 'A-PRIVATE-NOTE-BODY-12345 secret-plan' }); assert.deepEqual(q.body.results, [], 'B\'s search finds nothing of A\'s'); noA(q.body, w);
+    assert.equal((await h.call('GET', '/api/elvar/notes', w.A, {}, { q: 'A-PRIVATE-NOTE-BODY-12345' })).body.results.length, 1, 'and A finds their own');
+  },
+  'POST /api/elvar/notes': async (h, w) => {
+    const before = await w.snapshotA();
+    const r = await h.call('POST', '/api/elvar/notes', w.B, { path: A_NOTE_PATH, content: 'B writes the same path' }); assert.equal(r.status, 200); assert.ok(!JSON.stringify(r.body).includes(A_NOTE_TEXT) && !JSON.stringify(r.body).includes(A_NOTE_OLD)); assert.notEqual(r.body.note.id, w.mem.noteId, 'the same path is a different note');
+    assert.equal(await w.snapshotA(), before, 'A\'s note at that path is untouched');
+    assert.equal((await h.call('POST', '/api/elvar/notes', w.B, { path: A_NOTE_PATH, content: 'again' })).status, 409);
+  },
+  'GET /api/elvar/notes/graph': async (h, w) => { const r = await h.call('GET', '/api/elvar/notes/graph', w.B); assert.deepEqual(r.body.nodes, []); noA(r.body, w); },
+  'GET /api/elvar/notes/projects': async (h, w) => { const r = await h.call('GET', '/api/elvar/notes/projects', w.B); assert.deepEqual(r.body.projects, []); noA(r.body, w); },
+  'POST /api/elvar/notes/trash/empty': async (h, w) => {
+    const before = await w.snapshotA(); const r = await h.call('POST', '/api/elvar/notes/trash/empty', w.B, {}); assert.equal(r.body.deleted, 0); assert.equal(await w.snapshotA(), before, 'A\'s trash is untouched');
+  },
+  'POST /api/elvar/notes/delete-all': async (h, w) => {
+    assert.equal((await h.call('POST', '/api/elvar/notes/delete-all', w.B, {})).status, 400, 'needs the confirmation');
+    const before = await w.snapshotA(); const r = await h.call('POST', '/api/elvar/notes/delete-all', w.B, { confirm: 'delete' }); assert.equal(r.body.deleted, 0); assert.equal(await w.snapshotA(), before, 'A\'s notes survive B\'s delete-all');
+  },
+  'GET /api/elvar/notes/:id': async (h, w) => { for (const id of [w.mem.noteId, w.mem.trashedId]) { const r = await h.call('GET', `/api/elvar/notes/${id}`, w.B); assert.equal(r.status, 404); noA(r.body, w); } assert.equal((await h.call('GET', `/api/elvar/notes/${w.mem.noteId}`, w.A)).status, 200); },
+  'PUT /api/elvar/notes/:id': async (h, w) => {
+    const before = await w.snapshotA(); const r = await h.call('PUT', `/api/elvar/notes/${w.mem.noteId}`, w.B, { content: 'B OVERWRITES A' }); assert.equal(r.status, 404); assert.equal(await w.snapshotA(), before, 'A\'s note is unchanged');
+  },
+  'DELETE /api/elvar/notes/:id': async (h, w) => {
+    const before = await w.snapshotA();
+    for (const q of [{}, { permanent: '1' }]) assert.equal((await h.call('DELETE', `/api/elvar/notes/${w.mem.noteId}`, w.B, {}, q)).status, 404);
+    assert.equal((await h.call('DELETE', `/api/elvar/notes/${w.mem.trashedId}`, w.B, {}, { permanent: '1' })).status, 404);
+    assert.equal(await w.snapshotA(), before, 'A\'s notes are still there');
+  },
+  'POST /api/elvar/notes/:id/restore': async (h, w) => { const before = await w.snapshotA(); assert.equal((await h.call('POST', `/api/elvar/notes/${w.mem.trashedId}/restore`, w.B, {})).status, 404); assert.equal(await w.snapshotA(), before, 'A\'s trashed note is still in the trash'); },
+  'GET /api/elvar/notes/:id/revisions/:rev': async (h, w) => { const r = await h.call('GET', `/api/elvar/notes/${w.mem.noteId}/revisions/1`, w.B); assert.equal(r.status, 404); noA(r.body, w); assert.equal((await h.call('GET', `/api/elvar/notes/${w.mem.noteId}/revisions/1`, w.A)).body.revision.content, A_NOTE_OLD); },
+  'POST /api/elvar/notes/:id/revisions/:rev/restore': async (h, w) => { const before = await w.snapshotA(); assert.equal((await h.call('POST', `/api/elvar/notes/${w.mem.noteId}/revisions/1/restore`, w.B, {})).status, 404); assert.equal(await w.snapshotA(), before); },
+  'POST /api/elvar/messages': async (h, w) => {
+    const before = await w.snapshotA();
+    const r = await h.call('POST', '/api/elvar/messages', w.B, { turns: [{ at: Date.now(), user: 'Bの発言 パスワードは hunter2xyz9', model: 'Bへの返事' }] }); assert.equal(r.status, 200); assert.notEqual(r.body.conversationId, w.mem.convId, 'B never joins A\'s conversation');
+    assert.equal(await w.snapshotA(), before, 'nothing was added to A\'s log');
+    assert.ok(!JSON.stringify((await h.call('GET', '/api/elvar/messages', w.B)).body).includes('hunter2xyz9'), 'secrets are masked before they are stored');
+    assert.equal((await h.call('POST', '/api/elvar/messages', w.B, { turns: [] })).status, 400);
+  },
+  'GET /api/elvar/messages': async (h, w) => {
+    const r = await h.call('GET', '/api/elvar/messages', w.B); assert.deepEqual(r.body.messages, []); noA(r.body, w);
+    assert.deepEqual((await h.call('GET', '/api/elvar/messages', w.B, {}, { q: 'A-PRIVATE-MESSAGE-WORDS' })).body.messages, [], 'B\'s search finds nothing of A\'s');
+    assert.equal((await h.call('GET', '/api/elvar/messages', w.A, {}, { q: 'A-PRIVATE-MESSAGE-WORDS' })).body.messages.length, 1);
+  },
+  'POST /api/elvar/messages/purge': async (h, w) => {
+    const before = await w.snapshotA();
+    assert.equal((await h.call('POST', '/api/elvar/messages/purge', w.B, { all: true })).body.deleted, 0);
+    assert.equal((await h.call('POST', '/api/elvar/messages/purge', w.B, { before: new Date(Date.now() + 864e5).toISOString() })).body.deleted, 0);
+    assert.equal(await w.snapshotA(), before, 'A\'s messages survive B\'s purge');
+  },
+  'DELETE /api/elvar/messages/:id': async (h, w) => { const before = await w.snapshotA(); assert.equal((await h.call('DELETE', `/api/elvar/messages/${w.mem.msgId}`, w.B)).status, 404); assert.equal(await w.snapshotA(), before); },
+  'GET /api/elvar/conversations': async (h, w) => { const r = await h.call('GET', '/api/elvar/conversations', w.B); assert.deepEqual(r.body.conversations, []); noA(r.body, w); },
+  'GET /api/elvar/conversations/:id': async (h, w) => { const r = await h.call('GET', `/api/elvar/conversations/${w.mem.convId}`, w.B); assert.equal(r.status, 404); noA(r.body, w); assert.equal((await h.call('GET', `/api/elvar/conversations/${w.mem.convId}`, w.A)).body.conversation.messages[0].text, A_MSG); },
+  'DELETE /api/elvar/conversations/:id': async (h, w) => { const before = await w.snapshotA(); assert.equal((await h.call('DELETE', `/api/elvar/conversations/${w.mem.convId}`, w.B)).status, 404); assert.equal(await w.snapshotA(), before); },
+  'GET /api/elvar/inbox': async (h, w) => { const r = await h.call('GET', '/api/elvar/inbox', w.B); assert.deepEqual(r.body.items, []); noA(r.body, w); },
+  'POST /api/elvar/inbox': async (h, w) => {
+    const before = await w.snapshotA(); const r = await h.call('POST', '/api/elvar/inbox', w.B, { title: 'B-INBOX', key: 'x' }); assert.equal(r.status, 200); assert.equal(await w.snapshotA(), before);
+    assert.equal((await h.call('POST', '/api/elvar/inbox', w.B, { title: '', kind: 'zzz' })).status, 400);
+  },
+  'DELETE /api/elvar/inbox': async (h, w) => { const before = await w.snapshotA(); assert.equal((await h.call('DELETE', '/api/elvar/inbox', w.B)).body.deleted, 0); assert.equal(await w.snapshotA(), before, 'A\'s box is not cleared by B'); },
+  'POST /api/elvar/inbox/read-all': async (h, w) => { const before = await w.snapshotA(); assert.equal((await h.call('POST', '/api/elvar/inbox/read-all', w.B, {})).body.marked, 0); assert.equal(await w.snapshotA(), before, 'A\'s items stay unread'); },
+  'PATCH /api/elvar/inbox/:id': async (h, w) => { const before = await w.snapshotA(); assert.equal((await h.call('PATCH', `/api/elvar/inbox/${w.mem.inboxId}`, w.B, { read: true })).status, 404); assert.equal(await w.snapshotA(), before); },
+  'DELETE /api/elvar/inbox/:id': async (h, w) => { const before = await w.snapshotA(); assert.equal((await h.call('DELETE', `/api/elvar/inbox/${w.mem.inboxId}`, w.B)).status, 404); assert.equal(await w.snapshotA(), before); },
+  'GET /api/elvar/brain-sync/status': async (h, w) => {
+    await h.call('PATCH', '/api/elvar/config', w.A, { settings: { BRAIN_REPO: 'a-user/private-notes' }, secrets: { BRAIN_GITHUB_TOKEN: 'ghp_A_PRIVATE_TOKEN_0000000000' } });
+    const r = await h.call('GET', '/api/elvar/brain-sync/status', w.B); assert.deepEqual(r.body, { configured: false, repo: null, mirror: false, unpushed: 0 }); noA(r.body, w);
+    const a = await h.call('GET', '/api/elvar/brain-sync/status', w.A); assert.equal(a.body.configured, true); assert.equal(a.body.unpushed, 1, 'A\'s notes are waiting to be mirrored; B sees nothing of it');
+  },
+  'POST /api/elvar/brain-sync/import': async (h, w) => {
+    await h.call('PATCH', '/api/elvar/config', w.A, { settings: { BRAIN_REPO: 'a-user/private-notes' }, secrets: { BRAIN_GITHUB_TOKEN: 'ghp_A_PRIVATE_TOKEN_0000000000' } });
+    const real = globalThis.fetch, seen = []; globalThis.fetch = async (u, o = {}) => { seen.push([String(u), o.headers?.authorization]); throw new Error('no network'); };
+    try { const r = await h.call('POST', '/api/elvar/brain-sync/import', w.B, {}); assert.equal(r.status, 400); assert.equal(r.body.error, 'not_configured'); assert.deepEqual(seen, [], 'B has no repository and no token: nothing was called, and A\'s token was never used'); } finally { globalThis.fetch = real; }
+  },
+  'POST /api/elvar/brain-sync/push': async (h, w) => {
+    await h.call('PATCH', '/api/elvar/config', w.A, { settings: { BRAIN_REPO: 'a-user/private-notes' }, secrets: { BRAIN_GITHUB_TOKEN: 'ghp_A_PRIVATE_TOKEN_0000000000' } });
+    const real = globalThis.fetch, seen = []; globalThis.fetch = async (u, o = {}) => { seen.push([String(u), o.headers?.authorization]); throw new Error('no network'); };
+    try { const r = await h.call('POST', '/api/elvar/brain-sync/push', w.B, { force: true }); assert.equal(r.status, 400); assert.deepEqual(seen, []); } finally { globalThis.fetch = real; }
+    assert.equal((await w.snapshotA()).includes('ghp_A_PRIVATE'), false);
+  },
+});
+void U;
+
 
 const keyOf = (r) => `${r.method} ${r.path}`;
 const testable = ROUTES.filter((r) => isUserAuth(r.auth) && r.auth !== 'cron');
