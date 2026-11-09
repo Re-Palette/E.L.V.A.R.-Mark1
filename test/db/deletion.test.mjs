@@ -75,3 +75,23 @@ test('audit_log.actor_id references auth.users and is set to null when that user
   await deleteUser(subject);
   assert.equal((await admin`select count(*)::int as n from app.audit_log where user_id = ${subject}`)[0].n, 0);
 });
+
+test('P5: purging an account (real Postgres + a Storage that holds its objects) removes the rows AND every object, and the residual check counts objects too', async () => {
+  const { createMemoryStorage } = await import('../../server/storage/memory.js'), { purgeAccount } = await import('../../server/rights/purge.js');
+  const u = await newUser(), other = await newUser(), U = mintVerifiedUid(u, 'purge');
+  const st = createMemoryStorage({ canInsert: () => true, baseUrl: () => 'https://x.supabase.test' });
+  const add = async (uid, name) => {
+    const V = mintVerifiedUid(uid, 'purge'), content = name + uid, sha = (await import('node:crypto')).createHash('sha256').update(content).digest('hex');
+    const r = await db.asUser(V, (x) => x.files.reserve({ name, mime: 'text/plain', kind: 'text', size: content.length, sha256: sha, textBytes: 3 }));
+    st.testing.put(r.objectPath, Buffer.from(content)); await db.asUser(V, (x) => x.files.finalize(r.fileId, { size: content.length, text: 'abc' })); return r.objectPath;
+  };
+  await add(u, 'one.txt'); await add(u, 'two.txt'); const keep = await add(other, 'keep.txt');
+  st.testing.put(`users/${u}/exports/j1/part-1.zip`, Buffer.from('z'), { bucket: 'user-exports' });
+  const before = await residualCheck(db, U, { storage: st }); assert.equal(before.clean, false); assert.deepEqual(before.storageLeft.map((o) => [o.bucket, o.n]), [['user-files', 2], ['user-exports', 1]]);
+  const res = await purgeAccount(db, u, { storage: st, revoke: [], deleteUser: async (uid) => deleteUser(uid) });
+  assert.equal(res.storageChecked, 3);
+  assert.deepEqual(st.testing.list().filter((k) => k.includes(`users/${u}/`)), [], 'nothing of the deleted user is left in Storage');
+  assert.ok(st.testing.has(keep), 'the other user\'s object is untouched');
+  const after = await residualCheck(db, U, { storage: st }); assert.equal(after.clean, true); assert.equal((await admin`select count(*)::int as n from app.files where user_id = ${u}`)[0].n, 0);
+  await deleteUser(other);
+});

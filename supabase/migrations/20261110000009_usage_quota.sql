@@ -47,8 +47,9 @@ create table app.storage_usage (
 );
 select app._secure('storage_usage', 'select');
 
+-- storage_usage's fixture runs first (order 5): the triggers of migration 07 keep adding to the row as the other fixtures (notes, files ...) are inserted.
 insert into app.data_registry (table_name, export_as, export_exclude, editable, counts_storage, fixture_order, fixture_sql) values
   ('usage_events', 'usage.json', '{}', false, false, 30, $f$insert into app.usage_events (user_id, provider, metric, amount, source) values ({{uid}}, 'gemini', 'calls', 1, 'server')$f$),
   ('usage_daily',  'usage.json', '{}', false, false, 30, $f$insert into app.usage_daily (user_id, day, provider, metric, amount) values ({{uid}}, current_date, 'gemini', 'calls', 1)$f$),
   ('usage_limits', 'usage.json', '{}', true,  false, 30, $f$insert into app.usage_limits (user_id, provider, metric, period, soft) values ({{uid}}, 'gemini', 'live_seconds', 'day', 3600)$f$),
-  ('storage_usage', 'usage.json', '{}', false, false, 30, $f$insert into app.storage_usage (user_id, files_bytes) values ({{uid}}, 1)$f$);
+  ('storage_usage', 'usage.json', '{}', false, false, 5, $f$insert into app.storage_usage (user_id, files_bytes) values ({{uid}}, 1)$f$);

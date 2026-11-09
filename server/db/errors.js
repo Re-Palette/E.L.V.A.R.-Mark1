@@ -16,6 +16,9 @@ export function mapPgError(e) {
   if (c === '42501') return dbError('forbidden', 403, e);                             // insufficient_privilege, also "violates row-level security policy"
   if (c === '55000') return dbError('conflict', 409, e);                            // object_not_in_prerequisite_state (e.g. the account is being deleted)
   if (c === 'P0002') return dbError('not_found', 404, e);                            // no_data_found raised by our definer functions
+  if (c === 'EQ001') return dbError('storage_quota_exceeded', 413, e);                // P5: the reservation / write would take the user over their storage quota
+  if (c === 'EQ002') return dbError('file_too_large', 413, e);                         // P5: over the per-file limit, or the size differs from the reservation
+  if (c === 'EQ003') return dbError('reservation_expired', 409, e);                    // P5: no live upload reservation (finished, expired or never made)
   if (c === '57014') return dbError('db_timeout', 503, e);                            // statement_timeout
   if (c.startsWith('08') || c === '53300' || c === '57P01' || c === '57P03' || /^(ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN)/.test(c) || /^(CONNECT|CONNECTION)_/.test(c)) return dbError('db_unavailable', 503, e);
   return dbError('db_error', 500, e);

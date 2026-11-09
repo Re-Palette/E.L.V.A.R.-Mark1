@@ -121,3 +121,51 @@ export function splitRuns(turns, gapMs) {
   for (const x of t) { const r = runs[runs.length - 1]; if (r && x.at - r[r.length - 1].at <= gapMs) r.push(x); else runs.push([x]); }
   return runs;
 }
+
+// ---- P5: the file vault
+export const FILE_KINDS = Object.freeze(['pdf', 'image', 'text', 'office', 'other']);
+export const FILE_MAX_BYTES = 62914560;          // O1: 60 MB per file (accounts.hard_limits.maxFileBytes can only lower it)
+export const FILE_TEXT_MAX_BYTES = 4000000;      // the extracted text of one file
+export const FILE_RESERVE_MINUTES = 30;
+export const FILE_ANALYSIS_MAX = 90000;          // characters of the JSON "memory" (the column check is 100000 bytes)
+const SHA_RE = /^[0-9a-f]{64}$/;
+export const isSha256 = (s) => typeof s === 'string' && SHA_RE.test(s);
+const plainText = (s, max, min = 0) => typeof s === 'string' && s.length >= min && s.length <= max && !/[\u0000-\u001f\u007f]/.test(s);
+export const fileName = (n) => { need(plainText(n, 200, 1) && !/[\\/]/.test(n)); return n; };
+/** { name, mime, kind, size, sha256, textBytes?, source?, allowDuplicate? } -> the validated reservation request. */
+export function fileReserveInput(x) {
+  need(x && typeof x === 'object');
+  fileName(x.name);
+  need(typeof x.mime === 'string' && x.mime.length >= 3 && x.mime.length <= 100 && /^[A-Za-z0-9.+\-/;= ]+$/.test(x.mime));
+  need(FILE_KINDS.includes(x.kind) && Number.isInteger(x.size) && x.size >= 1 && x.size <= FILE_MAX_BYTES && isSha256(x.sha256));
+  const textBytes = x.textBytes === undefined ? 0 : x.textBytes, source = x.source === undefined ? 'picker' : x.source;
+  need(Number.isInteger(textBytes) && textBytes >= 0 && textBytes <= FILE_TEXT_MAX_BYTES && typeof source === 'string' && /^[a-z0-9-]{1,40}$/.test(source));
+  return { name: x.name, mime: x.mime, kind: x.kind, size: x.size, sha256: x.sha256, textBytes, source, allowDuplicate: x.allowDuplicate === true };
+}
+const tagList = (t, max, each) => { need(Array.isArray(t) && t.length <= max && t.every((x) => plainText(x, each, 1))); return [...t]; };
+const relatedMark = (r) => { if (r === null) return null; need(r && typeof r === 'object' && !Array.isArray(r) && jsonLen(r) <= 1500); return r; };
+const analysisObj = (a) => { need(a && typeof a === 'object' && !Array.isArray(a) && jsonLen(a) <= FILE_ANALYSIS_MAX); return a; };
+/** The memory the browser worker built (finalize) or an owner's edit / a re-read (patch): only these keys, each checked. */
+export function filePatchInput(p, { allowName = true } = {}) {
+  need(p && typeof p === 'object' && !Array.isArray(p));
+  const out = {};
+  if (p.name !== undefined) { need(allowName); out.name = fileName(p.name); }
+  if (p.tags !== undefined) out.tags = tagList(p.tags, 30, 30);
+  if (p.memo !== undefined) { need(typeof p.memo === 'string' && p.memo.length <= 1000); out.memo = p.memo; }
+  if (p.kindLabel !== undefined) { need(p.kindLabel === null || plainText(p.kindLabel, 40)); out.kindLabel = p.kindLabel ?? ''; }
+  if (p.title !== undefined) { need(p.title === null || plainText(p.title, 200)); out.title = p.title; }
+  if (p.docKind !== undefined) { need(p.docKind === null || plainText(p.docKind, 40)); out.docKind = p.docKind; }
+  if (p.keywords !== undefined) out.keywords = tagList(p.keywords, 30, 60);
+  if (p.snippet !== undefined) { need(typeof p.snippet === 'string' && p.snippet.length <= 300); out.snippet = p.snippet; }
+  if (p.related !== undefined) out.related = relatedMark(p.related);
+  if (p.analysis !== undefined) out.analysis = analysisObj(p.analysis);
+  return out;
+}
+export function fileText(t) { need(typeof t === 'string' && Buffer.byteLength(t, 'utf8') <= FILE_TEXT_MAX_BYTES); return t; }
+export const FILE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export function fileFinalizeInput(x) {
+  need(x && typeof x === 'object');
+  const base = filePatchInput({ title: x.title ?? null, docKind: x.docKind ?? null, keywords: x.keywords ?? [], snippet: x.snippet ?? '', related: x.related ?? null, analysis: x.analysis ?? {} }, { allowName: false });
+  const text = x.text === undefined || x.text === null ? '' : fileText(x.text);
+  return { ...base, text };
+}

@@ -12,7 +12,7 @@ test('the registry is valid, frozen, unique, and every table fixture targets its
   assert.deepEqual(validateRegistry(), []);
   assert.equal(new Set(registryTables()).size, REGISTRY.length); assert.ok(Object.isFrozen(REGISTRY) && Object.isFrozen(REGISTRY[0]) && Object.isFrozen(REGISTRY[0].exportExclude));
   assert.equal(entryFor('profiles').exportAs, 'profile.json'); assert.equal(entryFor('nope'), null);
-  for (const e of REGISTRY) { assert.equal(e.ownerColumn, 'user_id', e.table); assert.equal(e.deleteVia, e.table === 'oauth_tokens' ? 'cascade+external' : 'cascade', e.table + ': only the tokens need an external revocation'); }
+  for (const e of REGISTRY) { assert.equal(e.ownerColumn, 'user_id', e.table); assert.equal(e.deleteVia, e.table === 'oauth_tokens' ? 'cascade+external' : e.table === 'files' ? 'cascade+storage' : 'cascade', e.table + ': only the tokens need an external revocation, only the files a Storage sweep'); }
 });
 
 test('validateRegistry catches a broken entry', () => {
@@ -42,7 +42,7 @@ test('export plan and redaction: ciphertext, token hashes and key material never
 
 test('residualCheck: clean only when every registered table is reported and empty', async () => {
   const db = createMemoryDb(), uid = db.testing.newUser(), U1 = mintVerifiedUid(uid, 'test');
-  assert.deepEqual(await residualCheck(db, U1), { clean: true, nonzero: [], missing: [], unknown: [], tablesChecked: REGISTRY.length });
+  assert.deepEqual(await residualCheck(db, U1), { clean: true, nonzero: [], missing: [], unknown: [], tablesChecked: REGISTRY.length, storage: [], storageLeft: [] }, 'without a storage only the tables are checked');
   await db.asUser(U1, (r) => r.profile.put({ a: 1 }));
   const dirty = await residualCheck(db, U1); assert.equal(dirty.clean, false); assert.deepEqual(dirty.nonzero, [{ table: 'profiles', n: 1 }]);
   db.testing.deleteUser(uid); assert.equal((await residualCheck(db, U1)).clean, true);

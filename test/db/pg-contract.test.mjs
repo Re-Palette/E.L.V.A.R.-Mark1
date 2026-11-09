@@ -13,4 +13,7 @@ runDbContract('postgres', async () => ({
   deleteUser: (uid) => deleteUser(uid),
   makeAdmin: async (uid) => { await admin`insert into app.admins (user_id) values (${uid}) on conflict do nothing`; },
   passTime: (ms) => sleep(ms),
+  setQuota: async (uid, bytes) => { await admin`insert into app.accounts (user_id) values (${uid}) on conflict do nothing`; await admin`update app.accounts set storage_quota_bytes = ${bytes} where user_id = ${uid}`; },
+  setHardLimits: async (uid, o) => { await admin`insert into app.accounts (user_id) values (${uid}) on conflict do nothing`; await admin`update app.accounts set hard_limits = ${admin.json(o)} where user_id = ${uid}`; },
+  expireReservations: async (uid) => { await admin`update app.files set reserved_until = now() - interval '10 minutes' where user_id = ${uid} and status = 'pending'`; },
 }));

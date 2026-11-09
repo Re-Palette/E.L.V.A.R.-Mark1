@@ -76,10 +76,10 @@ test('every SECURITY DEFINER function pins its search_path and has its execute r
   }
 });
 
-test('extensions: only the search migrations (05 notes, 06 conversations) create any, inside the available-or-fallback branch; pg_cron and pgvector are not used yet', () => {
+test('extensions: only the search migrations (05 notes, 06 conversations, 07 files) create any, inside the available-or-fallback branch; pg_cron and pgvector are not used yet', () => {
   for (const f of FILES) {
     const has = /create\s+extension/i.test(code(SQL[f]));
-    assert.equal(has, /_(notes|conversations)\.sql$/.test(f), `${f}: create extension is allowed only in the notes / conversations migrations`);
+    assert.equal(has, /_(notes|conversations|files)\.sql$/.test(f), `${f}: create extension is allowed only in the notes / conversations / files migrations`);
   }
   assert.match(code(SQL['20261110000005_notes.sql']), /pg_available_extensions[\s\S]*pgroonga[\s\S]*else[\s\S]*pg_trgm/i, 'PGroonga where it exists, a trigram index otherwise');
   assert.doesNotMatch(ALL, /\b(pg_cron|vector\s*\()/i);

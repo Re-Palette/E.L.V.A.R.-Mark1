@@ -69,8 +69,13 @@ export const REGISTRY = Object.freeze([
     fixtureSql: `insert into app.usage_daily (user_id, day, provider, metric, amount) values ({{uid}}, current_date, 'gemini', 'calls', 1)` },
   { table: 'usage_limits', exportAs: 'usage.json', exportExclude: [], editable: true, countsStorage: false, fixtureOrder: 30,
     fixtureSql: `insert into app.usage_limits (user_id, provider, metric, period, soft) values ({{uid}}, 'gemini', 'live_seconds', 'day', 3600)` },
-  { table: 'storage_usage', exportAs: 'usage.json', exportExclude: [], editable: false, countsStorage: false, fixtureOrder: 30,
+  { table: 'storage_usage', exportAs: 'usage.json', exportExclude: [], editable: false, countsStorage: false, fixtureOrder: 5,   // first: the storage triggers add to this row as the other fixtures go in
     fixtureSql: `insert into app.storage_usage (user_id, files_bytes) values ({{uid}}, 1)` },
+  // P5: the file vault (docs/ELVAR_MULTIUSER.md 3.3, 8.2): metadata + memory in app.files, the extracted text in app.file_texts, the originals in Storage (deleteVia cascade+storage)
+  { table: 'files', exportAs: 'files.json', exportExclude: [], editable: true, countsStorage: true, fixtureOrder: 30, deleteVia: 'cascade+storage',
+    fixtureSql: `insert into app.files (user_id, id, name, mime, kind, size_bytes, sha256, object_path, status) values ({{uid}}, md5('fixture-file-' || {{uid}}::text)::uuid, 'fixture.txt', 'text/plain', 'text', 7, repeat('a', 64), 'users/' || {{uid}}::text || '/files/' || md5('fixture-file-' || {{uid}}::text)::uuid::text || '/' || repeat('a', 64), 'ready')` },
+  { table: 'file_texts', exportAs: 'files.json', exportExclude: [], editable: true, countsStorage: true, fixtureOrder: 40,
+    fixtureSql: `insert into app.file_texts (user_id, file_id, text) values ({{uid}}, md5('fixture-file-' || {{uid}}::text)::uuid, 'fixture text')` },
   { table: 'export_jobs', exportAs: 'none', exportExclude: [], editable: false, countsStorage: false, fixtureOrder: 30,
     fixtureSql: `insert into app.export_jobs (user_id) values ({{uid}})` },
   { table: 'deletion_requests', exportAs: 'account.json', exportExclude: [], editable: false, countsStorage: false, fixtureOrder: 30,
@@ -101,9 +106,10 @@ export function exportPlan() {
   for (const e of REGISTRY) {
     if (e.exportAs === 'none') continue;
     if (!files.has(e.exportAs)) files.set(e.exportAs, []);
-    files.get(e.exportAs).push({ table: e.table, exclude: [...e.exportExclude] });
+    files.get(e.exportAs).push({ table: e.table, exclude: [...e.exportExclude], storage: e.deleteVia === 'cascade+storage' });
   }
-  return [...files].map(([file, tables]) => ({ file, tables }));
+  // `originals`: the file also carries objects that live in Storage (the uploaded files); the zip step copies them under files/ (docs 7.3)
+  return [...files].map(([file, tables]) => ({ file, tables, originals: tables.some((t) => t.storage) }));
 }
 
 /** Structural problems of the registry itself (empty list = fine). */

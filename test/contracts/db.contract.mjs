@@ -3,6 +3,8 @@
 //   runDbContract('memory', async () => ({ db, newUser, deleteUser, makeAdmin, passTime }))
 //     newUser()        -> uuid of a new auth user          deleteUser(uid)  what `delete from auth.users` does (the cascade)
 //     makeAdmin(uid)   -> a row in app.admins              passTime(ms)     advance the clock (memory) or really wait (Postgres)
+//     setQuota(uid, bytes) / setHardLimits(uid, obj)        what an admin sets (rows of app.accounts)
+//     expireReservations(uid)                               every upload reservation of the user runs out (memory: the clock moves, Postgres: reserved_until is set into the past)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -539,7 +541,7 @@ export function runDbContract(label, setup) {
     await db.asUser(C, (r) => r.accounts.requestDeletion(7));
     await assert.rejects(db.asUser(A, (r) => r.admin.setStatus(c, 'suspended')), code('conflict'), 'not while the user is deleting the account');
     // an admin does not get a way to read anything else through the repos: no method of `admin` returns content
-    assert.deepEqual(await db.asUser(A, async (r) => Object.keys(r.admin).sort()), ['listUsers', 'setStatus']);
+    assert.deepEqual(await db.asUser(A, async (r) => Object.keys(r.admin).sort()), ['listUsers', 'setQuota', 'setStatus']);
     assert.deepEqual(await db.asUser(A, (r) => r.profile.get()), null, 'an admin\'s repos are still only their own');
   });
 
@@ -671,5 +673,171 @@ export function runDbContract(label, setup) {
     assert.equal(await db.system.bootstrapAdmin('nobody-' + rnd(4).toString('hex') + '@example.test'), null);
     await db.system.recordReceipt(18);
     await assert.rejects(db.system.recordReceipt(-1));
+  });
+
+  // ------------------------------------------------------------------------------------------------------ P5: the file vault
+  const hex = (x) => crypto.createHash('sha256').update(String(x)).digest('hex');
+  const reqOf = (name, content, extra = {}) => ({ name, mime: 'text/plain', kind: 'text', size: Buffer.byteLength(content), sha256: hex(content), ...extra });
+  const fin = (content, extra = {}) => ({ size: Buffer.byteLength(content), text: '', ...extra });
+  /** reserve + finalize in one transaction each. @returns {Promise<string>} the file id */
+  async function addFile(db, U, name, content, { text = '', memory = {} } = {}) {
+    const res = await db.asUser(U, (r) => r.files.reserve(reqOf(name, content, { textBytes: Buffer.byteLength(text) })));
+    await db.asUser(U, (r) => r.files.finalize(res.fileId, fin(content, { text, ...memory })));
+    return res.fileId;
+  }
+
+  T('files: reserve is pending (reserved, not listed), finalize makes it ready with its memory and text, the path is built by the database, duplicates are answered per user', async ({ db, newUser }) => {
+    const { a, A, B } = await two({ newUser }), content = 'ファイルの中身 ' + rnd(4).toString('hex'), text = 'ファイルの本文 日本語';
+    const res = await db.asUser(A, (r) => r.files.reserve(reqOf('メモ.txt', content, { textBytes: Buffer.byteLength(text), source: 'drop' })));
+    assert.match(res.fileId, /^[0-9a-f-]{36}$/); assert.equal(res.objectPath, `users/${a}/files/${res.fileId}/${hex(content)}`); assert.ok(Date.parse(res.reservedUntil) > Date.now());
+    await db.asUser(A, async (r) => {
+      assert.deepEqual(await r.files.list(), [], 'a pending upload is not in the library');
+      assert.equal((await r.files.get(res.fileId)).status, 'pending');
+      const u = await r.usage.storage(); assert.equal(u.reservedBytes, Buffer.byteLength(content) + Buffer.byteLength(text)); assert.equal(u.filesBytes, 0);
+      assert.equal(await r.files.text(res.fileId), null, 'no text before it is finalized');
+    });
+    await db.asUser(A, (r) => r.files.finalize(res.fileId, { size: Buffer.byteLength(content), text, title: 'タイトル', docKind: '議事録', keywords: ['議事', '日本語'], snippet: 'ファイルの本文', analysis: { pages: 2, headings: ['見出し'] }, related: { id: 'x', name: 'old.txt', score: 0.7 } }));
+    await db.asUser(A, async (r) => {
+      const [f] = await r.files.list(); assert.equal(f.id, res.fileId); assert.equal(f.status, 'ready'); assert.equal(f.name, 'メモ.txt'); assert.equal(f.source, 'drop'); assert.equal(f.size, Buffer.byteLength(content));
+      assert.deepEqual([f.title, f.docKind, f.keywords, f.snippet, f.analysis, f.related, f.tags, f.memo, f.kindLabel], ['タイトル', '議事録', ['議事', '日本語'], 'ファイルの本文', { pages: 2, headings: ['見出し'] }, { id: 'x', name: 'old.txt', score: 0.7 }, [], '', null]);
+      assert.equal(await r.files.text(res.fileId), text); assert.equal((await r.files.findBySha(hex(content))).id, res.fileId); assert.equal(await r.files.count(), 1);
+      assert.deepEqual(await r.usage.storage(), { filesBytes: Buffer.byteLength(content), textBytes: Buffer.byteLength(text), notesBytes: 0, messagesBytes: 0, reservedBytes: 0 });
+      await r.files.finalize(res.fileId, { size: Buffer.byteLength(content), text: 'ignored' });   // idempotent: a file that is ready stays as it is
+      assert.equal(await r.files.text(res.fileId), text);
+      assert.deepEqual(await r.files.reserve(reqOf('copy.txt', content)), { duplicate: { id: res.fileId, name: 'メモ.txt' } }, 'the same content: the existing file is named');
+      const again = await r.files.reserve(reqOf('copy.txt', content, { allowDuplicate: true })); assert.notEqual(again.fileId, res.fileId); await r.files.beginDelete(again.fileId); await r.files.finishDelete(again.fileId);
+    });
+    await db.asUser(B, async (r) => { const mine = await r.files.reserve(reqOf('b.txt', content)); assert.ok(mine.fileId && !mine.duplicate, 'B has no such file: nothing about A is revealed'); assert.equal(mine.objectPath.split('/')[1], (await r.accounts.get() ?? { userId: r.uid }).userId ?? r.uid); await r.files.beginDelete(mine.fileId); await r.files.finishDelete(mine.fileId); });
+  });
+
+  T('files: another user reaches nothing - get / list / text / search / finalize / patch / delete are all "not there", and A\'s file is unchanged', async ({ db, newUser }) => {
+    const { A, B } = await two({ newUser }), content = 'secret ' + rnd(4).toString('hex'), id = await addFile(db, A, 'secret.txt', content, { text: 'secretword zebra', memory: { keywords: ['zebra'] } });
+    const pend = (await db.asUser(A, (r) => r.files.reserve(reqOf('pending.txt', 'p' + content)))).fileId;
+    await db.asUser(B, async (r) => {
+      for (const x of [id, pend]) { assert.equal(await r.files.get(x), null); assert.equal(await r.files.text(x), null); assert.equal(await r.files.beginDelete(x), null); assert.equal(await r.files.finishDelete(x), false); }
+      assert.deepEqual(await r.files.list(), []); assert.equal(await r.files.findBySha(hex(content)), null); assert.equal((await r.files.searchText(['zebra'])).size, 0); assert.equal(await r.files.count(), 0);
+      await assert.rejects(r.files.finalize(pend, fin('p' + content)), code('not_found')); await assert.rejects(r.files.patch(id, { memo: 'B WAS HERE' }), code('not_found')); await assert.rejects(r.files.patch(id, {}, { text: 'B', setText: true }), code('not_found'));
+      assert.deepEqual(await r.files.stale(), []); assert.deepEqual(await r.files.allPaths(), []); assert.deepEqual(await r.usage.storage(), { filesBytes: 0, textBytes: 0, notesBytes: 0, messagesBytes: 0, reservedBytes: 0 });
+    });
+    await db.asUser(A, async (r) => { const f = await r.files.get(id); assert.equal(f.status, 'ready'); assert.equal(f.memo, ''); assert.equal(await r.files.text(id), 'secretword zebra'); assert.equal((await r.files.get(pend)).status, 'pending'); assert.deepEqual([...(await r.files.searchText(['zebra'])).keys()], [id]); });
+  });
+
+  T('files: the quota counts files, extracted text, reserved uploads, notes with their versions and messages; a refused reservation reserves nothing; an expired one gives its room back', async ({ db, newUser, setQuota, expireReservations }) => {
+    const uid = await newUser(), U = mint(uid);
+    await db.asUser(U, (r) => r.accounts.ensure()); await setQuota(uid, 1000);
+    const f1 = await db.asUser(U, (r) => r.files.reserve(reqOf('a.txt', 'a'.repeat(600))));
+    await db.asUser(U, async (r) => {
+      await assert.rejects(r.files.reserve(reqOf('b.txt', 'b'.repeat(500))), code('storage_quota_exceeded'));
+      await assert.rejects(r.files.reserve(reqOf('c.txt', 'c'.repeat(300), { textBytes: 200 })), code('storage_quota_exceeded'));   // 600 + 300 + 200 > 1000
+    });
+    assert.equal((await db.asUser(U, (r) => r.usage.storage())).reservedBytes, 600, 'a refused request leaves no reservation behind');
+    await db.asUser(U, (r) => r.files.finalize(f1.fileId, fin('a'.repeat(600))));
+    const f2 = await db.asUser(U, (r) => r.files.reserve(reqOf('d.txt', 'd'.repeat(300), { textBytes: 100 })));   // 600 + 400 = 1000: exactly full
+    await db.asUser(U, async (r) => {
+      assert.equal((await r.usage.storage()).reservedBytes, 400);
+      await assert.rejects(r.files.finalize(f2.fileId, { size: 300, text: 'x'.repeat(101) }), code('storage_quota_exceeded'));   // more text than announced
+      await assert.rejects(r.files.finalize(f2.fileId, { size: 299, text: '' }), code('file_too_large'));                          // a size that differs from the reservation
+      await assert.rejects(r.files.reserve(reqOf('e.txt', 'e')), code('storage_quota_exceeded'));
+      await assert.rejects(r.notes.put({ path: 'n.md', content: 'note' }), code('storage_quota_exceeded'));                         // notes and messages share the same meter (the P4 TODO)
+      await assert.rejects(r.messages.append({ turns: [{ role: 'user', text: 'hi', at: Date.now() }] }), code('storage_quota_exceeded'));
+    });
+    await expireReservations(uid);
+    await db.asUser(U, async (r) => {
+      assert.deepEqual((await r.files.stale()).map((x) => x.id), [f2.fileId], 'the abandoned upload is listed for cleanup (its object must be removed first)');
+      await assert.rejects(r.files.finalize(f2.fileId, fin('d'.repeat(300))), code('reservation_expired'));
+      assert.equal(await r.files.finishDelete(f2.fileId), true); assert.deepEqual(await r.usage.storage(), { filesBytes: 600, textBytes: 0, notesBytes: 0, messagesBytes: 0, reservedBytes: 0 });
+      await r.notes.put({ path: 'n.md', content: 'note' }); await r.notes.put({ path: 'n.md', content: 'note two' });
+      await r.messages.append({ turns: [{ role: 'user', text: 'こんにちは', at: Date.now() }] });
+      assert.deepEqual(await r.usage.storage(), { filesBytes: 600, textBytes: 0, notesBytes: 4 + 8, messagesBytes: Buffer.byteLength('こんにちは'), reservedBytes: 0 }, 'a note and its older version both count');
+    });
+    await setQuota(uid, 100);
+    await db.asUser(U, async (r) => { await assert.rejects(r.files.reserve(reqOf('f.txt', 'f')), code('storage_quota_exceeded')); await r.accounts.get(); });
+  });
+
+  T('files: the per-file limit is 60 MB and an admin can only lower it; empty, oversized and badly named requests are refused by the database layer', async ({ db, newUser, setHardLimits }) => {
+    const uid = await newUser(), U = mint(uid);
+    await db.asUser(U, async (r) => {
+      await assert.rejects(r.files.reserve({ ...reqOf('big.txt', 'x'), size: 60 * 1024 * 1024 + 1 }), code('invalid_value'));
+      for (const bad of [{ size: 0 }, { size: 1.5 }, { name: '' }, { name: 'a/b.txt' }, { name: 'a\\b.txt' }, { name: 'a\nb.txt' }, { sha256: 'xyz' }, { kind: 'script' }, { textBytes: -1 }, { textBytes: 5_000_000 }, { source: 'Bad Source!' }]) await assert.rejects(r.files.reserve({ ...reqOf('ok.txt', 'ok'), ...bad }), code('invalid_value'), JSON.stringify(bad));
+      const okAtLimit = await r.files.reserve({ ...reqOf('limit.txt', 'x'), size: 60 * 1024 * 1024 }); await r.files.beginDelete(okAtLimit.fileId); await r.files.finishDelete(okAtLimit.fileId);
+    });
+    await setHardLimits(uid, { maxFileBytes: 100 });
+    await db.asUser(U, async (r) => {
+      await assert.rejects(r.files.reserve({ ...reqOf('x.txt', 'x'), size: 101 }), code('file_too_large'));
+      const ok = await r.files.reserve({ ...reqOf('y.txt', 'y'), size: 100 }); assert.ok(ok.fileId);
+    });
+    await setHardLimits(uid, { maxFileBytes: 999999999999 });
+    await db.asUser(U, (r) => assert.rejects(r.files.reserve({ ...reqOf('z.txt', 'z'), size: 62914561 }), code('invalid_value'), 'a higher limit than 60 MB cannot be set by an admin'));
+  });
+
+  T('files: edits (name, tags, memo, kind label, memory fields, text) change only the owner\'s ready file; the text edit follows the quota; invalid input is refused', async ({ db, newUser, setQuota }) => {
+    const uid = await newUser(), U = mint(uid), id = await addFile(db, U, 'e.txt', 'content-e', { text: 'tt' });
+    await db.asUser(U, async (r) => {
+      await r.files.patch(id, { name: 'renamed.txt', tags: ['経費', '2026'], memo: 'メモ', kindLabel: '契約書', title: 'T', docKind: '手紙', keywords: ['k'], snippet: 's', related: { id: 'q', name: 'n', score: 0.5 }, analysis: { summaryAI: '要約', n: 1 } });
+      await r.files.patch(id, { analysis: { n: 2, ocrAI: true } });
+      const f = await r.files.get(id); assert.deepEqual([f.name, f.tags, f.memo, f.kindLabel, f.title, f.docKind, f.keywords, f.snippet, f.related, f.analysis], ['renamed.txt', ['経費', '2026'], 'メモ', '契約書', 'T', '手紙', ['k'], 's', { id: 'q', name: 'n', score: 0.5 }, { summaryAI: '要約', n: 2, ocrAI: true }], 'analysis is merged');
+      await r.files.patch(id, { kindLabel: '', related: null }); const g = await r.files.get(id); assert.equal(g.kindLabel, null); assert.equal(g.related, null);
+      for (const bad of [{ tags: Array(31).fill('t') }, { memo: 'm'.repeat(1001) }, { name: 'a/b' }, { analysis: 'x' }, { keywords: 'k' }, { snippet: 's'.repeat(301) }]) await assert.rejects(r.files.patch(id, bad), code('invalid_value'));
+      await r.files.patch(id, {}, { text: 'new text 日本語', setText: true }); assert.equal(await r.files.text(id), 'new text 日本語');
+      assert.equal((await r.usage.storage()).textBytes, Buffer.byteLength('new text 日本語'));
+      await r.files.patch(id, {}, { text: '', setText: true }); assert.equal(await r.files.text(id), null); assert.equal((await r.usage.storage()).textBytes, 0);
+    });
+    await setQuota(uid, 9 + 3);
+    await db.asUser(U, async (r) => { await assert.rejects(r.files.patch(id, {}, { text: 'abcd', setText: true }), code('storage_quota_exceeded')); await r.files.patch(id, {}, { text: 'abc', setText: true }); });
+    await db.asUser(U, async (r) => { const p = await r.files.beginDelete(id); assert.ok(p); await assert.rejects(r.files.patch(id, { memo: 'x' }), code('not_found'), 'a file that is being deleted cannot be edited'); await r.files.finishDelete(id); });
+  });
+
+  T('files: delete is two steps - hidden at once, the bytes stay counted until the object is gone; a pending upload can be cancelled the same way', async ({ db, newUser }) => {
+    const { A } = await two({ newUser }), id = await addFile(db, A, 'del.txt', 'delete-me ' + rnd(3).toString('hex'), { text: 'abc' }), pend = (await db.asUser(A, (r) => r.files.reserve(reqOf('pend.txt', 'pending ' + rnd(3).toString('hex'))))).fileId;
+    const before = await db.asUser(A, (r) => r.usage.storage());
+    const path = await db.asUser(A, (r) => r.files.beginDelete(id)); assert.match(path, /^users\/[0-9a-f-]{36}\/files\//);
+    await db.asUser(A, async (r) => {
+      assert.deepEqual(await r.files.list(), [], 'hidden from the library'); assert.equal(await r.files.text(id), null); assert.equal((await r.files.get(id)).status, 'deleting');
+      assert.deepEqual(await r.usage.storage(), before, 'but the bytes are still counted: the object has not been removed yet'); assert.deepEqual((await r.files.stale()).map((x) => x.objectPath), [path]);
+      assert.equal(await r.files.finishDelete(pend), false, 'a live reservation is not dropped by finishDelete unless it was begun');
+      assert.equal(await r.files.finishDelete(id), true); assert.equal(await r.files.finishDelete(id), false); assert.equal(await r.files.get(id), null);
+      assert.equal((await r.usage.storage()).filesBytes, 0); assert.equal((await r.usage.storage()).textBytes, 0);
+      assert.ok(await r.files.beginDelete(pend)); assert.equal(await r.files.finishDelete(pend), true); assert.equal((await r.usage.storage()).reservedBytes, 0);
+    });
+  });
+
+  T('files: the account owns its files - deleting the user removes the rows, the texts and the counters; the residual check is zero; B\'s file survives; the cron helpers sweep abandoned rows', async ({ db, newUser, deleteUser, expireReservations }) => {
+    const { a, A, B } = await two({ newUser }), ida = await addFile(db, A, 'a.txt', 'A-content ' + rnd(3).toString('hex'), { text: 'aaa' }), idb = await addFile(db, B, 'b.txt', 'B-content ' + rnd(3).toString('hex'), { text: 'bbb' });
+    const stale = (await db.asUser(A, (r) => r.files.reserve(reqOf('stale.txt', 'stale ' + rnd(3).toString('hex'))))).fileId, gone = await addFile(db, A, 'gone.txt', 'gone ' + rnd(3).toString('hex'));
+    await db.asUser(A, (r) => r.files.beginDelete(gone));
+    await expireReservations(a);   // beyond the 5 minutes of grace the daily sweep gives a reservation
+    const rows = (await db.system.staleFiles(100)).filter((x) => x.userId === a); assert.deepEqual(rows.map((x) => x.id).sort(), [stale, gone].sort(), 'deleting + abandoned reservations, nothing else');
+    assert.ok(rows.every((x) => x.objectPath.startsWith(`users/${a}/files/`)));
+    assert.equal(await db.system.dropStaleFile(a, ida), false, 'a ready file is never dropped by the sweep'); assert.equal(await db.system.dropStaleFile(a, stale), true); assert.equal(await db.system.dropStaleFile(a, gone), true);
+    const run = await db.asUser(A, (r) => r.usage.storage()); await db.system.reconcileStorage();   // (other tests' users may be corrected too: fixtures write their own figures)
+    assert.deepEqual(await db.asUser(A, (r) => r.usage.storage()), run, 'the running counters equal a recount from the tables');
+    assert.equal((await residualCheck(db, mint(a))).nonzero.some((x) => x.table === 'files'), true);
+    await deleteUser(a);
+    const res = await residualCheck(db, mint(a)); assert.equal(res.clean, true, JSON.stringify(res.nonzero));
+    await db.asUser(B, async (r) => { assert.equal((await r.files.get(idb)).name, 'b.txt'); assert.equal(await r.files.text(idb), 'bbb'); assert.equal((await r.usage.storage()).filesBytes, Buffer.byteLength('B-content ') + 6); });
+  });
+
+  T('files: search candidates are the caller\'s own ready files whose text contains a term (case-insensitively); a file being deleted is not found', async ({ db, newUser }) => {
+    const { A, B } = await two({ newUser }), k = 'zz' + rnd(3).toString('hex');
+    const one = await addFile(db, A, 'one.txt', 'one ' + k, { text: `alpha ${k.toUpperCase()} beta` }), two2 = await addFile(db, A, 'two.txt', 'two ' + k, { text: 'nothing here' }), gone = await addFile(db, A, 'gone.txt', 'gone ' + k, { text: `gone ${k}` });
+    await addFile(db, B, 'b.txt', 'b ' + k, { text: `b ${k}` });
+    await db.asUser(A, async (r) => {
+      assert.deepEqual([...(await r.files.searchText([k])).keys()].sort(), [gone, one].sort()); assert.equal((await r.files.searchText([k])).get(one), `alpha ${k.toUpperCase()} beta`);
+      await r.files.beginDelete(gone); assert.deepEqual([...(await r.files.searchText([k])).keys()], [one]);
+      assert.equal((await r.files.searchText(['100%_match', 'a\\b'])).size, 0, 'LIKE wildcards in a term are literal');
+      await assert.rejects(r.files.searchText([]), code('invalid_value'));
+    });
+    void two2;
+  });
+
+  T('files: an admin sets one user\'s quota (recorded in that user\'s audit log, a number and never content); a user cannot', async ({ db, newUser, makeAdmin }) => {
+    const { a, b, A, B } = await two({ newUser }); await makeAdmin(b);
+    await db.asUser(A, (r) => r.accounts.ensure()); await assert.rejects(db.asUser(A, (r) => r.admin.setQuota(b, 1)), code('forbidden'));
+    assert.equal(await db.asUser(B, (r) => r.admin.setQuota(a, 123456)), 123456);
+    assert.equal((await db.asUser(A, (r) => r.accounts.get())).storageQuotaBytes, 123456);
+    const audit = (await db.asUser(A, (r) => r.audit.list({}))).find((x) => x.action === 'account.quota_changed'); assert.equal(audit.actor, 'admin'); assert.equal(audit.actorId, b); assert.deepEqual(audit.meta, { from: 524288000, to: 123456 });
+    for (const bad of [-1, 1.5, 2 ** 41, '5', null]) await assert.rejects(db.asUser(B, (r) => r.admin.setQuota(a, bad)), code('invalid_value'));
+    await assert.rejects(db.asUser(B, (r) => r.admin.setQuota(crypto.randomUUID(), 5)), code('not_found'));
+    assert.equal((await db.asUser(B, (r) => r.admin.listUsers({}))).find((u) => u.userId === a).storageQuotaBytes, 123456);
   });
 }

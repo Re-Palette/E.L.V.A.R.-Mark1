@@ -46,12 +46,35 @@ export function createMemoryDb({ now = null } = {}) {
   const find = (t, uid, pred = () => true) => tables[t].find((r) => r.user_id === uid && pred(r));
   const remove = (t, pred) => { const n = tables[t].length; tables[t] = tables[t].filter((r) => !pred(r)); return n - tables[t].length; };
   const live = (r) => r.expires_at > clock();
-  // the same rule as the Postgres repos: notes + revisions + messages must stay within the account's storage quota (default 500 MB)
-  const assertRoom = (uid, grow) => {
-    const a = find('accounts', uid), quota = a ? a.storage_quota_bytes : DEFAULT_QUOTA, size = (t) => Buffer.byteLength(t, 'utf8');
-    const used = rows('notes', uid).reduce((x, n) => x + size(n.content), 0) + rows('note_revisions', uid).reduce((x, n) => x + size(n.content), 0) + rows('messages', uid).reduce((x, n) => x + size(n.text), 0);
-    if (used + grow > quota) throw dbError('storage_quota_exceeded', 413);
+  // the same figures as the triggers of migration 07 keep in app.storage_usage: files (ready + deleting), reserved uploads, extracted texts, notes + revisions, messages
+  const size = (t) => Buffer.byteLength(t, 'utf8');
+  const sumOf = (list, f) => list.reduce((x, r) => x + f(r), 0);
+  const usageOf = (uid) => {
+    const fl = rows('files', uid);
+    return { filesBytes: sumOf(fl.filter((f) => f.status !== 'pending'), (f) => f.size_bytes), reservedBytes: sumOf(fl.filter((f) => f.status === 'pending'), (f) => f.reserved_bytes),
+      textBytes: sumOf(rows('file_texts', uid), (t) => size(t.text)), notesBytes: sumOf(rows('notes', uid), (n) => size(n.content)) + sumOf(rows('note_revisions', uid), (n) => size(n.content)),
+      messagesBytes: sumOf(rows('messages', uid), (m) => size(m.text)) };
   };
+  const usedTotal = (u) => u.filesBytes + u.reservedBytes + u.textBytes + u.notesBytes + u.messagesBytes;
+  /** Keep the storage_usage row in step (what the triggers do); created once the user has any counted byte. */
+  const syncUsage = (uid) => {
+    const u = usageOf(uid), cur = find('storage_usage', uid), row = { files_bytes: u.filesBytes, text_bytes: u.textBytes, notes_bytes: u.notesBytes, messages_bytes: u.messagesBytes, reserved_bytes: u.reservedBytes };
+    if (cur) { const changed = Object.entries(row).some(([k, v]) => cur[k] !== v); Object.assign(cur, row); return changed; }
+    if (usedTotal(u) > 0 && users.has(uid)) tables.storage_usage.push({ user_id: uid, ...row });
+    return false;
+  };
+  // the same rule as the Postgres repos: everything that counts must stay within the account's storage quota (default 500 MB)
+  const assertRoom = (uid, grow) => {
+    const a = find('accounts', uid), quota = a ? a.storage_quota_bytes : DEFAULT_QUOTA;
+    if (usedTotal(usageOf(uid)) + grow > quota) throw dbError('storage_quota_exceeded', 413);
+  };
+  const fileRow = (f) => ({
+    id: f.id, name: f.name, mime: f.mime, kind: f.kind, size: f.size_bytes, sha256: f.sha256, status: f.status, source: f.source, objectPath: f.object_path,
+    title: f.title, docKind: f.doc_kind, kindLabel: f.kind_label, tags: [...f.tags], memo: f.memo, keywords: [...f.keywords], snippet: f.snippet, analysis: clone(f.analysis),
+    related: f.related === null ? null : clone(f.related), reservedUntil: f.reserved_until === null ? null : iso(f.reserved_until), createdAt: iso(f.created_at),
+    finalizedAt: f.finalized_at === null ? null : iso(f.finalized_at), updatedAt: iso(f.updated_at),
+  });
+  const STALE_GRACE_MS = 5 * 60_000;
 
   function repos(uid, hooks = []) {
     return {
@@ -92,6 +115,16 @@ export function createMemoryDb({ now = null } = {}) {
               storageQuotaBytes: a?.storage_quota_bytes ?? DEFAULT_QUOTA, storageUsedBytes: su ? su.files_bytes + su.text_bytes + su.notes_bytes + su.messages_bytes : 0,
               callsToday: sum((r) => r.day === day && r.metric === 'calls'), liveSecondsToday: sum((r) => r.day === day && r.metric === 'live_seconds'), calls30d: sum((r) => r.day >= since && r.metric === 'calls') };
           });
+        },
+        async setQuota(userId, bytes) {
+          if (!find('admins', uid)) throw dbError('forbidden', 403);
+          V.need(typeof userId === 'string' && UUID_RE.test(userId) && Number.isInteger(bytes) && bytes >= 0 && bytes <= 1099511627776);
+          if (!users.has(userId)) throw dbError('not_found', 404);
+          let a = tables.accounts.find((r) => r.user_id === userId);
+          if (!a) { a = { user_id: userId, status: 'active', storage_quota_bytes: DEFAULT_QUOTA, hard_limits: {}, suspended_reason: null, created_at: clock() }; tables.accounts.push(a); }
+          const from = a.storage_quota_bytes; a.storage_quota_bytes = bytes;
+          tables.audit_log.push({ user_id: userId, id: ++auditSeq, at: clock(), actor: 'admin', actor_id: uid, action: 'account.quota_changed', target: null, meta: { from, to: bytes } });
+          return bytes;
         },
         async setStatus(userId, status, reason = null) {
           if (!find('admins', uid)) throw dbError('forbidden', 403);
@@ -389,6 +422,75 @@ export function createMemoryDb({ now = null } = {}) {
         },
         async del({ provider, metric, period }) { return remove('usage_limits', (r) => r.user_id === uid && r.provider === provider && r.metric === metric && r.period === period) > 0; },
       },
+      /** The file vault (P5): the same rules as the Postgres functions of migration 07. */
+      files: {
+        async reserve(x) {
+          const v = V.fileReserveInput(x);
+          if (!users.has(uid)) throw dbError('invalid_reference', 409);
+          let a = find('accounts', uid);
+          if (!a) { a = { user_id: uid, status: 'active', storage_quota_bytes: DEFAULT_QUOTA, hard_limits: {}, suspended_reason: null, created_at: clock() }; tables.accounts.push(a); }
+          if (a.status !== 'active') throw dbError('conflict', 409);
+          const hl = a.hard_limits?.maxFileBytes, maxf = Math.min(V.FILE_MAX_BYTES, typeof hl === 'number' && hl >= 0 ? hl : V.FILE_MAX_BYTES);
+          if (v.size > maxf) throw dbError('file_too_large', 413);
+          if (!v.allowDuplicate) { const d = rows('files', uid).filter((f) => f.sha256 === v.sha256 && f.status === 'ready').sort((p, q) => p.created_at - q.created_at)[0]; if (d) return { duplicate: { id: d.id, name: d.name } }; }
+          if (rows('files', uid).filter((f) => f.status === 'pending' && f.reserved_until > clock()).length >= 20) throw dbError('conflict', 409);
+          if (usedTotal(usageOf(uid)) + v.size + v.textBytes > a.storage_quota_bytes) throw dbError('storage_quota_exceeded', 413);
+          const id = crypto.randomUUID(), objectPath = `users/${uid}/files/${id}/${v.sha256}`, until = clock() + V.FILE_RESERVE_MINUTES * 60_000;
+          tables.files.push({ user_id: uid, id, name: v.name, mime: v.mime, kind: v.kind, size_bytes: v.size, sha256: v.sha256, object_path: objectPath, status: 'pending', reserved_bytes: v.size + v.textBytes,
+            reserved_until: until, source: v.source, title: null, doc_kind: null, kind_label: null, tags: [], memo: '', keywords: [], snippet: '', analysis: {}, related: null, created_at: clock(), finalized_at: null, updated_at: clock() });
+          return { fileId: id, objectPath, reservedUntil: iso(until) };
+        },
+        async finalize(id, input) {
+          V.need(V.FILE_ID_RE.test(String(id))); const v = V.fileFinalizeInput(input); V.need(Number.isInteger(input?.size) && input.size >= 1);
+          const f = find('files', uid, (r) => r.id === id); if (!f) throw dbError('not_found', 404);
+          if (f.status === 'ready') return;
+          if (f.status !== 'pending' || f.reserved_until === null || f.reserved_until < clock()) throw dbError('reservation_expired', 409);
+          if (input.size !== f.size_bytes) throw dbError('file_too_large', 413);
+          const tb = size(v.text); if (tb > f.reserved_bytes - f.size_bytes) throw dbError('storage_quota_exceeded', 413);
+          Object.assign(f, { status: 'ready', finalized_at: clock(), reserved_until: null, updated_at: clock(), title: v.title ?? null, doc_kind: v.docKind ?? null, keywords: v.keywords ?? [], snippet: v.snippet ?? '', analysis: clone(v.analysis ?? {}), related: v.related ?? null });
+          if (tb > 0) { remove('file_texts', (t) => t.user_id === uid && t.file_id === id); tables.file_texts.push({ user_id: uid, file_id: id, text: v.text }); }
+        },
+        async patch(id, patch, { text = null, setText = false } = {}) {
+          V.need(V.FILE_ID_RE.test(String(id))); const p = V.filePatchInput(patch); if (setText) V.fileText(text ?? '');
+          const f = find('files', uid, (r) => r.id === id && r.status === 'ready'); if (!f) throw dbError('not_found', 404);
+          if (setText) {
+            const old = find('file_texts', uid, (t) => t.file_id === id), oldB = old ? size(old.text) : 0, nb = size(text ?? '');
+            const a = find('accounts', uid), quota = a ? a.storage_quota_bytes : DEFAULT_QUOTA;
+            if (nb > oldB && usedTotal(usageOf(uid)) + (nb - oldB) > quota) throw dbError('storage_quota_exceeded', 413);
+            remove('file_texts', (t) => t.user_id === uid && t.file_id === id); if (nb > 0) tables.file_texts.push({ user_id: uid, file_id: id, text });
+          }
+          if (p.name !== undefined) f.name = p.name;
+          if (p.tags !== undefined) f.tags = p.tags;
+          if (p.memo !== undefined) f.memo = p.memo;
+          if (p.kindLabel !== undefined) f.kind_label = p.kindLabel || null;
+          if (p.title !== undefined) f.title = p.title;
+          if (p.docKind !== undefined) f.doc_kind = p.docKind;
+          if (p.keywords !== undefined) f.keywords = p.keywords;
+          if (p.snippet !== undefined) f.snippet = p.snippet;
+          if (p.related !== undefined) f.related = p.related;
+          if (p.analysis !== undefined) f.analysis = { ...f.analysis, ...clone(p.analysis) };
+          f.updated_at = clock();
+        },
+        async get(id) { V.need(V.FILE_ID_RE.test(String(id))); const f = find('files', uid, (r) => r.id === id); return f ? fileRow(f) : null; },
+        async list({ limit = 5000 } = {}) { V.need(Number.isInteger(limit) && limit >= 1 && limit <= 20000); return rows('files', uid).filter((f) => f.status === 'ready').sort((a, b) => b.created_at - a.created_at || (a.id < b.id ? -1 : 1)).slice(0, limit).map(fileRow); },
+        async findBySha(sha) { V.need(V.isSha256(sha)); const f = rows('files', uid).filter((r) => r.sha256 === sha && r.status === 'ready').sort((a, b) => a.created_at - b.created_at)[0]; return f ? fileRow(f) : null; },
+        async text(id) { V.need(V.FILE_ID_RE.test(String(id))); const f = find('files', uid, (r) => r.id === id && r.status === 'ready'); const t = f && find('file_texts', uid, (x) => x.file_id === id); return t ? t.text : null; },
+        async searchText(terms, { limit = 200 } = {}) {
+          const t = V.searchTerms(terms).map((x) => x.toLowerCase()); V.need(Number.isInteger(limit) && limit >= 1 && limit <= 300);
+          const out = new Map();
+          for (const f of rows('files', uid).filter((r) => r.status === 'ready')) { const x = find('file_texts', uid, (r) => r.file_id === f.id); if (x && t.some((w) => x.text.toLowerCase().includes(w))) { out.set(f.id, x.text.slice(0, 200000)); if (out.size >= limit) break; } }
+          return out;
+        },
+        async count() { return rows('files', uid).filter((f) => f.status === 'ready').length; },
+        async beginDelete(id) { V.need(V.FILE_ID_RE.test(String(id))); const f = find('files', uid, (r) => r.id === id); if (!f) return null; f.status = 'deleting'; f.reserved_until = null; f.updated_at = clock(); return f.object_path; },
+        async finishDelete(id) {
+          V.need(V.FILE_ID_RE.test(String(id)));
+          return remove('files', (f) => f.user_id === uid && f.id === id && (f.status === 'deleting' || (f.status === 'pending' && (f.reserved_until === null || f.reserved_until < clock())))) > 0 && (remove('file_texts', (t) => t.user_id === uid && t.file_id === id), true);   // the text cascades
+        },
+        async stale() { return rows('files', uid).filter((f) => f.status === 'deleting' || (f.status === 'pending' && f.reserved_until < clock())).map((f) => ({ id: f.id, objectPath: f.object_path })); },
+        async allPaths() { return rows('files', uid).map((f) => ({ id: f.id, objectPath: f.object_path })); },
+      },
+
       usage: {
         async record({ provider, metric, amount = 1, source = 'server' }) {
           V.need(typeof provider === 'string' && provider.length >= 1 && provider.length <= 40 && typeof metric === 'string' && metric.length >= 1 && metric.length <= 40
@@ -399,7 +501,7 @@ export function createMemoryDb({ now = null } = {}) {
           if (d) d.amount += amount; else tables.usage_daily.push({ user_id: uid, day, provider, metric, amount });
         },
         async daily({ from, to }) { return rows('usage_daily', uid).filter((r) => r.day >= from && r.day <= to).sort((a, b) => `${a.day}|${a.provider}|${a.metric}`.localeCompare(`${b.day}|${b.provider}|${b.metric}`)).map((r) => ({ day: r.day, provider: r.provider, metric: r.metric, amount: r.amount })); },
-        async storage() { const r = find('storage_usage', uid); return r ? { filesBytes: r.files_bytes, textBytes: r.text_bytes, notesBytes: r.notes_bytes, messagesBytes: r.messages_bytes, reservedBytes: r.reserved_bytes } : { filesBytes: 0, textBytes: 0, notesBytes: 0, messagesBytes: 0, reservedBytes: 0 }; },
+        async storage() { return usageOf(uid); },
       },
     };
   }
@@ -421,6 +523,17 @@ export function createMemoryDb({ now = null } = {}) {
       if (!r) { r = { bucket, who: w, window_start: start, n: 0, user_id: uid, expires_at: start + windowSec * 2000 }; tables.rate_limits.push(r); }
       return ++r.n;
     },
+    async staleFiles(limit = 200) {
+      V.need(Number.isInteger(limit) && limit >= 1 && limit <= 1000);
+      return tables.files.filter((f) => f.status === 'deleting' || (f.status === 'pending' && f.reserved_until < clock() - STALE_GRACE_MS)).sort((a, b) => a.updated_at - b.updated_at).slice(0, limit).map((f) => ({ userId: f.user_id, id: f.id, objectPath: f.object_path }));
+    },
+    async dropStaleFile(userId, id) {
+      V.need(UUID_RE.test(userId) && UUID_RE.test(id));
+      const n = remove('files', (f) => f.user_id === userId && f.id === id && (f.status === 'deleting' || (f.status === 'pending' && f.reserved_until < clock() - STALE_GRACE_MS)));
+      if (n) { remove('file_texts', (t) => t.user_id === userId && t.file_id === id); syncUsage(userId); }   // the trigger of the real database
+      return n > 0;
+    },
+    async reconcileStorage() { let n = 0; for (const r of [...tables.storage_usage]) if (syncUsage(r.user_id)) n++; return n; },
     async purgeExpired() {
       return {
         kv_ephemeral: remove('kv_ephemeral', (r) => r.expires_at <= clock()), rate_limits: remove('rate_limits', (r) => r.expires_at <= clock()),
@@ -460,6 +573,7 @@ export function createMemoryDb({ now = null } = {}) {
       try {
         const out = await fn(repos(uid, hooks));
         checkKeyReferences(uid);   // what the deferred composite foreign key checks at COMMIT
+        syncUsage(uid);            // what the storage triggers keep up to date
         for (const h of hooks) { try { await h(); } catch { /* ignore */ } }
         return out;
       } catch (e) {   // roll back this user's rows (only theirs: a concurrent request of another user is not touched)
@@ -479,9 +593,13 @@ export function createMemoryDb({ now = null } = {}) {
       /** What `delete from auth.users` does: every row of the user goes (on delete cascade). */
       deleteUser(uid) { users.delete(uid); profilesOfUsers.delete(uid); for (const e of REGISTRY) tables[e.table] = tables[e.table].filter((r) => r[e.ownerColumn] !== uid); },
       setQuota(uid, bytes) { const r = find('accounts', uid) || (tables.accounts.push({ user_id: uid, status: 'active', storage_quota_bytes: DEFAULT_QUOTA, hard_limits: {}, suspended_reason: null, created_at: clock() }), find('accounts', uid)); r.storage_quota_bytes = bytes; },
+      setHardLimits(uid, limits) { const r = find('accounts', uid) || (tables.accounts.push({ user_id: uid, status: 'active', storage_quota_bytes: DEFAULT_QUOTA, hard_limits: {}, suspended_reason: null, created_at: clock() }), find('accounts', uid)); r.hard_limits = clone(limits); },
       setAccountStatus(uid, status) { const r = find('accounts', uid); if (r) r.status = status; },
       makeAdmin(uid) { if (!find('admins', uid)) tables.admins.push({ user_id: uid, granted_by: null, granted_at: clock() }); },
       advance(ms) { offset += ms; },
+      /** What the Storage policy files_upload asks the database: does this user have a live reservation for exactly this path? */
+      hasReservation: (uid, path) => tables.files.some((f) => f.user_id === uid && f.object_path === path && f.status === 'pending' && f.reserved_until > clock()),
+      usage: (uid) => usageOf(uid),
       now: () => clock(),
       setSignupMode(m) { signupMode = m; },
       /** A Map-like synchronous view of one user's live notes ({ text } by path) for tests: get / has / set / keys / delete. set() writes the row directly (no quota, no revision). */

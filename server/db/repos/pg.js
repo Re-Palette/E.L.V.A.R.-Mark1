@@ -4,7 +4,7 @@
 //
 // MemoryDb (server/db/memory.js) implements the same interface; test/contracts/db.contract.mjs runs against both.
 // Values leave this module as plain JS: timestamps as ISO strings, bigint as numbers, bytea as Buffers.
-import { dbError } from '../errors.js';
+import { dbError, mapPgError, isDriverError } from '../errors.js';
 import * as V from '../validate.js';
 import { requireVerifiedUid } from '../verified-uid.js';
 
@@ -28,15 +28,24 @@ const msgRow = (r) => ({ id: String(r.id), conversationId: r.conversation_id, ro
 const inboxRow = (r) => ({ id: r.id, kind: r.kind, title: r.title, body: r.body, url: r.url, notePath: r.note_path, key: r.key, at: iso(r.at), readAt: iso(r.read_at) });
 const limitRow = (r) => ({ provider: r.provider, metric: r.metric, period: r.period, soft: num(r.soft), softAction: r.soft_action });
 
-/** Refuse a write that would take the user over their storage quota (accounts.storage_quota_bytes, default 500 MB): notes + their revisions + messages. */
+/** Refuse a write that would take the user over their storage quota (accounts.storage_quota_bytes, default 500 MB). The bytes in use are kept by the triggers of
+ *  migration 07 in app.storage_usage: files + extracted texts + notes + their revisions + messages + the uploads that are reserved but not finished. */
 async function assertRoom(tx, uid, grow) {
   const [r] = await tx`select coalesce((select storage_quota_bytes from app.accounts where user_id = ${uid}), 524288000) as quota,
-      coalesce((select sum(bytes) from app.notes where user_id = ${uid}), 0) + coalesce((select sum(octet_length(content)) from app.note_revisions where user_id = ${uid}), 0)
-      + coalesce((select sum(octet_length(text)) from app.messages where user_id = ${uid}), 0) as used`;
+      coalesce((select files_bytes + text_bytes + notes_bytes + messages_bytes + reserved_bytes from app.storage_usage where user_id = ${uid}), 0) as used`;
   if (Number(r.used) + grow > Number(r.quota)) throw dbError('storage_quota_exceeded', 413);
 }
 
+const fileRow = (r) => ({
+  id: r.id, name: r.name, mime: r.mime, kind: r.kind, size: num(r.size_bytes), sha256: r.sha256, status: r.status, source: r.source, objectPath: r.object_path,
+  title: r.title, docKind: r.doc_kind, kindLabel: r.kind_label, tags: [...(r.tags || [])], memo: r.memo, keywords: [...(r.keywords || [])], snippet: r.snippet,
+  analysis: r.analysis || {}, related: r.related ?? null, reservedUntil: iso(r.reserved_until), createdAt: iso(r.created_at), finalizedAt: iso(r.finalized_at), updatedAt: iso(r.updated_at),
+});
+const FILE_COLS = 'id, name, mime, kind, size_bytes, sha256, status, source, object_path, title, doc_kind, kind_label, tags, memo, keywords, snippet, analysis, related, reserved_until, created_at, finalized_at, updated_at';
+
 export function pgRepos(tx, uid, afterCommit = () => {}) {
+  /** A statement that may legitimately fail (quota, reservation, not found): run in a savepoint so the failure does not abort the caller's transaction, and as a DbError. */
+  const guarded = async (fn) => { try { return await tx.savepoint(fn); } catch (e) { throw isDriverError(e) ? mapPgError(e) : e; } };
   return {
     uid,
     /** Run `fn` after the surrounding asUser() transaction has committed (never if it rolls back). Used for warm caches of things the transaction created. */
@@ -67,6 +76,11 @@ export function pgRepos(tx, uid, afterCommit = () => {}) {
         return (await tx`select * from app.admin_users(${limit}, ${offset})`).map((r) => ({
           userId: r.user_id, email: r.email, createdAt: iso(r.created_at), lastSignInAt: iso(r.last_sign_in_at), status: r.status, isAdmin: r.is_admin,
           storageQuotaBytes: num(r.storage_quota_bytes), storageUsedBytes: num(r.storage_used_bytes), callsToday: num(r.calls_today), liveSecondsToday: num(r.live_seconds_today), calls30d: num(r.calls_30d) }));
+      },
+      /** The storage quota of one user (bytes). A number, never content (M11). */
+      async setQuota(userId, bytes) {
+        V.need(requireUuid(userId) && Number.isInteger(bytes) && bytes >= 0 && bytes <= 1099511627776);
+        const [r] = await guarded((sp) => sp`select app.admin_set_quota(${userId}::uuid, ${bytes}::bigint) as b`); return num(r.b);
       },
       async setStatus(userId, status, reason = null) {
         V.need(requireUuid(userId) && ['active', 'suspended'].includes(status) && (reason === null || (typeof reason === 'string' && reason.length <= 500)));
@@ -455,6 +469,59 @@ export function pgRepos(tx, uid, afterCommit = () => {}) {
       async count() { const [r] = await tx`select count(*)::int as n from app.notif_items where user_id = ${uid} and at >= ${new Date(Date.now() - V.NOTIF_KEEP_MS)}`; return r.n; },
     },
 
+    /** The file vault (P5). Reads are plain selects (Row Level Security); every change is a definer function that checks the caller and the quota. */
+    files: {
+      /** Reserve room for an upload (atomic, counts the announced extracted text too). @returns {Promise<{duplicate:{id:string,name:string}}|{fileId:string,objectPath:string,reservedUntil:string}>}
+       *  @throws storage_quota_exceeded / file_too_large (413), conflict (too many uploads at once, account not active) */
+      async reserve(x) {
+        const v = V.fileReserveInput(x);
+        const [r] = await guarded((sp) => sp`select app.reserve_file(${v.name}, ${v.mime}, ${v.kind}, ${v.size}::bigint, ${v.sha256}, ${v.textBytes}::bigint, ${v.source}, ${v.allowDuplicate}) as r`);
+        return r.r;
+      },
+      /** The caller has verified the real object (size, SHA-256). @throws reservation_expired (409), file_too_large, storage_quota_exceeded, not_found */
+      async finalize(id, input) {
+        V.need(V.FILE_ID_RE.test(String(id))); const v = V.fileFinalizeInput(input); V.need(Number.isInteger(input?.size) && input.size >= 1);
+        await guarded((sp) => sp`select app.finalize_file(${id}::uuid, ${input.size}::bigint, ${v.title ?? null}, ${v.docKind ?? null}, ${v.keywords ?? []}::text[], ${v.snippet ?? ''}, ${v.analysis ?? {}}::jsonb, ${v.related ?? null}::jsonb, ${v.text})`);
+      },
+      /** Name, tags, memo, kind label, the memory fields; `text` (with setText) replaces the extracted text. */
+      async patch(id, patch, { text = null, setText = false } = {}) {
+        V.need(V.FILE_ID_RE.test(String(id))); const p = V.filePatchInput(patch); if (setText) V.fileText(text ?? '');
+        await guarded((sp) => sp`select app.patch_file(${id}::uuid, ${p}::jsonb, ${setText ? text ?? '' : null}, ${setText})`);
+      },
+      async get(id) { V.need(V.FILE_ID_RE.test(String(id))); const [r] = await tx.unsafe(`select ${FILE_COLS} from app.files where user_id = $1 and id = $2`, [uid, id]); return r ? fileRow(r) : null; },
+      /** Ready files, newest first (the library list). */
+      async list({ limit = 5000 } = {}) {
+        V.need(Number.isInteger(limit) && limit >= 1 && limit <= 20000);
+        return (await tx.unsafe(`select ${FILE_COLS} from app.files where user_id = $1 and status = 'ready' order by created_at desc, id limit ${limit}`, [uid])).map(fileRow);
+      },
+      async findBySha(sha) { V.need(V.isSha256(sha)); const [r] = await tx.unsafe(`select ${FILE_COLS} from app.files where user_id = $1 and sha256 = $2 and status = 'ready' order by created_at limit 1`, [uid, sha]); return r ? fileRow(r) : null; },
+      async text(id) { V.need(V.FILE_ID_RE.test(String(id))); const [r] = await tx`select t.text from app.file_texts t join app.files f on f.user_id = t.user_id and f.id = t.file_id where t.user_id = ${uid} and t.file_id = ${id} and f.status = 'ready'`; return r ? r.text : null; },
+      /** Files whose extracted text contains at least one term (the candidates; the caller ranks them). @returns {Promise<Map<string,string>>} id -> text */
+      async searchText(terms, { limit = 200 } = {}) {
+        const t = V.searchTerms(terms), like = t.map(V.likePattern); V.need(Number.isInteger(limit) && limit >= 1 && limit <= 300);
+        let rows;
+        try { rows = await tx.savepoint((sp) => sp`select id, text from app.search_files(${t}::text[], ${like}::text[], ${limit})`); }
+        catch (e) {   // an engine that does not know the operator: the plain ILIKE query gives the same candidates (slower)
+          if (e?.code === '57014') throw e;
+          rows = await tx`select t.file_id as id, left(t.text, 200000) as text from app.file_texts t join app.files f on f.user_id = t.user_id and f.id = t.file_id
+                          where t.user_id = ${uid} and f.status = 'ready' and t.text ilike any (${like}::text[]) limit ${limit}`;
+        }
+        return new Map(rows.map((r) => [r.id, r.text]));
+      },
+      async count() { const [r] = await tx`select count(*)::int as n from app.files where user_id = ${uid} and status = 'ready'`; return r.n; },
+      /** Step 1 of a delete (also cancels an upload): the row is hidden and the Storage path comes back. @returns {Promise<string|null>} null when there is no such file */
+      async beginDelete(id) {
+        V.need(V.FILE_ID_RE.test(String(id)));
+        try { const [r] = await guarded((sp) => sp`select app.begin_delete_file(${id}::uuid) as p`); return r.p; } catch (e) { if (e?.code === 'not_found') return null; throw e; }
+      },
+      /** Step 2, after the Storage object is gone: the row (and its text) goes and the bytes are free. */
+      async finishDelete(id) { V.need(V.FILE_ID_RE.test(String(id))); const [r] = await tx`select app.finish_delete_file(${id}::uuid) as ok`; return r.ok === true; },
+      /** Rows whose Storage object must be removed first: deleting, or an upload reservation that ran out. */
+      async stale() { return (await tx`select id, object_path from app.my_stale_files()`).map((r) => ({ id: r.id, objectPath: r.object_path })); },
+      /** Every file the user has, in any state (for "delete everything"): ids and Storage paths. */
+      async allPaths() { return (await tx`select id, object_path from app.files where user_id = ${uid}`).map((r) => ({ id: r.id, objectPath: r.object_path })); },
+    },
+
     usageLimits: {
       async list() { return (await tx`select provider, metric, period, soft, soft_action from app.usage_limits where user_id = ${uid} order by provider collate "C", metric collate "C", period`).map(limitRow); },
       async put({ provider, metric, period, soft, softAction = 'warn' }) {
@@ -498,6 +565,11 @@ export function pgSystem(sql) {
       const [r] = await sql`select app.rl_hit(${bucket}, ${uid ?? String(who)}, ${windowSec}, ${uid}) as n`;
       return r.n;
     },
+    /** The daily sweep of the file vault: rows whose Storage object must be removed (deleting, or an upload that was never finished). */
+    async staleFiles(limit = 200) { V.need(Number.isInteger(limit) && limit >= 1 && limit <= 1000); return (await sql`select user_id, id, object_path from app.stale_files(${limit})`).map((r) => ({ userId: r.user_id, id: r.id, objectPath: r.object_path })); },
+    async dropStaleFile(userId, id) { V.need(requireUuid(userId) && requireUuid(id)); const [r] = await sql`select app.drop_stale_file(${userId}::uuid, ${id}::uuid) as ok`; return r.ok === true; },
+    /** Recount everybody's storage_usage from the tables. @returns {Promise<number>} users corrected */
+    async reconcileStorage() { const [r] = await sql`select app.reconcile_storage() as n`; return Number(r.n); },
     async purgeExpired() { return Object.fromEntries((await sql`select table_name, deleted from app.purge_expired()`).map((r) => [r.table_name, Number(r.deleted)])); },
     async residualCheck(vuid) { return (await sql`select table_name, n from app.residual_check(${requireVerifiedUid(vuid)})`).map((r) => ({ table: r.table_name, n: Number(r.n) })); },
     /** Whose device token is this? hash = sha256 of the token's secret part. Returns the raw ids; the caller turns them into a VerifiedUid. */

@@ -1,5 +1,6 @@
 -- Test bootstrap for a PLAIN Postgres: the small part of Supabase that the migrations rely on. Not a migration, never shipped to a real project
--- (`supabase start` already has all of this). Roles, auth.users + auth.uid(), and a minimal storage schema for the later (P5) policies.
+-- (`supabase start` already has all of this). Roles, auth.users + auth.uid(), and the part of the storage schema the P5 policies and tests use:
+-- storage.buckets, storage.objects (row level security ON, the same grants Supabase gives, so the policies of migration 07 are what decides) and storage.foldername().
 
 do $$
 begin
@@ -35,11 +36,19 @@ create table if not exists storage.objects (
   id uuid primary key default gen_random_uuid(),
   bucket_id text references storage.buckets (id),
   name text,
-  owner uuid,
-  created_at timestamptz not null default now()
+  owner uuid default auth.uid(),
+  metadata jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 alter table storage.objects enable row level security;
+create unique index if not exists bucketid_objname on storage.objects (bucket_id, name);   -- Supabase has the same: a second object under a name is a duplicate (409), not an overwrite
+-- Supabase grants every command on storage.objects to anon and authenticated and relies on the policies alone (there is no policy for anon here, so anon gets nothing)
+grant select, insert, update, delete on storage.objects to anon, authenticated;
+grant select on storage.buckets to anon, authenticated;
+-- the real function: the folders of an object name, without the file name  ('users/<uid>/files/x/y' -> {users, <uid>, files, x})
 create or replace function storage.foldername(name text) returns text[] language sql immutable as $$
   select case when position('/' in name) = 0 then '{}'::text[] else (string_to_array(name, '/'))[1:cardinality(string_to_array(name, '/')) - 1] end
 $$;
 grant usage on schema storage to anon, authenticated, service_role;
+grant execute on function storage.foldername(text) to anon, authenticated, service_role;
