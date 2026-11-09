@@ -9,3 +9,9 @@ export function assertDevAuthAllowed(env = process.env) {
   if (!devAuthEnabled(env)) throw new Error('the dev auth issuer needs ELVAR_DEV_AUTH=1 and ELVAR_DB=memory, and is refused on Vercel, in production, or with a database URL');
 }
 export const isLoopbackHost = (h) => ['127.0.0.1', '::1', 'localhost', '[::1]'].includes(String(h));
+
+/** The Host header of a request: only this computer's own names. A page on another origin that points its DNS name at 127.0.0.1 (DNS rebinding) sends its own name here and is refused. */
+export function isLoopbackHostHeader(h) {
+  const m = /^(\[[0-9a-f:]+\]|[^:\/\s]+)(?::\d{1,5})?$/i.exec(String(h || '').trim());
+  return Boolean(m) && isLoopbackHost(m[1].toLowerCase());
+}

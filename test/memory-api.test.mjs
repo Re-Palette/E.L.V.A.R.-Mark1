@@ -106,3 +106,15 @@ test('review fix (BLOCKER 1): an MCP state at the Google callback, and a Google 
     assert.equal(calls, 0, 'neither callback touched the network');
   } finally { globalThis.fetch = real; }
 }));
+
+test('review fix: ELVAR_ALLOW_PRIVATE_CONNECTORS works for one account only - a second account turns it off for everybody', async () => {
+  const { privateAllowed } = await import('../server/net/safe-fetch.js'), { _resetSingleUserCheck } = await import('../server/auth/with-user.js');
+  const h = await startHarness(); process.env.ELVAR_ALLOW_PRIVATE_CONNECTORS = '1'; _resetSingleUserCheck();
+  try {
+    const a = h.mkUser('a@example.test'), A = await h.bearer(a); await h.call('GET', '/api/elvar/session', A);
+    assert.equal(privateAllowed(true), true, 'one account: the single-user switch works');
+    const b = h.mkUser('b@example.test'), B = await h.bearer(b); await h.call('GET', '/api/elvar/session', B);
+    _resetSingleUserCheck(); await h.call('GET', '/api/elvar/session', A);
+    assert.equal(privateAllowed(true), false, 'two accounts: refused');
+  } finally { delete process.env.ELVAR_ALLOW_PRIVATE_CONNECTORS; _resetSingleUserCheck(); await h.stop(); }
+});

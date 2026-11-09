@@ -8,7 +8,7 @@
 // (test/dev-auth.test.mjs checks both). "E-mails" are not sent: they are kept in a mailbox you read at /dev-supabase/dev/mailbox and printed to the console.
 import crypto from 'node:crypto';
 import * as jose from 'jose';
-import { assertDevAuthAllowed } from './dev-auth-guard.js';
+import { assertDevAuthAllowed, isLoopbackHostHeader } from './dev-auth-guard.js';
 
 if (process.env.VERCEL || process.env.NODE_ENV === 'production') throw new Error('server/dev/fake-auth.js must never run in production');
 
@@ -89,6 +89,7 @@ export async function createFakeAuth({ db, issuerBase, base = '/dev-supabase', e
   /** @returns {Promise<boolean>} true when the request belonged to the fake issuer (and was answered) */
   async function handle(req, res, pathname, query) {
     if (!pathname.startsWith(base + '/')) return false;
+    if (!isLoopbackHostHeader(req.headers?.host)) return json(res, 421, { error: 'dev_auth_loopback_only' }), true;   // DNS rebinding: the fake issuer answers this computer's own names only
     const p = pathname.slice(base.length), method = req.method;
     if (p === '/dev/mailbox') { if (method === 'DELETE') { mailbox.length = 0; return json(res, 200, {}), true; } return json(res, 200, { mailbox }), true; }
     if (p === '/auth/v1/.well-known/jwks.json') return json(res, 200, { keys: [jwk] }), true;

@@ -132,3 +132,14 @@ test('sign-up -> confirmation mail -> PKCE exchange -> the REAL verifier and rou
     delete process.env.ELVAR_DEV_CAPTCHA; delete process.env.ELVAR_DEV_AUTH; _clearVerifiers(); await resetDb();
   }
 });
+
+test('review fix: the dev login answers only requests whose Host is this computer (DNS rebinding is refused)', async () => {
+  const { isLoopbackHostHeader } = await import('../server/dev/dev-auth-guard.js');
+  for (const ok of ['127.0.0.1:8787', 'localhost:5173', 'localhost', '[::1]:8787', 'LOCALHOST:80']) assert.equal(isLoopbackHostHeader(ok), true, ok);
+  for (const bad of ['evil.example:8787', 'rebind.127.0.0.1.evil.com', '192.168.1.5:8787', '127.0.0.1.evil.com', '', undefined, 'localhost.evil.com', '127.0.0.1@evil.com']) assert.equal(isLoopbackHostHeader(bad), false, String(bad));
+  const { createFakeAuth } = await import('../server/dev/fake-auth.js'); process.env.ELVAR_DEV_AUTH = '1'; process.env.ELVAR_DB = 'memory';
+  const { resetDb, getDb } = await import('../server/db/index.js'); await resetDb();
+  const fa = await createFakeAuth({ db: await getDb(), issuerBase: 'http://127.0.0.1:1', log: () => {} });
+  const res = { statusCode: 0, setHeader() {}, end() {} };
+  assert.equal(await fa.handle({ method: 'GET', headers: { host: 'evil.example' } }, res, '/dev-supabase/dev/mailbox', {}), true); assert.equal(res.statusCode, 421, 'the mailbox is not readable from another origin');
+});

@@ -162,6 +162,9 @@ test('delete with a 7-day grace period: pending at once, every session and devic
   assert.deepEqual((await h.call('GET', '/api/elvar/devices', hd)).body, { error: 'account_pending_deletion' });
   assert.equal((await h.call('GET', '/api/elvar/session', hd)).body.error, 'account_pending_deletion');
   const st = await h.call('GET', '/api/elvar/account/deletion', hd); assert.equal(st.body.status, 'pending_deletion'); assert.equal(st.body.deletion.graceDays, 7);
+  // an old session cannot cancel (review fix): it must sign in again first
+  assert.equal((await h.call('POST', '/api/elvar/account/delete/cancel', old)).body.error, 'reauth_required');
+  assert.equal((await h.call('GET', '/api/elvar/account/deletion', hd)).body.status, 'pending_deletion', 'still pending');
   // the user signs in again during the grace period and cancels
   assert.equal((await h.call('POST', '/api/elvar/account/delete/cancel', hd)).body.cancelled, true);
   assert.equal((await h.call('GET', '/api/elvar/session', hd)).status, 200);

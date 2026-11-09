@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { sendJson } from './http.js';
 import { routeElvar, isRouterPath } from './router.js';
 import { PAGE_HEADERS, API_HEADERS } from './security-headers.js';
-import { devAuthEnabled, isLoopbackHost } from './dev/dev-auth-guard.js';
+import { devAuthEnabled, isLoopbackHost, isLoopbackHostHeader } from './dev/dev-auth-guard.js';
 import { getDb } from './db/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -66,6 +66,7 @@ const server = http.createServer((req, res) => {
 
 async function handle(req, res) {
   try {
+    if (DEV_AUTH && !isLoopbackHostHeader(req.headers.host)) return sendJson(res, { status: 421, body: { error: 'dev_auth_loopback_only' } });   // the dev login is for this computer only (no DNS rebinding)
     const { pathname, searchParams } = new URL(req.url, 'http://x');
     if (fakeAuth && pathname.startsWith('/dev-supabase/') && (await fakeAuth.handle(req, res, pathname, Object.fromEntries(searchParams)))) return;
     if (isRouterPath(pathname)) {

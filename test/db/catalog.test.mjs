@@ -134,6 +134,7 @@ test('definer functions: fixed search_path, never executable by public or anon, 
   const EXPECT = {   // function -> roles that may execute it
     _secure: [], ensure_account: ['authenticated'], is_admin: ['authenticated'], device_lookup: ['elvar_app'],
     rl_hit: ['elvar_app'], purge_expired: ['elvar_app'], residual_check: ['elvar_app'],
+    account_count: ['elvar_app'],   // migration 16: how many accounts exist (single-user switch for private connector networks)
     search_notes: ['authenticated'], search_messages: ['authenticated'],   // migrations 05 / 06: SECURITY INVOKER (RLS applies), the candidate queries of the notes / conversation search
     oauth_pending_owner: ['elvar_app'],   // migration 04: the OAuth callback finds whose flow a single-use state belongs to
     // migration 12: the Auth hook (supabase_auth_admin only, none of the roles listed here), the caller-scoped ones, the admin ones (they check is_admin themselves), the cron / purge helpers

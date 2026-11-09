@@ -446,6 +446,7 @@ export function createMemoryDb({ now = null } = {}) {
       return u.id;
     },
     async oauthPendingOwner(stateHash, provider) { V.need(V.isBytes(stateHash, 32) && V.OAUTH_FLOW_KINDS.includes(provider)); const r = tables.oauth_pending.find((x) => sameBytes(x.state_hash, stateHash) && x.provider === provider && live(x)); return r ? r.user_id : null; },
+    async accountCount() { return tables.accounts.length; },
     async deviceLookup(hash) { V.need(V.isBytes(hash, 32)); const r = tables.devices.find((x) => sameBytes(x.token_hash, hash)); return r ? { userId: r.user_id, deviceId: r.id, scopes: [...r.scopes] } : null; },
   };
 

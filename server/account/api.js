@@ -189,6 +189,7 @@ export async function deleteAccount({ user, body }) {
 }
 
 export async function cancelDeletion({ user }) {
+  await requireFresh(user);   // a stolen, older session must not be able to undo the owner's deletion request
   const ok = await user.db((r) => r.accounts.cancelDeletion());
   invalidateAccount(user.uid); invalidateUserConfig(user.uid);
   if (!ok) return bad(409, 'not_cancellable', 'この削除は取り消せません');

@@ -18,6 +18,7 @@ import { getVerifier, bearerFrom, AuthError } from './jwt.js';
 import { deviceTokenFrom, parseDeviceToken } from './device-token.js';
 import { userConfigShell, cronConfig } from './user-config.js';
 import { loadUserConfig } from './load-user-config.js';
+import { setMultiAccount } from '../net/safe-fetch.js';
 
 // The account status (active / suspended / pending_deletion) is cached per warm instance for 30 seconds. That is the documented bound on how long a
 // suspension or a deletion request made on ANOTHER instance can go unnoticed by ordinary requests. The instance that makes the change calls
@@ -27,6 +28,15 @@ const ACCOUNT_CACHE_MS = 30_000, ACCOUNT_CACHE_MAX = 1000;
 const accountCache = new Map();   // uid -> { account, at }
 export const invalidateAccount = (uid) => { accountCache.delete(String(uid?.uid ?? uid)); };
 export const _clearAccountCache = () => accountCache.clear();
+
+// ELVAR_ALLOW_PRIVATE_CONNECTORS=1 is a single-user switch: while it is on, count the accounts (at most once a minute) and let safe-fetch refuse it for good once there are two.
+let countAt = 0;
+async function checkSingleUser(db, now) {
+  if (process.env.ELVAR_ALLOW_PRIVATE_CONNECTORS !== '1' || now - countAt < 60_000) return;
+  countAt = now;
+  try { const n = await db.system.accountCount(); setMultiAccount(n > 1); if (n > 1) console.error('[elvar] ELVAR_ALLOW_PRIVATE_CONNECTORS is ignored: this platform has more than one account'); } catch { setMultiAccount(true); }   // unknown = refuse
+}
+export const _resetSingleUserCheck = () => { countAt = 0; setMultiAccount(false); };
 
 const fail = (status, error) => ({ ok: false, status, error });
 const STATUS_ERROR = { suspended: 'account_suspended', pending_deletion: 'account_pending_deletion' };
@@ -92,6 +102,7 @@ export async function authenticate(kind, req, opts = {}) {
   try {
     if (kind === 'cron') return await authCron(req);
     const db = await getDb();
+    await checkSingleUser(db, now);
     if (kind === 'user' || kind === 'admin') {
       const token = bearerFrom(req); if (!token) return fail(401, 'login_required');
       const jwt = await getVerifier()(token);

@@ -148,7 +148,7 @@ test('cron: fails closed without a strong CRON_SECRET; needs the exact bearer; a
   assert.equal((await call('POST', '/api/elvar/t/cron', { authorization: 'Bearer ' + secret + 'x' })).status, 401);
   assert.equal((await call('POST', '/api/elvar/t/cron', await bearer(db.testing.newUser()))).status, 401);
   const ok = await call('POST', '/api/elvar/t/cron', { authorization: 'Bearer ' + secret });
-  assert.deepEqual(ok, { status: 200, body: { kind: 'cron', ops: ['bootstrapAdmin', 'deviceLookup', 'dueDeletions', 'oauthPendingOwner', 'purgeExpired', 'recordReceipt', 'residualCheck', 'rlHit'] } });
+  assert.deepEqual(ok, { status: 200, body: { kind: 'cron', ops: ['accountCount', 'bootstrapAdmin', 'deviceLookup', 'dueDeletions', 'oauthPendingOwner', 'purgeExpired', 'recordReceipt', 'residualCheck', 'rlHit'] } });
 }));
 
 test('a signed-in user\'s API keys never come from the platform environment (M5); settings may fall back to platform defaults', () => fresh(async (db) => {

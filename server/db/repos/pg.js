@@ -513,6 +513,7 @@ export function pgSystem(sql) {
       const [r] = await sql`select app.oauth_pending_owner(${V.toBuf(stateHash)}, ${provider}) as uid`;
       return r.uid || null;
     },
+    async accountCount() { const [r] = await sql`select app.account_count() as n`; return Number(r.n); },
     async deviceLookup(hash) {
       V.need(V.isBytes(hash, 32));
       const [r] = await sql`select user_id, device_id, scopes from app.device_lookup(${V.toBuf(hash)})`;

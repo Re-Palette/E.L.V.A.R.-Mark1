@@ -35,7 +35,10 @@ export function hatchUrlOk(u, e = process.env) {
   try { const x = new URL(String(u)); const h = x.hostname.replace(/^\[|\]$/g, ''); return (x.protocol === 'http:' || x.protocol === 'https:') && !x.username && !x.password && (h === 'localhost' || classifyIp(h) === 'loopback'); } catch { return false; }
 }
 /** A connector's `network.allowPrivate` counts only on a single-user install that opted in (ELVAR_ALLOW_PRIVATE_CONNECTORS=1); never on Vercel, never by default. */
-export const privateAllowed = (flag, e = process.env) => Boolean(flag) && !e.VERCEL && e.ELVAR_ALLOW_PRIVATE_CONNECTORS === '1';
+let multiAccount = false;
+/** Set by server/auth/with-user.js: true once more than one account exists. A shared platform never allows private networks, whatever the environment says. */
+export const setMultiAccount = (v) => { multiAccount = Boolean(v); };
+export const privateAllowed = (flag, e = process.env) => Boolean(flag) && !e.VERCEL && e.ELVAR_ALLOW_PRIVATE_CONNECTORS === '1' && !multiAccount;
 
 // ------------------------------------------------------------------ address parsing and classification
 export function parseV4(s) {
