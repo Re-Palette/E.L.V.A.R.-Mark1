@@ -42,10 +42,12 @@ export function authHeaders(c, secret) {
 const dig = (obj, path) => { let cur = obj; for (const k of path.split('.')) { if (cur === null || cur === undefined) return undefined; cur = Array.isArray(cur) ? cur[/^\d+$/.test(k) ? Number(k) : -1] : typeof cur === 'object' && Object.hasOwn(cur, k) ? cur[k] : undefined; } return cur; };
 
 /** Cap what goes back to the model. @returns {{value:any, truncated:boolean}} */
+const STRIP = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;   // control, zero-width and bidi-override characters
 export function shapeOutput(value, maxChars) {
-  if (typeof value === 'string') { const t = value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' '); return t.length > maxChars ? { value: t.slice(0, maxChars) + '…', truncated: true } : { value: t, truncated: false }; }
-  const s = JSON.stringify(value ?? null);
-  return s.length > maxChars ? { value: s.slice(0, maxChars) + '…', truncated: true } : { value, truncated: false };
+  if (typeof value === 'string') { const t = value.replace(STRIP, ' '); return t.length > maxChars ? { value: t.slice(0, maxChars) + '…', truncated: true } : { value: t, truncated: false }; }
+  const clean = JSON.parse(JSON.stringify(value ?? null, (k, x) => (typeof x === 'string' ? x.replace(STRIP, ' ') : x)));
+  const s = JSON.stringify(clean);
+  return s.length > maxChars ? { value: s.slice(0, maxChars) + '…', truncated: true } : { value: clean, truncated: false };
 }
 
 /** Build the request for a tool call (pure: tested without a network). */

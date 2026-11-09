@@ -3,20 +3,21 @@
 // Every URL here, including every one found by discovery, is fetched with safeFetch. Tokens are sealed under cfg.connectorKey (a key derived from the
 // vault key) because a refresh happens inside a tool call, where the vault key itself is not available.
 import crypto from 'node:crypto';
-import { safeFetch } from '../net/safe-fetch.js';
+import { safeFetch, hatchUrlOk } from '../net/safe-fetch.js';
 import { startFlow, claimFlow, discardPending, STATE_RE } from '../oauth/flow.js';
 import * as V from '../config/vault.js';
 import { ConnectorError, toConnectorError } from './errors.js';
 import { cleanText } from './manifest.js';
+import { currentScope } from './data.js';
 
 export const CALLBACK_PATH = '/api/elvar/oauth/callback';
-export const tokKeyOf = (id) => V.tokKey('cx:' + id);
+export const tokKeyOf = (id) => currentScope().tokKey(id);
 const jget = async (fetchImpl, url, o = {}) => {
   let r; try { r = await fetchImpl(url, { method: 'GET', headers: { accept: 'application/json' }, timeoutMs: 10000, maxBytes: 262144, ...o }); } catch (e) { throw toConnectorError(e); }
   if (r.status !== 200) return null;
   try { const j = r.json(); return j && typeof j === 'object' ? j : null; } catch { return null; }
 };
-const httpsUrl = (u) => { try { const x = new URL(String(u)); return x.protocol === 'https:' && !x.username && !x.password ? x.toString() : null; } catch { return null; } };
+const httpsUrl = (u) => { try { const x = new URL(String(u)); return (x.protocol === 'https:' && !x.username && !x.password) || hatchUrlOk(x.toString()) ? x.toString() : null; } catch { return null; } };
 
 /** WWW-Authenticate: Bearer resource_metadata="https://..." */
 export const resourceMetadataFrom = (h) => { const m = /resource_metadata="([^"]{1,500})"/i.exec(String(h || '')); return m ? httpsUrl(m[1]) : null; };
@@ -108,7 +109,7 @@ export async function accessTokenFor(store, key, c, { fetchImpl = safeFetch, now
   if (!t?.access_token || t.status === 'reauth_required') throw new ConnectorError('unauthorized', 'この連携アプリは、認証が必要です（設定の「連携アプリ」から認証してください）', 401);
   if (!t.expiresAt || t.expiresAt - now > 60_000) return t.access_token;
   if (!t.refresh_token) throw new ConnectorError('unauthorized', '認証の期限が切れました。設定の「連携アプリ」から、もう一度認証してください', 401);
-  const lock = `elvar:v1:cxrefresh:${c.id}`;
+  const lock = currentScope().refreshLockKey(c.id);
   if (!(await store.set(lock, 1, { nx: true, ttlSec: 10 }))) {   // another request is refreshing: wait briefly and read what it saved
     for (let i = 0; i < 8; i++) { await new Promise((r) => setTimeout(r, 400)); const again = (await readTok(store, key, c.id).catch(() => null))?.data; if (again?.access_token && again.expiresAt - Date.now() > 60_000) return again.access_token; }
     throw new ConnectorError('unauthorized', '認証の更新中です。もう一度お試しください', 503);

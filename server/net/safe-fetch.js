@@ -25,6 +25,11 @@ const PUBLIC_PORTS = new Set([443, 8443]);
 export function loopbackHatchOn(e = process.env) {
   return e.ELVAR_UNSAFE_TEST_NETWORK === 'loopback' && !e.VERCEL && e.NODE_ENV !== 'production';
 }
+/** A URL on this machine that the hatch may open (http or https, any port). Used by the syntax checks that run before safeFetch. */
+export function hatchUrlOk(u, e = process.env) {
+  if (!loopbackHatchOn(e)) return false;
+  try { const x = new URL(String(u)); const h = x.hostname.replace(/^\[|\]$/g, ''); return (x.protocol === 'http:' || x.protocol === 'https:') && !x.username && !x.password && (h === 'localhost' || classifyIp(h) === 'loopback'); } catch { return false; }
+}
 /** A connector's `network.allowPrivate` counts only on a local node. */
 export const privateAllowed = (flag, e = process.env) => Boolean(flag) && !e.VERCEL;
 

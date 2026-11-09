@@ -2,8 +2,9 @@
 // A manifest lives in the vault doc (`doc.connectors[]`); its secrets live in `doc.secrets["cx:<id>:auth"]` (write-only: no view ever contains them).
 // Everything that comes from a REMOTE server (tool names, descriptions, schemas) is untrusted data: it is cleaned and capped here, once, on the way in.
 import crypto from 'node:crypto';
-import { isForbiddenHeader, classifyIp, parseV4, parseV6, privateAllowed } from '../net/safe-fetch.js';
+import { isForbiddenHeader, classifyIp, privateAllowed, hatchUrlOk } from '../net/safe-fetch.js';
 import net from 'node:net';
+import { currentScope } from './data.js';
 
 export const MAX_CONNECTORS = 10, MAX_TOOLS = 100, MAX_HTTP_TOOLS = 40, MAX_PINNED = 24;
 export const DESC_MAX = 300, PROP_DESC_MAX = 200, SCHEMA_MAX_CHARS = 6000, PINNED_SCHEMA_MAX = 1500, PINNED_DECL_BUDGET = 20_000;
@@ -94,6 +95,7 @@ export const GATEWAY_TOOLS = ['connector_tools', 'connector_call'];
 /** Syntax-level check of an owner-typed URL (the real network check is safeFetch at call time). @returns {{ok:true, url:string, host:string}|{ok:false, message:string}} */
 export function checkUrl(raw, { allowPrivate = false } = {}) {
   let u; try { u = new URL(String(raw || '').trim()); } catch { return { ok: false, message: 'URLの形式が正しくありません' }; }
+  if (hatchUrlOk(u.toString())) { u.hash = ''; return { ok: true, url: u.toString(), host: u.host }; }   // test-only loopback hatch (never on Vercel / in production)
   if (u.protocol !== 'https:') return { ok: false, message: 'https:// で始まるアドレスだけ使えます' };
   if (u.username || u.password) return { ok: false, message: 'URLにユーザー名・パスワードは入れられません（認証は別の欄に入れます）' };
   if (u.search && /[?&](access_token|token|key|api_key|apikey|secret|password)=/i.test(u.search)) return { ok: false, message: 'キーをURLに入れないでください（認証の欄に入れます）' };
@@ -319,11 +321,11 @@ export function connectorStatus(c, { oauth } = {}) {
   return 'connected';
 }
 export function publicConnector(c, { secrets = {}, oauth = null } = {}) {
-  const sec = secrets[`cx:${c.id}:auth`];
+  const S = currentScope(), sec = S.getSecret(secrets, c.id);
   const alloc = allocateExposure([c]);
   return {
     id: c.id, slug: c.slug, name: c.name, type: c.type, enabled: c.enabled, description: c.description || '', host: hostOf(c), url: c.type === 'mcp' ? c.mcp.url : c.http.baseUrl,
-    auth: { ...c.auth, set: Boolean(sec), last4: last4(sec) || null, ...(c.auth.type === 'oauth' ? { connected: Boolean(oauth?.connected), oauthState: oauth?.state || null, clientIdSet: Boolean(c.auth.clientId || oauth?.registered), clientSecretSet: Boolean(secrets[`cx:${c.id}:oauthSecret`]) } : {}) },
+    auth: { ...c.auth, set: Boolean(sec), last4: last4(sec) || null, ...(c.auth.type === 'oauth' ? { connected: Boolean(oauth?.connected), oauthState: oauth?.state || null, clientIdSet: Boolean(c.auth.clientId || oauth?.registered), clientSecretSet: Boolean(S.getSecret(secrets, c.id, 'oauthSecret')) } : {}) },
     network: c.network, grantAgents: c.grantAgents || [], limits: c.limits, syncedAt: c.syncedAt || null, lastError: c.lastError || null, status: connectorStatus(c, { oauth }),
     serverInfo: c.serverInfo || null,
     tools: (c.tools || []).map((t) => ({

@@ -8,6 +8,7 @@ import { authenticate } from './auth.js';
 import { getStore } from '../store/index.js';
 import { readDoc, ticketKeyFromDek, connectorKeyFromDek } from './vault.js';
 import { loadLogin } from '../google/login-record.js';
+import { currentScope } from '../connectors/data.js';
 
 const als = new AsyncLocalStorage();
 
@@ -63,7 +64,7 @@ export function vaultConfig(doc, auth, docVer, google = null) {
     profile, connectors: Array.isArray(doc.connectors) ? doc.connectors : [], features: profile.features || {}, version: docVer, google,
     auth: { mode: 'vault', deviceId: auth.deviceId },
     ticketKey: ticketKeyFromDek(auth.dek), connectorKey: connectorKeyFromDek(auth.dek), notifSecret: doc.notifSecret || null,
-    cxSecret: (id, what = 'auth') => (secrets[`cx:${id}:${what}`] ? String(secrets[`cx:${id}:${what}`]) : ''),
+    cxSecret: (id, what = 'auth') => currentScope().getSecret(secrets, id, what),
   };
 }
 

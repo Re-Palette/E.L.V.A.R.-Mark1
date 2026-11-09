@@ -14,6 +14,7 @@ import { clientFor } from './index.js';
 import { toConnectorError, ConnectorError } from './errors.js';
 import { startConnectorOAuth, claimConnectorOAuth, readTok, oauthView, deleteTok, CALLBACK_PATH } from './mcp-oauth.js';
 import { STATE_RE } from '../oauth/flow.js';
+import { currentScope, exportConnectors, deleteAllConnectors } from './data.js';
 
 const audit = (event, extra = {}) => console.log('[audit] ' + JSON.stringify({ at: new Date().toISOString(), event, ...extra }));
 const bad = (status, error, message, extra = {}) => ({ status, body: { ok: false, error, ...(message ? { message } : {}), ...extra } });
@@ -28,7 +29,7 @@ async function oauthFor(cfg, c) {
   try { const store = getStore(); return oauthView(store && cfg.connectorKey ? (await readTok(store, cfg.connectorKey, c.id))?.data : null); } catch { return oauthView(null); }
 }
 async function viewOf(cfg, c, secrets) {
-  const sec = secrets || Object.fromEntries((cfg.connectors || []).flatMap((x) => [[`cx:${x.id}:auth`, cfg.cxSecret(x.id)], [`cx:${x.id}:oauthSecret`, cfg.cxSecret(x.id, 'oauthSecret')]]));
+  const sec = secrets || currentScope().secretsMap(cfg.connectors || [], cfg.cxSecret);
   return publicConnector(c, { secrets: sec, oauth: await oauthFor(cfg, c) });
 }
 const meta = (cfg) => {
@@ -40,6 +41,23 @@ const find = (cfg, id) => (cfg.connectors || []).find((c) => c.id === id);
 export async function listConnectors({ cfg, auth }) {
   const views = []; for (const c of cfg.connectors || []) views.push(await viewOf(cfg, c));
   return { status: 200, body: { ok: true, writable: writable(auth), connectors: views, ...meta(cfg) } };
+}
+/** GET export [owner]: every connector as JSON, without secrets or tokens (the owner's copy of their own data). */
+export async function exportAll({ auth }) {
+  if (!writable(auth)) return notWritable(auth);
+  const store = getStore(); if (!store) return bad(503, 'storage_required', '保存先がありません');
+  const { doc } = await V.updateDoc(store, auth.dek, (d) => d);   // a fresh read of the vault doc
+  audit('connectors-exported', { by: auth.deviceId, count: currentScope().connectorsOf(doc).length });
+  return { status: 200, body: exportConnectors(doc) };
+}
+/** POST delete-all { confirm:'delete' } [owner]: removes every connector, its secrets, OAuth tokens and sessions. */
+export async function deleteAll({ body, auth }) {
+  if (!writable(auth)) return notWritable(auth);
+  const store = getStore(); if (!store) return bad(503, 'storage_required', '保存先がありません');
+  if (body?.confirm !== 'delete') return bad(400, 'confirm_required', '確認のため、confirm: "delete" を送ってください');
+  const r = await deleteAllConnectors(store, auth.dek);
+  audit('connectors-deleted-all', { by: auth.deviceId, count: r.connectors });
+  return { status: 200, body: { ok: true, ...r } };
 }
 export async function getConnector({ cfg, params }) {
   const c = find(cfg, params.id); if (!c) return bad(404, 'not_found', '連携アプリが見つかりません');
@@ -55,9 +73,9 @@ function secretsFrom(body) {
 }
 const needsSecret = (m) => ['bearer', 'header', 'basic'].includes(m.auth.type);
 const applySecrets = (d, id, s, m) => {
-  d.secrets = d.secrets || {};
-  if (s.auth === null || !needsSecret(m)) delete d.secrets[`cx:${id}:auth`]; else if (s.auth) d.secrets[`cx:${id}:auth`] = s.auth;
-  if (s.oauthSecret === null || m.auth.type !== 'oauth') delete d.secrets[`cx:${id}:oauthSecret`]; else if (s.oauthSecret) d.secrets[`cx:${id}:oauthSecret`] = s.oauthSecret;
+  const S = currentScope();
+  if (s.auth === null || !needsSecret(m)) S.setSecret(d, id, 'auth', null); else if (s.auth) S.setSecret(d, id, 'auth', s.auth);
+  if (s.oauthSecret === null || m.auth.type !== 'oauth') S.setSecret(d, id, 'oauthSecret', null); else if (s.oauthSecret) S.setSecret(d, id, 'oauthSecret', s.oauthSecret);
 };
 
 export async function createConnector({ body, auth, cfg }) {
@@ -111,7 +129,7 @@ export async function patchConnector({ body, auth, cfg, params }) {
   if (urlChanged) await deleteTok(store, params.id).catch(() => {});
   audit('connector-updated', { id: params.id, by: auth.deviceId, fields: Object.keys(body || {}).filter((k) => k !== 'auth'), secret: sec.auth === undefined ? undefined : sec.auth === null ? 'removed' : 'replaced', toolPrefs: Object.keys(body?.toolPrefs || {}).length || undefined });
   const c = doc.connectors.find((x) => x.id === params.id);
-  const fresh = { ...cfg, connectors: doc.connectors, cxSecret: (id, what = 'auth') => String(doc.secrets?.[`cx:${id}:${what}`] || '') };
+  const fresh = { ...cfg, connectors: doc.connectors, cxSecret: (id, what = 'auth') => currentScope().getSecret(doc.secrets, id, what) };
   return { status: 200, body: { ok: true, connector: await viewOf(fresh, c, doc.secrets), ...(errors.length ? { warnings: errors } : {}) } };
 }
 
@@ -119,7 +137,7 @@ export async function deleteConnector({ auth, cfg, params }) {
   if (!writable(auth)) return notWritable(auth);
   const store = getStore(); if (!store) return bad(503, 'storage_required', '保存先がありません');
   const cur = find(cfg, params.id); if (!cur) return bad(404, 'not_found', '連携アプリが見つかりません');
-  await V.updateDoc(store, auth.dek, (d) => { d.connectors = (d.connectors || []).filter((c) => c.id !== params.id); for (const k of Object.keys(d.secrets || {})) if (k.startsWith(`cx:${params.id}:`)) delete d.secrets[k]; return d; });
+  await V.updateDoc(store, auth.dek, (d) => { d.connectors = (d.connectors || []).filter((c) => c.id !== params.id); currentScope().purgeSecrets(d, params.id); return d; });
   await deleteTok(store, params.id).catch(() => {}); try { await clientFor(cfg, cur).close(); } catch { /* ignore */ }
   audit('connector-deleted', { id: params.id, by: auth.deviceId });
   return { status: 200, body: { ok: true } };

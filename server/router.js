@@ -32,6 +32,8 @@ export const ROUTES = [
   { method: 'GET', path: '/api/elvar/connect/google/callback', auth: 'state', handler: G.connectCallback },
   { method: 'GET', path: '/api/elvar/connectors', auth: 'owner', handler: CX.listConnectors },
   { method: 'POST', path: '/api/elvar/connectors', auth: 'owner', handler: CX.createConnector },
+  { method: 'GET', path: '/api/elvar/connectors/export', auth: 'owner', handler: CX.exportAll },
+  { method: 'POST', path: '/api/elvar/connectors/delete-all', auth: 'owner', handler: CX.deleteAll },
   { method: 'GET', path: '/api/elvar/connectors/:id', auth: 'owner', handler: CX.getConnector },
   { method: 'PATCH', path: '/api/elvar/connectors/:id', auth: 'owner', handler: CX.patchConnector },
   { method: 'DELETE', path: '/api/elvar/connectors/:id', auth: 'owner', handler: CX.deleteConnector },

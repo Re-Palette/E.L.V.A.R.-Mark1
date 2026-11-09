@@ -8,13 +8,14 @@ import { getStore } from '../store/index.js';
 import { ConnectorError, toConnectorError } from './errors.js';
 import { cleanText, cleanMessage } from './manifest.js';
 import { shapeOutput } from './http.js';
+import { currentScope } from './data.js';
 
 // The newest revision this client was written against first. NOTE: the MCP spec revisions were not re-checked online while writing this (no network access
 // to the spec site from the build environment); the server answers with the version it speaks and we accept any listed here.
 export const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const CLIENT_INFO = { name: 'elvar', version: '0.1' };
 const SESSION_TTL = 3600;
-const sessKey = (id) => `elvar:v1:mcpsess:${id}`;
+const sessKey = (id) => currentScope().sessKey(id);
 
 /** Parse an SSE body into JSON-RPC messages (only `data:` lines; multi-line data joined). */
 export function parseSse(text) {
