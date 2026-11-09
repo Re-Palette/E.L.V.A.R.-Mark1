@@ -1,6 +1,6 @@
 # E.L.V.A.R. マルチユーザー化 設計（1つの共通プラットフォーム × 多数のユーザー）
 
-状態: 設計（未実装） / 前提: `docs/ELVAR_ARCHITECTURE.md` の Phase 1–4 実装済みツリー（オーナー1人用 Vault・デバイストークン・ルーター・コネクタ）
+状態: 設計。**P1（土台）は実装済み**（§12 に実装メモ）。P2 以降は未実装 / 前提: `docs/ELVAR_ARCHITECTURE.md` の Phase 1–4 実装済みツリー（オーナー1人用 Vault・デバイストークン・ルーター・コネクタ）
 最優先の規則: `CLAUDE.md`「E.L.V.A.R. の基本方針」7原則。この文書のどの判断もそれより下位。
 
 ---
@@ -264,7 +264,7 @@ supabase/
 create table app.accounts (                    -- select のみ本人。書き込みは definer 関数と service
   user_id uuid primary key references auth.users on delete cascade,
   status text not null default 'active' check (status in ('active','suspended','pending_deletion')),
-  storage_quota_bytes bigint not null default 1073741824,     -- 既定 1GB（O1）
+  storage_quota_bytes bigint not null default 524288000,      -- 既定 500MB（O1 決定。管理者が人ごとに変更可）
   hard_limits jsonb not null default '{}',                    -- 管理者が設定（§6）
   suspended_reason text, created_at timestamptz default now());
 
@@ -497,7 +497,9 @@ AI の費用は本人のキー持ちなので、プラットフォームのハ�
 
 ### 8.3 Google 連携
 
-- 既定: **プラットフォームの OAuth クライアント**（Google Cloud プロジェクト1つ、redirect URI は `/api/google/callback` 固定）。ユーザーは「Google に接続」を押すだけ。サインインとは別の同意（incremental authorization）。
+> **決定 O2（`docs/DECISIONS.md`）: プラットフォーム共通の Google OAuth クライアントは作らない。** 全員が自分の Cloud クライアント ID / シークレットを入れる（下の「上級者モード」が唯一の方式）。Google の確認（verification）・CASA は不要。以下の「既定: プラットフォームのクライアント」「スコープの段階」は採用しない。
+
+- ~~既定: **プラットフォームの OAuth クライアント**（Google Cloud プロジェクト1つ、redirect URI は `/api/google/callback` 固定）。ユーザーは「Google に接続」を押すだけ。サインインとは別の同意（incremental authorization）。~~（O2 により不採用）
 - スコープの段階: (1) Calendar・Tasks・連絡先など「機密」スコープ → Google の確認（verification）が必要。(2) Gmail・Drive の「制限付き」スコープ → 確認に加えて **毎年の第三者セキュリティ評価（CASA）** が必要。確認前は「未確認アプリ」警告＋ユーザー数 100 人まで。→ 未決 O2。
 - 上級者モード（現 Phase 3 の仕組みを残す）: 本人の Cloud クライアント ID/シークレット（`settings.GOOGLE_CLIENT_ID` ＋ `user_secrets.GOOGLE_CLIENT_SECRET`）を入れると、そのクライアントで接続。制限付きスコープを確認なしで本人だけ使える。
 - トークンは `app.oauth_tokens(provider='google')`。`invalid_grant` → `reauth_required`。切断・アカウント削除で revoke。
@@ -655,3 +657,27 @@ AI の費用は本人のキー持ちなので、プラットフォームのハ�
 | O6 | Vercel Hobby は個人の非商用向け。多数のユーザーが使う公開サービスは規約上 Pro が必要になりうる。Hobby の Cron は1日1回 | オーナーが規約を確認（推奨: Pro。Cron の頻度も上がる） |
 | O7 | 対象の法域（日本の個人情報保護法、EU 利用者がいれば GDPR）、年齢制限 | オーナー |
 | O8 | 自前運用の単独モード（サインアップ closed ＋ bootstrap 管理者）以外に、旧オーナー方式（Supabase なし）を残すか | 推奨: 残さない（2系統の保守を避ける） |
+
+---
+
+## 12. P1 実装メモ（設計からの差分・未着手）
+
+P1 で入ったもの: `supabase/`（マイグレーション 01・02・03・09・11、`config.toml`）、`server/db/`（pool・as-user・repos/pg・memory・service・index）、`server/crypto/envelope.js`、`server/auth/`（jwt・with-user・device-token・user-config）、`server/rights/`（registry・residual）、ルーターの auth 種別、`npm run test:db` と CI の `test-db` ジョブ。旧オーナー方式の機能は変更なし。
+
+設計との違い:
+
+| 項目 | 設計 | P1 の実装 | 理由 |
+|---|---|---|---|
+| 表のロックダウン | 表ごとに RLS/ポリシーを列挙 | `app._secure(表, 操作)` を通す（user_id 必須、RLS enable+force、anon/public の権限を剥奪、標準の own-row ポリシー） | 半端な表を作れない形にする。テストが全表を検査 |
+| `rate_limits` | `(bucket, who, window_start, n)` | `user_id`（NULL 可・cascade）と `expires_at` を追加 | ログイン済みの行もアカウント削除で消える（原則7）。TTL 掃除を他の一時表と揃える |
+| `deletion_requests` | 猶予日数なし | `grace_days smallint check (in (0, 7))` | O3: 削除時に即時 / 7日猶予をユーザーが選ぶ |
+| `data_registry` | 5 列 | `export_exclude`, `owner_column`, `delete_via`, `fixture_order` を追加。`fixture_sql` は `{{uid}}` を uuid リテラルに置換 | エクスポートで出さない列・生成テストの挿入順を台帳で持つ |
+| 台帳の写し | DB のみ | DB（`app.data_registry`）と `server/rights/registry.js` の2つ。同一性を `migrations-lint`（静的）と `test/db/catalog`（実DB）が検査 | Docker なしの `npm test` で完全性を検査するため |
+| 追加の SECURITY DEFINER 関数 | — | `ensure_account()`, `is_admin()`, `device_lookup(hash)`, `rl_hit()`, `purge_expired()`, `residual_check(uid)`。実行できるのは表のとおり固定（テストで検査） | アカウント作成、管理者の二重確認、端末トークンの照会、レート制限、TTL 掃除、削除検証 |
+| pgTAP | `supabase/tests/*.sql` | Node の `node:test`（`test/db/*.test.mjs`）。素の Postgres（Docker）＋ `test/db/support/supabase-emulation.sql` | Supabase CLI なしでも CI で回る。同じ検査（カタログ・2ユーザー・削除）を実装 |
+| 契約テスト | `test/contracts/*.mjs` | `test/contracts/db.contract.mjs` を `MemoryDb`（`npm test`）と実 Postgres（`test:db`）で共有 | 偽物だけ通る差を防ぐ |
+| repos | `server/db/repos/*.js` を領域ごとに | `server/db/repos/pg.js` に集約（P1 の範囲） | 小さいうちは1ファイルが読みやすい。領域が増えたら分割 |
+| `asUser` の安全策 | claims と role の設定 | 加えて `statement_timeout` 8秒・`idle_in_transaction_session_timeout`、切り替え直後に `current_user` と `auth.uid()` を読み戻して照合（不一致は中止） | 失敗を閉じる |
+| 拡張機能 | 01 で pgroonga・vector・pg_cron・pgcrypto | 作らない（必要になる 05 / 08 / 13 で） | P1 の表は不要。素の Postgres で通る |
+
+未着手（それぞれのフェーズで）: Storage のバケットとポリシー・予約関数（P5）、`record_usage` と容量トリガー（P5・P6）、管理者用の definer 関数（P2.7）、`pg_cron` のスケジュール（13）、`seed.sql`（P2 の本物のログインと一緒に。Supabase スタックなしでは検証できないため）、`rewrap_batch`（KEK 回転の一括処理。ユーザー単位の `rewrap()` はあり）、DEK 回転での `oauth_tokens` の再暗号化（表が入る P3）。
