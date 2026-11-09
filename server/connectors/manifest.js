@@ -1,10 +1,11 @@
 // Connector manifests (docs/ELVAR_ARCHITECTURE.md 5.1): validation, normalisation, hashing and the owner-facing view. Pure functions, no I/O.
-// A manifest lives in the vault doc (`doc.connectors[]`); its secrets live in `doc.secrets["cx:<id>:auth"]` (write-only: no view ever contains them).
+// A manifest lives in the user's own rows (app.connectors / app.connector_tools, server/connectors/data.js); its secrets live in the user's encrypted secrets
+// (`cx:<id>:auth`, write-only: no view ever contains them).
 // Everything that comes from a REMOTE server (tool names, descriptions, schemas) is untrusted data: it is cleaned and capped here, once, on the way in.
 import crypto from 'node:crypto';
 import { isForbiddenHeader, classifyIp, privateAllowed, hatchUrlOk } from '../net/safe-fetch.js';
 import net from 'node:net';
-import { currentScope } from './data.js';
+import { getSecret } from './data.js';
 
 export const MAX_CONNECTORS = 10, MAX_TOOLS = 100, MAX_HTTP_TOOLS = 40, MAX_PINNED = 24;
 export const DESC_MAX = 300, PROP_DESC_MAX = 200, SCHEMA_MAX_CHARS = 6000, PINNED_SCHEMA_MAX = 1500, PINNED_DECL_BUDGET = 20_000;
@@ -183,7 +184,7 @@ export function validateManifest(input, { existing = [], id = null } = {}) {
   if (others.some((c) => c.slug === slug)) e('slug', 'この識別名は、すでに使われています');
   if (!id && others.length >= MAX_CONNECTORS) e('name', `連携アプリは${MAX_CONNECTORS}個までです`);
   const allowPrivate = Boolean(src.network?.allowPrivate);
-  if (allowPrivate && !privateAllowed(true)) e('network.allowPrivate', 'Vercel では、社内・自宅のアドレスにはつなげません');
+  if (allowPrivate && !privateAllowed(true)) e('network.allowPrivate', 'このサービスでは、社内・自宅のネットワークのアドレスにはつなげません');
   const out = { id: id || randomId(), slug, name, type, enabled: src.enabled !== false, mcp: null, http: null, auth: { type: 'none' }, network: { allowPrivate: allowPrivate && privateAllowed(true) },
     description: cleanText(src.description, 80), grantAgents: [], limits: { perMinute: 30, timeoutMs: 15000, maxResultChars: 8000 }, tools: [], syncedAt: null };
   const lim = src.limits && typeof src.limits === 'object' ? src.limits : {};
@@ -321,11 +322,11 @@ export function connectorStatus(c, { oauth } = {}) {
   return 'connected';
 }
 export function publicConnector(c, { secrets = {}, oauth = null } = {}) {
-  const S = currentScope(), sec = S.getSecret(secrets, c.id);
+  const sec = getSecret(secrets, c.id);
   const alloc = allocateExposure([c]);
   return {
     id: c.id, slug: c.slug, name: c.name, type: c.type, enabled: c.enabled, description: c.description || '', host: hostOf(c), url: c.type === 'mcp' ? c.mcp.url : c.http.baseUrl,
-    auth: { ...c.auth, set: Boolean(sec), last4: last4(sec) || null, ...(c.auth.type === 'oauth' ? { connected: Boolean(oauth?.connected), oauthState: oauth?.state || null, clientIdSet: Boolean(c.auth.clientId || oauth?.registered), clientSecretSet: Boolean(S.getSecret(secrets, c.id, 'oauthSecret')) } : {}) },
+    auth: { ...c.auth, set: Boolean(sec), last4: last4(sec) || null, ...(c.auth.type === 'oauth' ? { connected: Boolean(oauth?.connected), oauthState: oauth?.state || null, clientIdSet: Boolean(c.auth.clientId || oauth?.registered), clientSecretSet: Boolean(getSecret(secrets, c.id, 'oauthSecret')) } : {}) },
     network: c.network, grantAgents: c.grantAgents || [], limits: c.limits, syncedAt: c.syncedAt || null, lastError: c.lastError || null, status: connectorStatus(c, { oauth }),
     serverInfo: c.serverInfo || null,
     tools: (c.tools || []).map((t) => ({

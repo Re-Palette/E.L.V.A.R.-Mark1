@@ -7,8 +7,12 @@
 //   - redirects are never followed by default (a 3xx is returned as it is). `maxRedirects` (<= 3) follows same-origin hops only, re-checking each one.
 //   - hop-by-hop / Host / Content-Length / our own x-elvar-token and cookies can never be set by a caller; the response is capped in size and time.
 //
-// Test-only escape hatch (docs/CONNECTORS.md): ELVAR_UNSAFE_TEST_NETWORK=loopback allows http(s) to 127.0.0.0/8 and ::1 on any port. It is IGNORED when
-// VERCEL is set or NODE_ENV is "production" (re-evaluated on every call, nothing is cached), and it never opens any other range.
+// Test-only escape hatch (docs/CONNECTORS.md): ELVAR_UNSAFE_TEST_NETWORK=loopback allows http(s) to 127.0.0.0/8 and ::1 on any port. It needs the test
+// mode (ELVAR_TEST_MODE=1) or the local dev stack (ELVAR_DEV_AUTH=1), and it is IGNORED when VERCEL is set or NODE_ENV is "production" (re-evaluated on every
+// call, nothing is cached). It never opens any other range.
+//
+// On the multi-user platform nobody may point a connector at a private network (they could probe the operator's internal network): the connector flag
+// `network.allowPrivate` counts only when the operator of a single-user install opted in with ELVAR_ALLOW_PRIVATE_CONNECTORS=1 (and never on Vercel).
 import dns from 'node:dns';
 import net from 'node:net';
 import http from 'node:http';
@@ -23,15 +27,15 @@ const PUBLIC_PORTS = new Set([443, 8443]);
 
 /** True only for a local, non-production process that explicitly asked for the loopback hatch (tests, local verification). */
 export function loopbackHatchOn(e = process.env) {
-  return e.ELVAR_UNSAFE_TEST_NETWORK === 'loopback' && !e.VERCEL && e.NODE_ENV !== 'production';
+  return e.ELVAR_UNSAFE_TEST_NETWORK === 'loopback' && (e.ELVAR_TEST_MODE === '1' || e.ELVAR_DEV_AUTH === '1') && !e.VERCEL && e.NODE_ENV !== 'production';
 }
 /** A URL on this machine that the hatch may open (http or https, any port). Used by the syntax checks that run before safeFetch. */
 export function hatchUrlOk(u, e = process.env) {
   if (!loopbackHatchOn(e)) return false;
   try { const x = new URL(String(u)); const h = x.hostname.replace(/^\[|\]$/g, ''); return (x.protocol === 'http:' || x.protocol === 'https:') && !x.username && !x.password && (h === 'localhost' || classifyIp(h) === 'loopback'); } catch { return false; }
 }
-/** A connector's `network.allowPrivate` counts only on a local node. */
-export const privateAllowed = (flag, e = process.env) => Boolean(flag) && !e.VERCEL;
+/** A connector's `network.allowPrivate` counts only on a single-user install that opted in (ELVAR_ALLOW_PRIVATE_CONNECTORS=1); never on Vercel, never by default. */
+export const privateAllowed = (flag, e = process.env) => Boolean(flag) && !e.VERCEL && e.ELVAR_ALLOW_PRIVATE_CONNECTORS === '1';
 
 // ------------------------------------------------------------------ address parsing and classification
 export function parseV4(s) {

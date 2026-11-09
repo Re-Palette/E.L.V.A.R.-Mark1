@@ -1,7 +1,7 @@
 // Connector building blocks without the vault: manifest validation, the HTTP runtime, the MCP client, the OAuth helpers, policy, persona.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resetStore, getStore } from '../server/store/index.js';
+import { makeTestUser } from './helpers/user-ctx.mjs';
 import { startMcp, startApi } from './helpers/mock-mcp.mjs';
 import { validateManifest, cleanText, cleanSchema, toolHash, mergeRemoteTools, applyToolPrefs, allocateExposure, toolFullName, publicConnector, checkUrl, localToolName } from '../server/connectors/manifest.js';
 import { render, renderPath, buildRequest, runHttpTool, shapeOutput } from '../server/connectors/http.js';
@@ -36,10 +36,12 @@ test('manifest: urls (hatch off): https only, no credentials, no secrets in the 
       assert.equal(checkUrl(u).ok, false, u);
     }
     assert.equal(checkUrl('https://x.example.com:8443/mcp').ok, true); assert.equal(checkUrl('https://x.example.com/mcp#frag').url, 'https://x.example.com/mcp');
-    assert.equal(validateManifest(httpDraft('https://192.168.0.5', { network: { allowPrivate: true } })).ok, true, 'allowPrivate on a local node');
+    assert.equal(validateManifest(httpDraft('https://192.168.0.5', { network: { allowPrivate: true } })).ok, false, 'on the platform nobody may point a connector at a private network');
+    process.env.ELVAR_ALLOW_PRIVATE_CONNECTORS = '1';
+    assert.equal(validateManifest(httpDraft('https://192.168.0.5', { network: { allowPrivate: true } })).ok, true, 'only a single-user install that opted in (ELVAR_ALLOW_PRIVATE_CONNECTORS=1)');
     process.env.VERCEL = '1';
-    const v = validateManifest(httpDraft('https://192.168.0.5', { network: { allowPrivate: true } })); assert.equal(v.ok, false, 'never on Vercel');
-  } finally { delete process.env.VERCEL; process.env.ELVAR_UNSAFE_TEST_NETWORK = was; }
+    const v = validateManifest(httpDraft('https://192.168.0.5', { network: { allowPrivate: true } })); assert.equal(v.ok, false, 'never on Vercel, opt-in or not');
+  } finally { delete process.env.VERCEL; delete process.env.ELVAR_ALLOW_PRIVATE_CONNECTORS; process.env.ELVAR_UNSAFE_TEST_NETWORK = was; }
   assert.equal(checkUrl('http://127.0.0.1:9999/x').ok, true, 'the test hatch lets loopback in');
   process.env.NODE_ENV = 'production'; try { assert.equal(checkUrl('http://127.0.0.1:9999/x').ok, false, 'not in production'); } finally { delete process.env.NODE_ENV; }
 });
@@ -181,7 +183,7 @@ test('http: against a mock API: auth header sent, pick, error statuses, size cap
 // ------------------------------------------------------------------ MCP client
 for (const mode of ['json', 'sse', 'sse-open']) {
   test(`mcp client (${mode}): initialize, paged tools/list, tools/call, image parts omitted, isError thrown, big result capped`, async () => {
-    resetStore(); const mcp = await startMcp({ mode, pageSize: 2 });
+    const mcp = await startMcp({ mode, pageSize: 2 });
     try {
       const cl = createMcpClient({ url: mcp.url, connectorId: 'cx_t' + mode.length, headers: () => ({}) });
       const t0 = Date.now(); const info = await cl.initialize(); assert.equal(info.serverInfo.name, 'Mock Notes'); assert.ok(PROTOCOL_VERSIONS.includes(info.protocolVersion));
@@ -199,8 +201,8 @@ for (const mode of ['json', 'sse', 'sse-open']) {
 }
 
 test('mcp client: a stored session id is reused by another instance; a lost session (404) re-initializes once; stateless servers work; bad versions and 401 are explained', async () => {
-  resetStore(); const mcp = await startMcp();
-  try {
+  const u = makeTestUser(), mcp = await startMcp();
+  try { await u.run(async () => {
     const a = createMcpClient({ url: mcp.url, connectorId: 'cx_s1' }); await a.initialize(); await a.callTool('search', { query: 'a' });
     const inits = () => mcp.st.requests.filter((r) => /"initialize"/.test(r.body)).length; assert.equal(inits(), 1);
     const b = createMcpClient({ url: mcp.url, connectorId: 'cx_s1' }); assert.match((await b.callTool('search', { query: 'b' })).value, /ok:search/); assert.equal(inits(), 1, 'the second instance reused the session from the store');
@@ -216,7 +218,10 @@ test('mcp client: a stored session id is reused by another instance; a lost sess
       const good = createMcpClient({ url: locked.url, connectorId: 'cx_s4', headers: () => ({ authorization: 'Bearer sekret' }) }); await good.initialize(); assert.equal((await good.listTools()).length, locked.st.tools.length);
     } finally { await locked.close(); }
     await assert.rejects(() => createMcpClient({ url: 'http://127.0.0.1:1/mcp', timeoutMs: 1500, useSessionStore: false }).initialize(), (e) => e instanceof ConnectorError);
-  } finally { await mcp.close(); }
+    // the stored session is the USER'S: another user does not reuse it (and so cannot ride on it)
+    const other = makeTestUser({ db: u.db });
+    await other.run(async () => { const o = createMcpClient({ url: mcp.url, connectorId: 'cx_s1' }); await o.callTool('search', { query: 'o' }); assert.equal(inits(), 3, 'another user initializes their own session'); });
+  }); } finally { await mcp.close(); }
 });
 
 test('mcp: SSE parsing picks the response with the right id among notifications', () => {

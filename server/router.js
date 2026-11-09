@@ -11,7 +11,9 @@
 import { runWithConfig } from './config/resolve.js';
 import * as API from './account/api.js';
 import { getState } from './account/state.js';
-import { comingSoon, comingSoonStatus, comingSoonPage } from './account/coming-soon.js';
+import * as GOOGLE from './google/connect.js';
+import * as CX from './connectors/api.js';
+import * as BUILDS from './account/builds.js';
 import * as ADMIN from './admin/api.js';
 import { dailyCron } from './admin/cron.js';
 import { authenticate } from './auth/with-user.js';
@@ -45,23 +47,27 @@ export const ROUTES = [
   // ---- cron
   { method: 'GET', path: '/api/elvar/cron/daily', auth: 'cron', handler: dailyCron },
   { method: 'POST', path: '/api/elvar/cron/daily', auth: 'cron', handler: dailyCron },
-  // ---- not on the platform yet (P3 to P5): one clear answer, no data
-  { method: 'GET', path: '/api/elvar/connect/google/status', auth: 'user', handler: comingSoonStatus('google', { state: 'coming_soon' }) },
-  { method: 'POST', path: '/api/elvar/connect/google/start', auth: 'user', handler: comingSoon('google') },
-  { method: 'POST', path: '/api/elvar/connect/google/claim', auth: 'user', handler: comingSoon('google') },
-  { method: 'POST', path: '/api/elvar/connect/google/disconnect', auth: 'user', handler: comingSoon('google') },
-  { method: 'GET', path: '/api/elvar/connect/google/callback', auth: 'state', handler: comingSoonPage('google') },
-  { method: 'GET', path: '/api/elvar/connectors', auth: 'user', handler: comingSoonStatus('connectors', { connectors: [], maxConnectors: 0 }) },
-  { method: 'POST', path: '/api/elvar/connectors', auth: 'user', handler: comingSoon('connectors') },
-  { method: 'GET', path: '/api/elvar/connectors/export', auth: 'user', handler: comingSoon('connectors') },
-  { method: 'POST', path: '/api/elvar/connectors/delete-all', auth: 'user', handler: comingSoon('connectors') },
-  { method: 'GET', path: '/api/elvar/connectors/:id', auth: 'user', handler: comingSoon('connectors') },
-  { method: 'PATCH', path: '/api/elvar/connectors/:id', auth: 'user', handler: comingSoon('connectors') },
-  { method: 'DELETE', path: '/api/elvar/connectors/:id', auth: 'user', handler: comingSoon('connectors') },
-  { method: 'POST', path: '/api/elvar/connectors/:id/sync', auth: 'user', handler: comingSoon('connectors') },
-  { method: 'POST', path: '/api/elvar/connectors/:id/oauth/start', auth: 'user', handler: comingSoon('connectors') },
-  { method: 'POST', path: '/api/elvar/connectors/:id/oauth/claim', auth: 'user', handler: comingSoon('connectors') },
-  { method: 'GET', path: '/api/elvar/oauth/callback', auth: 'state', handler: comingSoonPage('connectors') },
+  // ---- Google, per user (decision O2: the user's OWN OAuth client). The callback is the platform's single URL; it has no token, only the single-use state.
+  { method: 'GET', path: '/api/elvar/connect/google/status', auth: 'user', handler: GOOGLE.connectStatus },
+  { method: 'POST', path: '/api/elvar/connect/google/start', auth: 'user', handler: GOOGLE.connectStart },
+  { method: 'POST', path: '/api/elvar/connect/google/claim', auth: 'user', handler: GOOGLE.connectClaim },
+  { method: 'POST', path: '/api/elvar/connect/google/disconnect', auth: 'user', handler: GOOGLE.connectDisconnect },
+  { method: 'GET', path: '/api/elvar/connect/google/callback', auth: 'state', handler: GOOGLE.connectCallback },
+  // ---- connectors (MCP servers and HTTP APIs), per user
+  { method: 'GET', path: '/api/elvar/connectors', auth: 'user', handler: CX.listConnectors },
+  { method: 'POST', path: '/api/elvar/connectors', auth: 'user', handler: CX.createConnector },
+  { method: 'GET', path: '/api/elvar/connectors/export', auth: 'user', handler: CX.exportAll },
+  { method: 'POST', path: '/api/elvar/connectors/delete-all', auth: 'user', handler: CX.deleteAll },
+  { method: 'GET', path: '/api/elvar/connectors/:id', auth: 'user', handler: CX.getConnector },
+  { method: 'PATCH', path: '/api/elvar/connectors/:id', auth: 'user', handler: CX.patchConnector },
+  { method: 'DELETE', path: '/api/elvar/connectors/:id', auth: 'user', handler: CX.deleteConnector },
+  { method: 'POST', path: '/api/elvar/connectors/:id/sync', auth: 'user', handler: CX.syncConnector },
+  { method: 'POST', path: '/api/elvar/connectors/:id/oauth/start', auth: 'user', handler: CX.oauthStart },
+  { method: 'POST', path: '/api/elvar/connectors/:id/oauth/claim', auth: 'user', handler: CX.oauthClaim },
+  { method: 'GET', path: '/api/elvar/oauth/callback', auth: 'state', handler: CX.oauthCallback },
+  // ---- build requests (Claude Code through the user's own GitHub repository)
+  { method: 'GET', path: '/api/elvar/builds', auth: 'user', handler: BUILDS.listBuilds },
+  { method: 'DELETE', path: '/api/elvar/builds/:id', auth: 'user', handler: BUILDS.deleteBuild },
 ];
 
 // Paths that existed before the router (the Google callback URL is what a user registered at Google, so it must not change). Vercel rewrites them

@@ -5,7 +5,7 @@ import { diffBuilds, noteForBuild } from '../web/src/builds.js';
 import { declarations, TOOL_MAP } from '../server/google/tools.js';
 import { executeGoogle } from '../server/google/index.js';
 import { enterTestUser } from './helpers/user-ctx.mjs';
-enterTestUser();   // a signed-in test user: approval tickets are keyed to the user and consumed in their own database
+const me = enterTestUser();   // a signed-in test user: approval tickets are keyed to the user and consumed in their own database
 
 const BRIEF = '# 翻訳アプリ 企画書\n## 目的\n海外の人との会話をその場で翻訳する。'.padEnd(200, '。');
 const withEnv = async (fn) => { const keep = { ...process.env }; Object.assign(process.env, { BUILD_REPO: 'me/build', BUILD_GITHUB_TOKEN: 'ghp_b', BRAIN_GITHUB_TOKEN: 'ghp_x', BRAIN_REPO: 'me/vault' }); delete process.env.BRAIN_DIR; delete process.env.SARASHINA_API_KEY; delete process.env.GEMINI_API_KEY; const real = globalThis.fetch; try { return await fn(); } finally { globalThis.fetch = real; for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]; Object.assign(process.env, keep); } };
@@ -199,4 +199,32 @@ test('issueBody fills placeholders in our header only, never in the request text
   assert.ok(!b.slice(0, b.indexOf('ページに')).includes('{{'), 'header filled');
   assert.ok(b.includes('ページに「{{U}}」と{{A}}を表示する'), 'request text untouched');
   const s = issueBody('{{TZ_LABEL}} のまま', 'self'); assert.ok(s.endsWith('{{TZ_LABEL}} のまま'));
+});
+
+test('build requests are the user\'s own: the request is recorded in THEIR list (their repo, their token), the state follows GitHub, another user has none, and a database hiccup does not undo the request', async () => {
+  const { makeTestUser } = await import('./helpers/user-ctx.mjs');
+  const other = makeTestUser({ db: me.db });
+  await withEnv(async () => {
+    const seen = [];
+    globalThis.fetch = async (u, o = {}) => {
+      u = String(u); seen.push({ u, auth: o.headers?.authorization });
+      if (u.endsWith('/labels')) return { ok: false, status: 422, json: async () => ({ message: 'already_exists' }) };
+      if (u.endsWith('/issues')) return { ok: true, status: 201, json: async () => ({ number: 12, html_url: 'https://github.com/me/build/issues/12', title: JSON.parse(o.body).title }) };
+      if (/\/issues\/12$/.test(u)) return { ok: true, status: 200, json: async () => ({ number: 12, title: '[製作] 記録テスト', state: 'open', html_url: 'x', created_at: new Date().toISOString(), updated_at: new Date().toISOString() }) };
+      if (/\/issues\/12\/comments/.test(u)) return { ok: true, status: 200, json: async () => [] };
+      if (/\/pulls\?/.test(u)) return { ok: true, status: 200, json: async () => [{ number: 30, state: 'open', draft: false, body: 'closes #12', html_url: 'p', head: { ref: 'issue-12', sha: 'abc' }, title: 'PR' }] };
+      if (/\/pulls\/30$/.test(u) || /check-runs|\/status$/.test(u) || /actions\/runs/.test(u)) return { ok: true, status: 200, json: async () => ({ check_runs: [], total_count: 0, statuses: [], workflow_runs: [], changed_files: 1, additions: 1, deletions: 0, commits: 1 }) };
+      return { ok: false, status: 404, json: async () => ({ message: 'nf' }) };
+    };
+    await me.run(() => buildRequest({ title: '記録テスト', request: 'ボタンを押すとHelloと出る、1枚のWebページを作ってほしい。' }));
+    assert.ok(seen.every((c) => c.auth === 'Bearer ghp_b'), 'GitHub is called with the user\'s own token');
+    const mine = (await me.db.asUser(me.v, (r) => r.builds.list())).filter((b) => b.issueNumber === 12); assert.deepEqual(mine.map((b) => [b.repo, b.issueNumber, b.state, b.title]), [['me/build', 12, 'queued', '記録テスト']]);
+    assert.deepEqual(await other.db.asUser(other.v, (r) => r.builds.list()), [], 'another user has no such request');
+    await me.run(() => buildStatus({ number: 12, summarizeComments: false }));
+    const synced = (await me.db.asUser(me.v, (r) => r.builds.list())).filter((b) => b.issueNumber === 12); assert.deepEqual([synced[0].state, synced[0].prNumber], ['review', 30], 'the user\'s list follows what GitHub says');
+    // a database that fails does not turn an existing GitHub issue into an error
+    const broken = Object.assign(Object.create(me.cfg), { db: async () => { throw new Error('db down'); } });
+    const quiet = console.error; console.error = () => {};
+    try { const r = await (await import('../server/config/resolve.js')).runWithConfig(broken, () => buildRequest({ title: '二つ目', request: 'ボタンを押すとHelloと出る、1枚のWebページを作ってほしい。' })); assert.equal(r.number, 12); } finally { console.error = quiet; }
+  });
 });

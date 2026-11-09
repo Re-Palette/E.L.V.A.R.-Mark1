@@ -4,18 +4,20 @@
 // Every request goes through safeFetch. Everything the server says is untrusted data (cleaned and capped by manifest.js before it is kept).
 import crypto from 'node:crypto';
 import { safeFetch } from '../net/safe-fetch.js';
-import { getStore } from '../store/index.js';
+import { currentConfig } from '../config/resolve.js';
 import { ConnectorError, toConnectorError } from './errors.js';
 import { cleanText, cleanMessage } from './manifest.js';
 import { shapeOutput } from './http.js';
-import { currentScope } from './data.js';
+import { kvSessionKey } from './data.js';
 
 // The newest revision this client was written against first. NOTE: the MCP spec revisions were not re-checked online while writing this (no network access
 // to the spec site from the build environment); the server answers with the version it speaks and we accept any listed here.
 export const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const CLIENT_INFO = { name: 'elvar', version: '0.1' };
 const SESSION_TTL = 3600;
-const sessKey = (id) => currentScope().sessKey(id);
+const sessKey = kvSessionKey;
+/** The MCP session id is kept in the signed-in user's own short-lived rows (app.kv_ephemeral); without a signed-in user (scripts) there is no shared store. */
+const userKv = () => { const db = currentConfig().db; return typeof db === 'function' ? { get: (k) => db((r) => r.kv.get(k)), set: (k, v, o) => db((r) => r.kv.set(k, v, o)), del: (k) => db((r) => r.kv.del(k)) } : null; };
 
 /** Parse an SSE body into JSON-RPC messages (only `data:` lines; multi-line data joined). */
 export function parseSse(text) {
@@ -42,7 +44,7 @@ export function pickResponse(res, id) {
  */
 export function createMcpClient({ url, headers = () => ({}), connectorId = null, timeoutMs = 15000, allowPrivate = false, fetchImpl = safeFetch, useSessionStore = true }) {
   let sid = null, proto = null, seq = 0, ready = false;
-  const store = () => { try { return useSessionStore && connectorId ? getStore() : null; } catch { return null; } };
+  const store = () => { try { return useSessionStore && connectorId ? userKv() : null; } catch { return null; } };
 
   async function post(body, { expectId = null, maxBytes = 2_097_152 } = {}) {
     const h = { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...(await headers()) };

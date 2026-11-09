@@ -119,14 +119,18 @@ test('headers: Host, Content-Length, hop-by-hop, cookies and our own token canno
 }));
 
 test('the test-only hatch: needs the flag, is ignored on Vercel and in production, opens loopback only', async () => {
-  assert.equal(loopbackHatchOn({}), false); assert.equal(loopbackHatchOn({ ELVAR_UNSAFE_TEST_NETWORK: 'loopback' }), true);
-  assert.equal(loopbackHatchOn({ ELVAR_UNSAFE_TEST_NETWORK: 'loopback', VERCEL: '1' }), false, 'never on Vercel');
-  assert.equal(loopbackHatchOn({ ELVAR_UNSAFE_TEST_NETWORK: 'loopback', NODE_ENV: 'production' }), false, 'never in a production run');
-  assert.equal(loopbackHatchOn({ ELVAR_UNSAFE_TEST_NETWORK: '1' }), false, 'only the exact value counts');
-  assert.equal(privateAllowed(true, {}), true); assert.equal(privateAllowed(true, { VERCEL: '1' }), false, 'allowPrivate never counts on Vercel'); assert.equal(privateAllowed(false, {}), false);
+  assert.equal(loopbackHatchOn({}), false); assert.equal(loopbackHatchOn({ ELVAR_UNSAFE_TEST_NETWORK: 'loopback', ELVAR_TEST_MODE: '1' }), true);
+  assert.equal(loopbackHatchOn({ ELVAR_UNSAFE_TEST_NETWORK: 'loopback', ELVAR_DEV_AUTH: '1' }), true, 'the local dev stack (fake sign-in) counts as a test environment');
+  assert.equal(loopbackHatchOn({ ELVAR_UNSAFE_TEST_NETWORK: 'loopback' }), false, 'the flag alone is not enough: a platform that is not in test mode never opens loopback');
+  assert.equal(loopbackHatchOn({ ELVAR_UNSAFE_TEST_NETWORK: 'loopback', ELVAR_TEST_MODE: '1', VERCEL: '1' }), false, 'never on Vercel');
+  assert.equal(loopbackHatchOn({ ELVAR_UNSAFE_TEST_NETWORK: 'loopback', ELVAR_TEST_MODE: '1', NODE_ENV: 'production' }), false, 'never in a production run');
+  assert.equal(loopbackHatchOn({ ELVAR_UNSAFE_TEST_NETWORK: '1', ELVAR_TEST_MODE: '1' }), false, 'only the exact value counts');
+  assert.equal(privateAllowed(true, {}), false, 'a connector\'s allowPrivate never counts by default (a user could probe the operator\'s internal network)');
+  assert.equal(privateAllowed(true, { ELVAR_ALLOW_PRIVATE_CONNECTORS: '1' }), true, 'only a single-user install that opted in');
+  assert.equal(privateAllowed(true, { ELVAR_ALLOW_PRIVATE_CONNECTORS: '1', VERCEL: '1' }), false, 'allowPrivate never counts on Vercel'); assert.equal(privateAllowed(false, { ELVAR_ALLOW_PRIVATE_CONNECTORS: '1' }), false);
   const calls = [];
   const t = { transport: okTransport(calls) };
-  await withEnv({ ...clean, ELVAR_UNSAFE_TEST_NETWORK: 'loopback' }, async () => {
+  await withEnv({ ...clean, ELVAR_UNSAFE_TEST_NETWORK: 'loopback', ELVAR_TEST_MODE: '1' }, async () => {
     assert.equal((await safeFetch('http://127.0.0.1:9/x', t)).status, 200, 'loopback over http, any port');
     assert.equal((await safeFetch('https://localhost:9/x', { ...t, resolve: async () => [{ address: '::1', family: 6 }] })).status, 200);
     await refused('http://10.0.0.1/x', t, 'blocked_address');
@@ -137,8 +141,9 @@ test('the test-only hatch: needs the flag, is ignored on Vercel and in productio
   for (const e of [{ ...clean }, { ...clean, ELVAR_UNSAFE_TEST_NETWORK: 'loopback', VERCEL: '1' }, { ...clean, ELVAR_UNSAFE_TEST_NETWORK: 'loopback', NODE_ENV: 'production' }]) {
     await withEnv(e, async () => { await refused('http://127.0.0.1:9/x', t, 'not_https'); await refused('https://127.0.0.1/x', t, 'blocked_address'); });
   }
-  await withEnv({ ...clean, VERCEL: '1' }, async () => refused('https://192.168.0.1/x', { ...t, allowPrivate: true }, 'blocked_address'));
-  await withEnv(clean, async () => assert.equal((await safeFetch('https://192.168.0.1:8123/x', { ...t, allowPrivate: true })).status, 200, 'a local node honours allowPrivate'));
+  await withEnv({ ...clean, VERCEL: '1', ELVAR_ALLOW_PRIVATE_CONNECTORS: '1' }, async () => refused('https://192.168.0.1/x', { ...t, allowPrivate: true }, 'blocked_address'));
+  await withEnv(clean, async () => refused('https://192.168.0.1:8123/x', { ...t, allowPrivate: true }, 'bad_port'));   // the platform default: refused
+  await withEnv({ ...clean, ELVAR_ALLOW_PRIVATE_CONNECTORS: '1' }, async () => assert.equal((await safeFetch('https://192.168.0.1:8123/x', { ...t, allowPrivate: true })).status, 200, 'a single-user install that opted in honours allowPrivate'));
 });
 
 // ---- real sockets (hatch on): size cap, time cap, redirect, headers actually sent
