@@ -18,6 +18,9 @@ const secretMeta = (r) => ({ name: r.name, last4: r.last4, dekVer: r.dek_ver, up
 const secretFull = (r) => ({ ...secretMeta(r), ct: Buffer.from(r.ct), iv: Buffer.from(r.iv) });
 const deviceRow = (r) => ({ id: r.id, name: r.name, scopes: r.scopes, createdAt: iso(r.created_at), lastSeenAt: iso(r.last_seen_at) });
 const auditRow = (r) => ({ id: String(r.id), at: iso(r.at), actor: r.actor, actorId: r.actor_id, action: r.action, target: r.target, meta: r.meta });
+const tokenMeta = (r) => ({ provider: r.provider, scopes: [...(r.scopes || [])], status: r.status, reason: r.reason, revokeUrl: r.revoke_url, dekVer: r.dek_ver, updatedAt: iso(r.updated_at) });
+const tokenFull = (r) => ({ ...tokenMeta(r), ct: Buffer.from(r.ct), iv: Buffer.from(r.iv) });
+const buildRow = (r) => ({ id: r.id, repo: r.repo, target: r.target, issueNumber: r.issue_number, prNumber: r.pr_number, state: r.state, title: r.title, createdAt: iso(r.created_at), updatedAt: iso(r.updated_at) });
 const limitRow = (r) => ({ provider: r.provider, metric: r.metric, period: r.period, soft: num(r.soft), softAction: r.soft_action });
 
 export function pgRepos(tx, uid, afterCommit = () => {}) {
@@ -141,6 +144,13 @@ export function pgRepos(tx, uid, afterCommit = () => {}) {
                  on conflict (user_id, key) do update set value = excluded.value, expires_at = excluded.expires_at`;
       },
       async del(key) { V.key200(key); return (await tx`delete from app.kv_ephemeral where user_id = ${uid} and key = ${key}`).count > 0; },
+      /** Set only when there is no live value (a lock). @returns {Promise<boolean>} true when this call took it */
+      async setNx(key, value, { ttlSec }) {
+        V.key200(key); V.need(value !== null && value !== undefined); const t = V.ttlSec(ttlSec);
+        const r = await tx`insert into app.kv_ephemeral (user_id, key, value, expires_at) values (${uid}, ${key}, ${value}::jsonb, now() + make_interval(secs => ${t}))
+                           on conflict (user_id, key) do update set value = excluded.value, expires_at = excluded.expires_at where app.kv_ephemeral.expires_at <= now() returning key`;
+        return r.length === 1;
+      },
     },
 
     tickets: {
@@ -163,6 +173,92 @@ export function pgRepos(tx, uid, afterCommit = () => {}) {
         const r = await tx`delete from app.oauth_pending where user_id = ${uid} and state_hash = ${V.toBuf(stateHash)} and expires_at > now() returning sealed`;
         return r.length ? Buffer.from(r[0].sealed) : null;
       },
+      /** The callback takes a flow that has only been started, exactly once (started -> exchanging). @returns {Promise<Buffer|null>} null = unknown, expired or already taken */
+      async begin(stateHash) {
+        V.need(V.isBytes(stateHash, 32));
+        const r = await tx`update app.oauth_pending set phase = 'exchanging' where user_id = ${uid} and state_hash = ${V.toBuf(stateHash)} and phase = 'started' and expires_at > now() returning sealed`;
+        return r.length ? Buffer.from(r[0].sealed) : null;
+      },
+      /** Write the result of the exchange (exchanging -> done | error); the expiry stays. @returns {Promise<boolean>} */
+      async settle(stateHash, { sealed, phase }) {
+        V.need(V.isBytes(stateHash, 32) && V.isBytes(sealed) && sealed.length >= 1 && sealed.length <= 8192 && ['done', 'error'].includes(phase));
+        return (await tx`update app.oauth_pending set sealed = ${V.toBuf(sealed)}, phase = ${phase} where user_id = ${uid} and state_hash = ${V.toBuf(stateHash)} and phase = 'exchanging' and expires_at > now()`).count === 1;
+      },
+      /** Look without taking (the claim polls until the callback has arrived). */
+      async get(stateHash) {
+        V.need(V.isBytes(stateHash, 32));
+        const [r] = await tx`select sealed, phase from app.oauth_pending where user_id = ${uid} and state_hash = ${V.toBuf(stateHash)} and expires_at > now()`;
+        return r ? { sealed: Buffer.from(r.sealed), phase: r.phase } : null;
+      },
+    },
+
+    /** The OAuth tokens of the user's Google login ('google') and MCP connectors ('cx:<id>'), sealed under the DEK (server/auth/keyring.js). */
+    oauthTokens: {
+      async list() { return (await tx`select provider, scopes, status, reason, revoke_url, dek_ver, updated_at from app.oauth_tokens where user_id = ${uid} order by provider collate "C"`).map(tokenMeta); },
+      async get(provider) {
+        V.need(V.PROVIDER_RE.test(provider));
+        const [r] = await tx`select provider, ct, iv, dek_ver, scopes, status, reason, revoke_url, updated_at from app.oauth_tokens where user_id = ${uid} and provider = ${provider}`;
+        return r ? tokenFull(r) : null;
+      },
+      async allSealed() { return (await tx`select provider, ct, iv, dek_ver, scopes, status, reason, revoke_url, updated_at from app.oauth_tokens where user_id = ${uid} order by provider collate "C"`).map(tokenFull); },
+      async put(provider, rec) {
+        const t = V.oauthTokenInput(provider, rec);
+        await tx`insert into app.oauth_tokens (user_id, provider, ct, iv, dek_ver, scopes, status, reason, revoke_url) values (${uid}, ${provider}, ${t.ct}, ${t.iv}, ${t.dekVer}, ${t.scopes}, ${t.status}, ${t.reason}, ${t.revokeUrl})
+                 on conflict (user_id, provider) do update set ct = excluded.ct, iv = excluded.iv, dek_ver = excluded.dek_ver, scopes = excluded.scopes, status = excluded.status, reason = excluded.reason, revoke_url = excluded.revoke_url, updated_at = now()`;
+      },
+      /** Flag a login as refused by the provider (or clear the flag) without touching the ciphertext. */
+      async setStatus(provider, status, reason = null) {
+        V.need(V.PROVIDER_RE.test(provider) && V.OAUTH_STATUSES.includes(status) && (reason === null || (typeof reason === 'string' && reason.length <= 60)));
+        return (await tx`update app.oauth_tokens set status = ${status}, reason = ${reason}, updated_at = now() where user_id = ${uid} and provider = ${provider}`).count > 0;
+      },
+      async del(provider) { V.need(V.PROVIDER_RE.test(provider)); return (await tx`delete from app.oauth_tokens where user_id = ${uid} and provider = ${provider}`).count > 0; },
+      async delAll() { return (await tx`delete from app.oauth_tokens where user_id = ${uid}`).count; },
+    },
+
+    /** The user's connectors (MCP servers, HTTP APIs) as manifest objects with their tools (server/connectors/manifest.js). Secrets are NOT here (user_secrets cx:<id>:*). */
+    connectors: {
+      async list() {
+        const cs = await tx`select id, manifest, enabled from app.connectors where user_id = ${uid} order by created_at, id collate "C"`;
+        const ts = await tx`select connector_id, def from app.connector_tools where user_id = ${uid} order by connector_id collate "C", pos, name collate "C"`;
+        return cs.map((c) => ({ ...c.manifest, id: c.id, enabled: c.enabled, tools: ts.filter((t) => t.connector_id === c.id).map((t) => t.def) }));
+      },
+      async get(id) { V.need(V.CONNECTOR_ID_RE.test(id)); return (await this.list()).find((c) => c.id === id) || null; },
+      /** Create or replace a connector together with its tools (a tool that is no longer in the manifest is removed). */
+      async put(c) {
+        const x = V.connectorInput(c);
+        await tx`insert into app.connectors (user_id, id, manifest, enabled, synced_at) values (${uid}, ${x.id}, ${x.manifest}::jsonb, ${x.enabled}, ${x.syncedAt === null ? null : new Date(x.syncedAt)})
+                 on conflict (user_id, id) do update set manifest = excluded.manifest, enabled = excluded.enabled, synced_at = excluded.synced_at, updated_at = now()`;
+        const names = x.tools.map((t) => t.name);
+        await tx`delete from app.connector_tools where user_id = ${uid} and connector_id = ${x.id} and not (name = any(${names}::text[]))`;
+        if (x.tools.length) {
+          await tx`insert into app.connector_tools (user_id, connector_id, name, def, hash, enabled, approval, expose, pos)
+                   select ${uid}, ${x.id}, t.name, t.def, t.hash, t.enabled, t.approval, t.expose, t.pos from jsonb_to_recordset(${tx.json(x.tools)}::jsonb) as t(name text, def jsonb, hash text, enabled boolean, approval text, expose text, pos int)
+                   on conflict (user_id, connector_id, name) do update set def = excluded.def, hash = excluded.hash, enabled = excluded.enabled, approval = excluded.approval, expose = excluded.expose, pos = excluded.pos`;
+        }
+      },
+      async del(id) { V.need(V.CONNECTOR_ID_RE.test(id)); return (await tx`delete from app.connectors where user_id = ${uid} and id = ${id}`).count > 0; },   // its tools go with it (cascade)
+      async delAll() { return (await tx`delete from app.connectors where user_id = ${uid}`).count; },
+    },
+
+    /** Build requests (Claude Code through the user's own GitHub repository). */
+    builds: {
+      async record(b) {
+        const x = V.buildInput(b);
+        const [r] = await tx`insert into app.build_requests (user_id, repo, target, issue_number, state, title) values (${uid}, ${x.repo}, ${x.target}, ${x.issueNumber}, ${x.state}, ${x.title})
+                             on conflict (user_id, repo, issue_number) do update set title = excluded.title, state = excluded.state, updated_at = now()
+                             returning id, repo, target, issue_number, pr_number, state, title, created_at, updated_at`;
+        return buildRow(r);
+      },
+      async list({ limit = 50 } = {}) {
+        V.need(Number.isInteger(limit) && limit >= 1 && limit <= 200);
+        return (await tx`select id, repo, target, issue_number, pr_number, state, title, created_at, updated_at from app.build_requests where user_id = ${uid} order by created_at desc, id limit ${limit}`).map(buildRow);
+      },
+      async update(id, { state, prNumber }) {
+        V.need(requireUuid(id) && (state === undefined || V.BUILD_STATES.includes(state)) && (prNumber === undefined || prNumber === null || (Number.isInteger(prNumber) && prNumber >= 1)));
+        return (await tx`update app.build_requests set state = coalesce(${state ?? null}, state), pr_number = coalesce(${prNumber ?? null}, pr_number), updated_at = now() where user_id = ${uid} and id = ${id}`).count > 0;
+      },
+      async del(id) { V.need(requireUuid(id)); return (await tx`delete from app.build_requests where user_id = ${uid} and id = ${id}`).count > 0; },
+      async delAll() { return (await tx`delete from app.build_requests where user_id = ${uid}`).count; },
     },
 
     usageLimits: {
@@ -217,6 +313,12 @@ export function pgSystem(sql) {
     async recordReceipt(tablesChecked) { V.need(Number.isInteger(tablesChecked) && tablesChecked >= 0); await sql`select app.record_deletion_receipt(${tablesChecked})`; },
     /** The confirmed account with this e-mail becomes an admin (the first one). @returns {Promise<string|null>} its id */
     async bootstrapAdmin(email) { V.need(typeof email === 'string' && email.length >= 3 && email.length <= 320); const [r] = await sql`select app.bootstrap_admin(${email}) as id`; return r.id || null; },
+    /** Whose OAuth flow is this state (its hash)? The callback has no token; everything after this runs as that user. @returns {Promise<string|null>} the user id (not yet verified: mint it 'oauth_pending') */
+    async oauthPendingOwner(stateHash) {
+      V.need(V.isBytes(stateHash, 32));
+      const [r] = await sql`select app.oauth_pending_owner(${V.toBuf(stateHash)}) as uid`;
+      return r.uid || null;
+    },
     async deviceLookup(hash) {
       V.need(V.isBytes(hash, 32));
       const [r] = await sql`select user_id, device_id, scopes from app.device_lookup(${V.toBuf(hash)})`;

@@ -50,6 +50,9 @@ export const KEK_ID_RE = /^[A-Za-z0-9_.-]{1,32}$/;
 const needUuid = (u) => { if (!UUID_RE.test(String(u))) throw fail('bad_user_id', 500); return String(u).toLowerCase(); };
 const needName = (n) => { if (!SECRET_NAME_RE.test(String(n))) throw fail('bad_secret_name'); return String(n); };
 
+/** AAD of an OAuth token record (app.oauth_tokens): the user, the provider ('google' | 'cx:<id>') and the DEK version. */
+export const tokenAad = (userId, provider, dekVer) => `elvar:oauth:v2|${needUuid(userId)}|${String(provider)}|${Number(dekVer)}`;
+
 export const dekAad = (userId, dekVer) => `elvar:dek:v2|${needUuid(userId)}|${Number(dekVer)}`;
 export const secretAad = (userId, name, dekVer) => `elvar:sec:v2|${needUuid(userId)}|${needName(name)}|${Number(dekVer)}`;
 
@@ -110,6 +113,13 @@ export function sealSecret(dek, userId, name, dekVer, value) {
   return { ct: r.ct, iv: r.iv, dekVer, last4: last4Of(v) };
 }
 export function openSecret(dek, userId, name, rec) { return openBytes(dek, rec, secretAad(userId, name, rec.dekVer)).toString('utf8'); }
+
+/** An OAuth token record (any JSON object: refresh token, access token, client id ...). @returns {{ct:Buffer, iv:Buffer, dekVer:number}} */
+export function sealToken(dek, userId, provider, dekVer, obj) {
+  const r = sealBytes(dek, JSON.stringify(obj), tokenAad(userId, provider, dekVer));
+  return { ct: r.ct, iv: r.iv, dekVer };
+}
+export function openToken(dek, userId, provider, rec) { return JSON.parse(openBytes(dek, rec, tokenAad(userId, provider, rec.dekVer)).toString('utf8')); }
 
 /** Keys derived from the DEK for other purposes. Rotating the DEK invalidates both (pending approval tickets die with it). */
 export const ticketKey = (dek, userId) => hkdf(dek, Buffer.from(needUuid(userId)), 'elvar-approval-ticket-v2');
@@ -180,6 +190,30 @@ export function createKeyring({ kek, cacheMs = 60_000, max = 500, now = Date.now
       try { return openSecret(k.dek, r.uid, name, rec); } catch { throw fail('secret_unreadable', 500); }
     },
     deleteSecret: (r, name) => r.secrets.del(needName(name)),
+    /**
+     * OAuth tokens (Google, MCP connectors): the record is sealed under the DEK like a secret; scopes / status / revoke_url stay readable columns.
+     * `data` is merged over the stored record when `merge` is true (a refresh keeps the client id and the refresh token).
+     */
+    async putToken(r, provider, data, { scopes = [], status = 'ok', reason = null, revokeUrl = null, merge = false } = {}) {
+      const k = await dek(r); let next = data, meta = { scopes, status, reason, revokeUrl };
+      if (merge) {
+        const cur = await r.oauthTokens.get(provider);
+        if (cur) { try { next = { ...openToken(k.dek, r.uid, provider, cur), ...data }; } catch { throw fail('secret_unreadable', 500); } meta = { scopes: scopes.length ? scopes : cur.scopes, status, reason, revokeUrl: revokeUrl ?? cur.revokeUrl }; }
+      }
+      await r.oauthTokens.put(provider, { ...sealToken(k.dek, r.uid, provider, k.dekVer, next), ...meta });
+    },
+    /** @returns {Promise<{data:object, scopes:string[], status:string, reason:string|null, revokeUrl:string|null, updatedAt:string}|null>} */
+    async getToken(r, provider) {
+      const rec = await r.oauthTokens.get(provider); if (!rec) return null;
+      const k = await dek(r);
+      try { return { data: openToken(k.dek, r.uid, provider, rec), scopes: rec.scopes, status: rec.status, reason: rec.reason, revokeUrl: rec.revokeUrl, updatedAt: rec.updatedAt }; } catch { throw fail('secret_unreadable', 500); }
+    },
+    /** Every token of the user, opened (account deletion revokes them at the providers). A record that cannot be opened is skipped. */
+    async allTokens(r) {
+      const out = [], k = await dek(r);
+      for (const rec of await r.oauthTokens.allSealed()) { try { out.push({ provider: rec.provider, data: openToken(k.dek, r.uid, rec.provider, rec), scopes: rec.scopes, revokeUrl: rec.revokeUrl }); } catch { /* unreadable: nothing to revoke with */ } }
+      return out;
+    },
     /** Names, whether set and the last 4 characters. Values are never returned. */
     async secretStatus(r) { return (await r.secrets.list()).map((s) => ({ name: s.name, set: true, last4: s.last4, updatedAt: s.updatedAt })); },
     async ticketKey(r) { return ticketKey((await dek(r)).dek, r.uid); },
@@ -187,7 +221,7 @@ export function createKeyring({ kek, cacheMs = 60_000, max = 500, now = Date.now
 
     /**
      * New DEK for this user ("sign out everywhere and make a new key", or a suspected leak): every secret is re-encrypted and dek_ver goes up.
-     * Run it inside one asUser() so that it is all-or-nothing. Tables added later (oauth_tokens) join here.
+     * Run it inside one asUser() so that it is all-or-nothing. user_secrets and oauth_tokens are both re-encrypted.
      */
     async rotateDek(r) {
       forget(r.uid);
@@ -197,9 +231,14 @@ export function createKeyring({ kek, cacheMs = 60_000, max = 500, now = Date.now
         let plain; try { plain = openSecret(cur.dek, r.uid, s.name, s); } catch { throw fail('secret_unreadable', 500); }
         await r.secrets.put(s.name, sealSecret(next, r.uid, s.name, nextVer, plain));
       }
+      let tokens = 0;
+      for (const t of await r.oauthTokens.allSealed()) {
+        let plain; try { plain = openToken(cur.dek, r.uid, t.provider, t); } catch { throw fail('secret_unreadable', 500); }
+        await r.oauthTokens.put(t.provider, { ...sealToken(next, r.uid, t.provider, nextVer, plain), scopes: t.scopes, status: t.status, reason: t.reason, revokeUrl: t.revokeUrl }); tokens++;
+      }
       await r.keys.replace(await wrapDek(kek, r.uid, nextVer, next));
       memo.delete(r); forget(r.uid); afterCommit(r, () => forget(r.uid));
-      return { dekVer: nextVer, reencrypted: all.length };
+      return { dekVer: nextVer, reencrypted: all.length + tokens };
     },
     /** KEK rotation for this user. @returns {Promise<boolean>} true if the wrap was changed */
     async rewrap(r) {

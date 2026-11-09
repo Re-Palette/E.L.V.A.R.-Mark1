@@ -2,6 +2,7 @@
 // registered table that is exported to be covered here, so a new table cannot be added without deciding what leaves with the user.
 // Ciphertext, wrapped keys and token hashes never leave (the registry's exportExclude): secrets are listed by NAME and last four characters only.
 import { REGISTRY } from './registry.js';
+import { exportConnectors } from '../connectors/data.js';
 
 const dayStr = (d) => d.toISOString().slice(0, 10);
 
@@ -13,6 +14,10 @@ export const EXPORTERS = {
   'secrets.json': async (r) => ({ secrets: (await r.secrets.list()).map((s) => ({ name: s.name, last4: s.last4, updatedAt: s.updatedAt })), note: 'キーの値は、安全のため書き出しません（名前と末尾4桁だけ）' }),
   'devices.json': async (r) => ({ devices: await r.devices.list() }),
   'audit.json': async (r) => ({ audit: await r.audit.list({ limit: 1000 }) }),
+  // P3: what the user connected (Google, MCP logins: provider, granted scopes, state; never a token), their connectors (secrets only as "is set"), their build requests
+  'connections.json': async (r) => ({ connections: (await r.oauthTokens.list()).map((t) => ({ provider: t.provider, scopes: t.scopes, status: t.status, reason: t.reason, updatedAt: t.updatedAt })), note: 'ログインの値（トークン）は、安全のため書き出しません（連携の状態とスコープだけ）' }),
+  'connectors.json': async (r) => exportConnectors(await r.connectors.list(), Object.fromEntries((await r.secrets.list()).filter((s) => s.name.startsWith('cx:')).map((s) => [s.name, 'set'])), r.uid),
+  'builds.json': async (r) => ({ builds: await r.builds.list({ limit: 200 }) }),
   'usage.json': async (r) => {
     const to = new Date(), from = new Date(to.getTime() - 400 * 86400_000);
     return { daily: await r.usage.daily({ from: dayStr(from), to: dayStr(to) }), limits: await r.usageLimits.list(), storage: await r.usage.storage() };

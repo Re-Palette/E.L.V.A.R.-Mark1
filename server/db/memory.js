@@ -14,6 +14,7 @@ const DEFAULT_QUOTA = 524288000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const UUID_ANYWHERE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const iso = (ms) => new Date(ms).toISOString();
+const jclone = (v) => JSON.parse(JSON.stringify(v));   // what a jsonb column does to a value (undefined keys vanish)
 const sameBytes = (a, b) => Buffer.from(a).equals(Buffer.from(b));
 const clone = (v) => {
   if (Buffer.isBuffer(v)) return Buffer.from(v);
@@ -21,6 +22,10 @@ const clone = (v) => {
   if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, clone(x)]));
   return v;
 };
+
+const tokenMeta = (r) => ({ provider: r.provider, scopes: [...r.scopes], status: r.status, reason: r.reason, revokeUrl: r.revoke_url, dekVer: r.dek_ver, updatedAt: iso(r.updated_at) });
+const tokenFull = (r) => ({ ...tokenMeta(r), ct: Buffer.from(r.ct), iv: Buffer.from(r.iv) });
+const buildRow = (r) => ({ id: r.id, repo: r.repo, target: r.target, issueNumber: r.issue_number, prNumber: r.pr_number, state: r.state, title: r.title, createdAt: iso(r.created_at), updatedAt: iso(r.updated_at) });
 
 export function createMemoryDb({ now = null } = {}) {
   let offset = 0;
@@ -102,7 +107,7 @@ export function createMemoryDb({ now = null } = {}) {
         async get() { const r = find('user_keys', uid); return r ? { kekId: r.kek_id, dekVer: r.dek_ver, wrapped: Buffer.from(r.wrapped), iv: Buffer.from(r.iv), rotatedAt: r.rotated_at ? iso(r.rotated_at) : null } : null; },
         async create(rec) { const k = V.keyInput(rec); if (find('user_keys', uid)) return false; tables.user_keys.push({ user_id: uid, kek_id: k.kekId, dek_ver: k.dekVer, wrapped: k.wrapped, iv: k.iv, rotated_at: null }); return true; },
         async replace(rec) { const k = V.keyInput(rec); const r = find('user_keys', uid); if (!r) throw dbError('not_found', 404); Object.assign(r, { kek_id: k.kekId, dek_ver: k.dekVer, wrapped: k.wrapped, iv: k.iv, rotated_at: clock() }); },
-        async del() { remove('user_secrets', (r) => r.user_id === uid); return remove('user_keys', (r) => r.user_id === uid) > 0; },   // on delete cascade (crypto-shred)
+        async del() { remove('user_secrets', (r) => r.user_id === uid); remove('oauth_tokens', (r) => r.user_id === uid); return remove('user_keys', (r) => r.user_id === uid) > 0; },   // on delete cascade (crypto-shred)
       },
       secrets: {
         async list() { return rows('user_secrets', uid).sort((a, b) => (a.name < b.name ? -1 : 1)).map((r) => ({ name: r.name, last4: r.last4, dekVer: r.dek_ver, updatedAt: iso(r.updated_at) })); },
@@ -147,6 +152,13 @@ export function createMemoryDb({ now = null } = {}) {
           if (r) Object.assign(r, next); else tables.kv_ephemeral.push(next);
         },
         async del(key) { V.key200(key); return remove('kv_ephemeral', (r) => r.user_id === uid && r.key === key) > 0; },
+        async setNx(key, value, { ttlSec }) {
+          V.key200(key); V.need(value !== null && value !== undefined); const t = V.ttlSec(ttlSec); const r = find('kv_ephemeral', uid, (x) => x.key === key);
+          if (r && live(r)) return false;
+          const next = { user_id: uid, key, value: clone(value), expires_at: clock() + t * 1000 };
+          if (r) Object.assign(r, next); else tables.kv_ephemeral.push(next);
+          return true;
+        },
       },
       tickets: {
         async markUsed(jti, ttl) { V.key200(jti); const t = V.ttlSec(ttl); if (find('ticket_uses', uid, (r) => r.jti === jti)) return false; tables.ticket_uses.push({ user_id: uid, jti, exp: clock() + t * 1000 }); return true; },
@@ -155,13 +167,80 @@ export function createMemoryDb({ now = null } = {}) {
         async put({ stateHash, sealed, ttl }) {
           V.need(V.isBytes(stateHash, 32) && V.isBytes(sealed) && sealed.length >= 1 && sealed.length <= 8192); const t = V.ttlSec(ttl);
           if (tables.oauth_pending.some((r) => sameBytes(r.state_hash, stateHash))) throw dbError('conflict', 409);
-          tables.oauth_pending.push({ user_id: uid, state_hash: V.toBuf(stateHash), sealed: V.toBuf(sealed), expires_at: clock() + t * 1000 });
+          tables.oauth_pending.push({ user_id: uid, state_hash: V.toBuf(stateHash), sealed: V.toBuf(sealed), phase: 'started', expires_at: clock() + t * 1000 });
         },
         async take(stateHash) {
           V.need(V.isBytes(stateHash, 32));
           const r = find('oauth_pending', uid, (x) => sameBytes(x.state_hash, stateHash) && live(x)); if (!r) return null;
           remove('oauth_pending', (x) => x === r); return Buffer.from(r.sealed);
         },
+        async begin(stateHash) {
+          V.need(V.isBytes(stateHash, 32));
+          const r = find('oauth_pending', uid, (x) => sameBytes(x.state_hash, stateHash) && live(x) && x.phase === 'started'); if (!r) return null;
+          r.phase = 'exchanging'; return Buffer.from(r.sealed);
+        },
+        async settle(stateHash, { sealed, phase }) {
+          V.need(V.isBytes(stateHash, 32) && V.isBytes(sealed) && sealed.length >= 1 && sealed.length <= 8192 && ['done', 'error'].includes(phase));
+          const r = find('oauth_pending', uid, (x) => sameBytes(x.state_hash, stateHash) && live(x) && x.phase === 'exchanging'); if (!r) return false;
+          r.sealed = V.toBuf(sealed); r.phase = phase; return true;
+        },
+        async get(stateHash) {
+          V.need(V.isBytes(stateHash, 32));
+          const r = find('oauth_pending', uid, (x) => sameBytes(x.state_hash, stateHash) && live(x)); return r ? { sealed: Buffer.from(r.sealed), phase: r.phase } : null;
+        },
+      },
+      oauthTokens: {
+        async list() { return rows('oauth_tokens', uid).sort((a, b) => (a.provider < b.provider ? -1 : 1)).map(tokenMeta); },
+        async get(provider) { V.need(V.PROVIDER_RE.test(provider)); const r = find('oauth_tokens', uid, (x) => x.provider === provider); return r ? tokenFull(r) : null; },
+        async allSealed() { return rows('oauth_tokens', uid).sort((a, b) => (a.provider < b.provider ? -1 : 1)).map(tokenFull); },
+        async put(provider, rec) {
+          const t = V.oauthTokenInput(provider, rec); const r = find('oauth_tokens', uid, (x) => x.provider === provider);
+          const next = { user_id: uid, provider, ct: t.ct, iv: t.iv, dek_ver: t.dekVer, scopes: t.scopes, status: t.status, reason: t.reason, revoke_url: t.revokeUrl, updated_at: clock() };
+          if (r) Object.assign(r, next); else tables.oauth_tokens.push(next);
+        },
+        async setStatus(provider, status, reason = null) {
+          V.need(V.PROVIDER_RE.test(provider) && V.OAUTH_STATUSES.includes(status) && (reason === null || (typeof reason === 'string' && reason.length <= 60)));
+          const r = find('oauth_tokens', uid, (x) => x.provider === provider); if (!r) return false; r.status = status; r.reason = reason; r.updated_at = clock(); return true;
+        },
+        async del(provider) { V.need(V.PROVIDER_RE.test(provider)); return remove('oauth_tokens', (r) => r.user_id === uid && r.provider === provider) > 0; },
+        async delAll() { return remove('oauth_tokens', (r) => r.user_id === uid); },
+      },
+      connectors: {
+        async list() {
+          return rows('connectors', uid).sort((a, b) => a.created_at - b.created_at || (a.id < b.id ? -1 : 1)).map((c) => ({
+            ...jclone(c.manifest), id: c.id, enabled: c.enabled,
+            tools: rows('connector_tools', uid).filter((t) => t.connector_id === c.id).sort((a, b) => a.pos - b.pos || (a.name < b.name ? -1 : 1)).map((t) => jclone(t.def)) }));
+        },
+        async get(id) { V.need(V.CONNECTOR_ID_RE.test(id)); return (await this.list()).find((c) => c.id === id) || null; },
+        async put(c) {
+          const x = V.connectorInput(c); const cur = find('connectors', uid, (r) => r.id === x.id);
+          const row = { user_id: uid, id: x.id, manifest: jclone(x.manifest), enabled: x.enabled, synced_at: x.syncedAt, created_at: cur ? cur.created_at : clock(), updated_at: clock() };
+          if (cur) Object.assign(cur, row); else tables.connectors.push(row);
+          const keep = new Set(x.tools.map((t) => t.name));
+          remove('connector_tools', (t) => t.user_id === uid && t.connector_id === x.id && !keep.has(t.name));
+          for (const t of x.tools) {
+            const next = { user_id: uid, connector_id: x.id, name: t.name, def: jclone(t.def), hash: t.hash, enabled: t.enabled, approval: t.approval, expose: t.expose, pos: t.pos };
+            const old = find('connector_tools', uid, (r) => r.connector_id === x.id && r.name === t.name); if (old) Object.assign(old, next); else tables.connector_tools.push(next);
+          }
+        },
+        async del(id) { V.need(V.CONNECTOR_ID_RE.test(id)); remove('connector_tools', (t) => t.user_id === uid && t.connector_id === id); return remove('connectors', (r) => r.user_id === uid && r.id === id) > 0; },
+        async delAll() { remove('connector_tools', (t) => t.user_id === uid); return remove('connectors', (r) => r.user_id === uid); },
+      },
+      builds: {
+        async record(b) {
+          const x = V.buildInput(b); let r = find('build_requests', uid, (q) => q.repo === x.repo && q.issue_number === x.issueNumber);
+          if (r) Object.assign(r, { title: x.title, state: x.state, updated_at: clock() });
+          else { r = { user_id: uid, id: crypto.randomUUID(), repo: x.repo, target: x.target, issue_number: x.issueNumber, pr_number: null, state: x.state, title: x.title, created_at: clock(), updated_at: clock() }; tables.build_requests.push(r); }
+          return buildRow(r);
+        },
+        async list({ limit = 50 } = {}) { V.need(Number.isInteger(limit) && limit >= 1 && limit <= 200); return rows('build_requests', uid).sort((a, b) => b.created_at - a.created_at || (a.id < b.id ? -1 : 1)).slice(0, limit).map(buildRow); },
+        async update(id, { state, prNumber }) {
+          V.need(UUID_RE.test(id) && (state === undefined || V.BUILD_STATES.includes(state)) && (prNumber === undefined || prNumber === null || (Number.isInteger(prNumber) && prNumber >= 1)));
+          const r = find('build_requests', uid, (q) => q.id === id); if (!r) return false;
+          if (state !== undefined) r.state = state; if (prNumber !== undefined && prNumber !== null) r.pr_number = prNumber; r.updated_at = clock(); return true;
+        },
+        async del(id) { V.need(UUID_RE.test(id)); return remove('build_requests', (r) => r.user_id === uid && r.id === id) > 0; },
+        async delAll() { return remove('build_requests', (r) => r.user_id === uid); },
       },
       usageLimits: {
         async list() { return rows('usage_limits', uid).sort((a, b) => `${a.provider}|${a.metric}|${a.period}`.localeCompare(`${b.provider}|${b.metric}|${b.period}`)).map((r) => ({ provider: r.provider, metric: r.metric, period: r.period, soft: r.soft, softAction: r.soft_action })); },
@@ -191,7 +270,7 @@ export function createMemoryDb({ now = null } = {}) {
   // user_secrets (user_id, dek_ver) -> user_keys (user_id, dek_ver), deferrable: checked when the transaction commits (a failure rolls it back)
   const checkKeyReferences = (uid) => {
     const key = find('user_keys', uid);
-    for (const s of tables.user_secrets) if (s.user_id === uid && (!key || key.dek_ver !== s.dek_ver)) throw dbError('invalid_reference', 409);
+    for (const s of [...tables.user_secrets, ...tables.oauth_tokens]) if (s.user_id === uid && (!key || key.dek_ver !== s.dek_ver)) throw dbError('invalid_reference', 409);
   };
 
   const system = {
@@ -223,6 +302,7 @@ export function createMemoryDb({ now = null } = {}) {
       if (!tables.admins.find((r) => r.user_id === u.id)) tables.admins.push({ user_id: u.id, granted_by: null, granted_at: clock() });
       return u.id;
     },
+    async oauthPendingOwner(stateHash) { V.need(V.isBytes(stateHash, 32)); const r = tables.oauth_pending.find((x) => sameBytes(x.state_hash, stateHash) && live(x)); return r ? r.user_id : null; },
     async deviceLookup(hash) { V.need(V.isBytes(hash, 32)); const r = tables.devices.find((x) => sameBytes(x.token_hash, hash)); return r ? { userId: r.user_id, deviceId: r.id, scopes: [...r.scopes] } : null; },
   };
 

@@ -26,7 +26,7 @@ test('every table is either in the registry or a listed platform table, and ever
 });
 
 test('the registry in the database is identical to server/rights/registry.js (every column, every fixture)', async () => {
-  const db = await admin`select table_name, export_as, export_exclude, editable, owner_column, delete_via, counts_storage, fixture_order, fixture_sql from app.data_registry order by table_name`;
+  const db = await admin`select table_name, export_as, export_exclude, editable, owner_column, delete_via, counts_storage, fixture_order, fixture_sql from app.data_registry order by table_name collate "C"`;
   const js = [...REGISTRY].sort((a, b) => (a.table < b.table ? -1 : 1));
   assert.deepEqual(db.map((r) => r.table_name), js.map((e) => e.table));
   for (let i = 0; i < js.length; i++) {
@@ -134,6 +134,7 @@ test('definer functions: fixed search_path, never executable by public or anon, 
   const EXPECT = {   // function -> roles that may execute it
     _secure: [], ensure_account: ['authenticated'], is_admin: ['authenticated'], device_lookup: ['elvar_app'],
     rl_hit: ['elvar_app'], purge_expired: ['elvar_app'], residual_check: ['elvar_app'],
+    oauth_pending_owner: ['elvar_app'],   // migration 04: the OAuth callback finds whose flow a single-use state belongs to
     // migration 12: the Auth hook (supabase_auth_admin only, none of the roles listed here), the caller-scoped ones, the admin ones (they check is_admin themselves), the cron / purge helpers
     before_user_created: [], record_usage: ['authenticated'], request_deletion: ['authenticated'], cancel_deletion: ['authenticated'],
     admin_users: ['authenticated'], admin_set_status: ['authenticated'], due_deletions: ['elvar_app'], record_deletion_receipt: ['elvar_app'], bootstrap_admin: ['elvar_app'],

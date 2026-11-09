@@ -178,6 +178,86 @@ export function runDbContract(label, setup) {
     for (const bad of [{ stateHash: rnd(31), sealed, ttl: 5 }, { stateHash: h, sealed: Buffer.alloc(0), ttl: 5 }, { stateHash: h, sealed, ttl: 0 }]) await assert.rejects(db.asUser(A, (r) => r.oauthPending.put(bad)), code('invalid_value'));
   });
 
+  T('oauth pending (callback): begin takes a started flow exactly once, settle stores the result, get peeks, the owner is found by the state hash only while it lives', async ({ db, newUser, passTime }) => {
+    const { a, A, B } = await two({ newUser });
+    const h = sha('cb-' + rnd(8).toString('hex')), sealed = rnd(60), result = rnd(70);
+    await db.asUser(A, (r) => r.oauthPending.put({ stateHash: h, sealed, ttl: 600 }));
+    assert.equal(await db.system.oauthPendingOwner(h), a, 'the callback finds whose flow it is');
+    assert.equal(await db.system.oauthPendingOwner(sha('nope')), null);
+    assert.deepEqual(await db.asUser(A, (r) => r.oauthPending.get(h)).then((x) => ({ phase: x.phase, same: x.sealed.equals(sealed) })), { phase: 'started', same: true });
+    assert.equal(await db.asUser(B, (r) => r.oauthPending.get(h)), null, 'another user does not see it'); assert.equal(await db.asUser(B, (r) => r.oauthPending.begin(h)), null, 'and cannot take it');
+    assert.ok((await db.asUser(A, (r) => r.oauthPending.begin(h))).equals(sealed), 'the first begin gets it');
+    assert.equal(await db.asUser(A, (r) => r.oauthPending.begin(h)), null, 'the second does not (single use)');
+    assert.equal((await db.asUser(A, (r) => r.oauthPending.get(h))).phase, 'exchanging');
+    assert.equal(await db.asUser(B, (r) => r.oauthPending.settle(h, { sealed: rnd(5), phase: 'done' })), false, 'B cannot write A\'s result');
+    assert.equal(await db.asUser(A, (r) => r.oauthPending.settle(h, { sealed: result, phase: 'done' })), true);
+    assert.equal(await db.asUser(A, (r) => r.oauthPending.settle(h, { sealed: result, phase: 'done' })), false, 'only an exchange in progress can be settled');
+    const done = await db.asUser(A, (r) => r.oauthPending.get(h)); assert.equal(done.phase, 'done'); assert.ok(done.sealed.equals(result));
+    for (const bad of [{ sealed: result, phase: 'started' }, { sealed: Buffer.alloc(0), phase: 'done' }, { sealed: result, phase: 'x' }]) await assert.rejects(db.asUser(A, (r) => r.oauthPending.settle(h, bad)), code('invalid_value'));
+    assert.ok((await db.asUser(A, (r) => r.oauthPending.take(h))).equals(result)); assert.equal(await db.system.oauthPendingOwner(h), null, 'gone once claimed');
+    const h2 = sha('cb2-' + rnd(8).toString('hex')); await db.asUser(A, (r) => r.oauthPending.put({ stateHash: h2, sealed, ttl: 1 })); await passTime(1300);
+    assert.equal(await db.system.oauthPendingOwner(h2), null, 'expired'); assert.equal(await db.asUser(A, (r) => r.oauthPending.begin(h2)), null);
+  });
+
+  T('kv.setNx: a lock that only one caller gets while it lives, per user', async ({ db, newUser, passTime }) => {
+    const { A, B } = await two({ newUser });
+    const got = await Promise.all([1, 2, 3].map(() => db.asUser(A, (r) => r.kv.setNx('lock', 1, { ttlSec: 1 }))));
+    assert.equal(got.filter(Boolean).length, 1); assert.equal(await db.asUser(B, (r) => r.kv.setNx('lock', 1, { ttlSec: 60 })), true, 'B has its own lock');
+    await passTime(1300); assert.equal(await db.asUser(A, (r) => r.kv.setNx('lock', 2, { ttlSec: 60 })), true, 'an expired lock can be taken again'); assert.equal(await db.asUser(A, (r) => r.kv.get('lock')), 2);
+    await assert.rejects(db.asUser(A, (r) => r.kv.setNx('', 1, { ttlSec: 5 })), code('invalid_value'));
+  });
+
+  T('oauth tokens: sealed per user, upsert, status flag without touching the ciphertext, a token needs its DEK version (checked at commit), cascade with the key', async ({ db, newUser }) => {
+    const { A, B } = await two({ newUser });
+    const tok = (extra = {}) => ({ ct: rnd(60), iv: rnd(12), dekVer: 1, scopes: ['calendar', 'gmail'], revokeUrl: 'https://oauth2.example/revoke', ...extra });
+    await db.asUser(A, async (r) => { await r.keys.create(keyRec()); await r.oauthTokens.put('google', tok()); await r.oauthTokens.put('cx:cx_abc123', tok({ scopes: [] })); });
+    assert.deepEqual((await db.asUser(A, (r) => r.oauthTokens.list())).map((t) => [t.provider, t.status, t.scopes.length]), [['cx:cx_abc123', 'ok', 0], ['google', 'ok', 2]]);
+    const g = await db.asUser(A, (r) => r.oauthTokens.get('google')); assert.equal(g.revokeUrl, 'https://oauth2.example/revoke'); assert.ok(Buffer.isBuffer(g.ct));
+    assert.deepEqual(await db.asUser(B, async (r) => [await r.oauthTokens.list(), await r.oauthTokens.get('google'), await r.oauthTokens.allSealed(), await r.oauthTokens.setStatus('google', 'reauth_required'), await r.oauthTokens.del('google'), await r.oauthTokens.delAll()]), [[], null, [], false, false, 0], 'B reaches none of A\'s tokens');
+    assert.equal(await db.asUser(A, (r) => r.oauthTokens.setStatus('google', 'reauth_required', 'invalid_grant')), true);
+    const flagged = await db.asUser(A, (r) => r.oauthTokens.get('google')); assert.deepEqual([flagged.status, flagged.reason, flagged.ct.equals(g.ct)], ['reauth_required', 'invalid_grant', true]);
+    const newer = tok({ status: 'ok' }); await db.asUser(A, (r) => r.oauthTokens.put('google', newer)); const after = await db.asUser(A, (r) => r.oauthTokens.get('google')); assert.deepEqual([after.status, after.reason, after.ct.equals(newer.ct)], ['ok', null, true], 'a new login replaces the old one and clears the flag');
+    for (const bad of [['google', tok({ ct: rnd(5) })], ['google', tok({ iv: rnd(8) })], ['google', tok({ dekVer: 0 })], ['nope', tok()], ['cx:bad id', tok()], ['google', tok({ status: 'x' })], ['google', tok({ revokeUrl: 'ftp://x' })], ['google', tok({ scopes: 'a' })]]) await assert.rejects(db.asUser(A, (r) => r.oauthTokens.put(...bad)), code('invalid_value'), JSON.stringify(bad[0]));
+    // a token under a DEK version that does not exist is refused when the transaction commits (and rolled back)
+    await assert.rejects(db.asUser(A, (r) => r.oauthTokens.put('google', tok({ dekVer: 5 }))), code('invalid_reference'));
+    assert.equal((await db.asUser(A, (r) => r.oauthTokens.get('google'))).dekVer, 1);
+    await assert.rejects(db.asUser(B, (r) => r.oauthTokens.put('google', tok())), code('invalid_reference'), 'B has no key: no token can exist for B');
+    assert.equal(await db.asUser(A, (r) => r.keys.del()), true); assert.deepEqual(await db.asUser(A, (r) => r.oauthTokens.list()), [], 'removing the key removes what it protected');
+  });
+
+  T('connectors: manifests with their tools, per user; replace removes dropped tools and keeps the order; delete cascades; limits', async ({ db, newUser }) => {
+    const { A, B } = await two({ newUser });
+    const tool = (name, extra = {}) => ({ name, hash: 'sha256:' + name, enabled: false, approval: 'ask', expose: 'pinned', description: name + ' tool', inputSchema: { type: 'object', properties: {} }, ...extra });
+    const cx = (id, tools, extra = {}) => ({ id, slug: 'home', name: 'Home', type: 'http', enabled: true, http: { baseUrl: 'https://ha.example.com' }, auth: { type: 'bearer' }, tools, syncedAt: 1700000000000, ...extra });
+    await db.asUser(A, async (r) => { await r.connectors.put(cx('cx_a1', [tool('zeta'), tool('alpha', { enabled: true, approval: 'auto' })])); await r.connectors.put(cx('cx_a2', [], { name: 'Second' })); });
+    const list = await db.asUser(A, (r) => r.connectors.list());
+    assert.deepEqual(list.map((c) => [c.id, c.name, c.tools.map((t) => t.name)]), [['cx_a1', 'Home', ['zeta', 'alpha']], ['cx_a2', 'Second', []]], 'tools keep the order the user sees');
+    assert.equal(list[0].syncedAt, 1700000000000); assert.equal(list[0].tools[1].approval, 'auto');
+    assert.deepEqual(await db.asUser(B, async (r) => [await r.connectors.list(), await r.connectors.get('cx_a1'), await r.connectors.del('cx_a1'), await r.connectors.delAll()]), [[], null, false, 0], 'B reaches none of A\'s connectors');
+    await db.asUser(B, (r) => r.connectors.put(cx('cx_a1', [tool('mine')], { name: 'B-own' })));   // the same id for another user is another connector
+    assert.deepEqual((await db.asUser(A, (r) => r.connectors.get('cx_a1'))).tools.map((t) => t.name), ['zeta', 'alpha'], 'A\'s connector is untouched by B using the same id');
+    assert.equal((await db.asUser(B, (r) => r.connectors.get('cx_a1'))).name, 'B-own');
+    await db.asUser(A, (r) => r.connectors.put(cx('cx_a1', [tool('alpha', { enabled: false, approval: 'ask_high' }), tool('beta')])));
+    const re = await db.asUser(A, (r) => r.connectors.get('cx_a1')); assert.deepEqual(re.tools.map((t) => [t.name, t.approval]), [['alpha', 'ask_high'], ['beta', 'ask']], 'zeta was dropped, alpha replaced, beta added');
+    for (const bad of [{ id: 'bad id', tools: [] }, { id: 'x'.repeat(41), tools: [] }, cx('cx_dup', [tool('a'), tool('a')]), cx('cx_big', [tool('a', { description: 'x'.repeat(41000) })]), { ...cx('cx_many', []), tools: Array.from({ length: 101 }, (_, i) => tool('t' + i)) }]) await assert.rejects(db.asUser(A, (r) => r.connectors.put(bad)), code('invalid_value'));
+    assert.equal(await db.asUser(A, (r) => r.connectors.del('cx_a1')), true); assert.equal(await db.asUser(A, (r) => r.connectors.get('cx_a1')), null);
+    assert.equal(await db.asUser(A, (r) => r.connectors.delAll()), 1);
+  });
+
+  T('build requests: per user, one row per issue (upsert), state and pull request updates, delete', async ({ db, newUser }) => {
+    const { A, B } = await two({ newUser });
+    const b1 = await db.asUser(A, (r) => r.builds.record({ repo: 'me/builds', issueNumber: 3, title: 'First' }));
+    assert.deepEqual([b1.repo, b1.issueNumber, b1.state, b1.target, b1.prNumber], ['me/builds', 3, 'queued', 'builds', null]);
+    const again = await db.asUser(A, (r) => r.builds.record({ repo: 'me/builds', issueNumber: 3, title: 'First (edited)', state: 'working' })); assert.equal(again.id, b1.id); assert.deepEqual([again.title, again.state], ['First (edited)', 'working']);
+    await db.asUser(A, (r) => r.builds.record({ repo: 'me/own-fork', target: 'self', issueNumber: 1, title: 'Self' }));
+    assert.equal((await db.asUser(A, (r) => r.builds.list())).length, 2);
+    assert.equal(await db.asUser(A, (r) => r.builds.update(b1.id, { state: 'review', prNumber: 9 })), true); const u = (await db.asUser(A, (r) => r.builds.list())).find((x) => x.id === b1.id); assert.deepEqual([u.state, u.prNumber], ['review', 9]);
+    assert.deepEqual(await db.asUser(B, async (r) => [await r.builds.list(), await r.builds.update(b1.id, { state: 'done' }), await r.builds.del(b1.id), await r.builds.delAll()]), [[], false, false, 0], 'B reaches none of A\'s requests');
+    await db.asUser(B, (r) => r.builds.record({ repo: 'me/builds', issueNumber: 3, title: 'B has its own #3' })); assert.equal((await db.asUser(A, (r) => r.builds.list())).find((x) => x.id === b1.id).title, 'First (edited)');
+    for (const bad of [{ repo: 'no slash', issueNumber: 1, title: 't' }, { repo: 'a/b', issueNumber: 0, title: 't' }, { repo: 'a/b', issueNumber: 1, title: '' }, { repo: 'a/b', issueNumber: 1, title: 't', state: 'x' }, { repo: 'a/b', issueNumber: 1, title: 't', target: 'x' }]) await assert.rejects(db.asUser(A, (r) => r.builds.record(bad)), code('invalid_value'));
+    assert.equal(await db.asUser(A, (r) => r.builds.del(b1.id)), true); assert.equal(await db.asUser(A, (r) => r.builds.delAll()), 1);
+  });
+
   T('soft limits are the user\'s own; usage numbers are read only', async ({ db, newUser }) => {
     const { A, B } = await two({ newUser });
     await db.asUser(A, (r) => r.usageLimits.put({ provider: 'gemini', metric: 'live_seconds', period: 'day', soft: 3600 }));
@@ -242,12 +322,14 @@ export function runDbContract(label, setup) {
       await r.accounts.ensure(); await r.profile.put({ v: 1 }); await r.settings.put({ s: 1 }); await r.keys.create(keyRec()); await r.secrets.put('N', sealedRec()); await r.devices.create(d);
       await r.audit.append({ action: 'a' }); await r.kv.set('k', 1, { ttlSec: 60 }); await r.tickets.markUsed('j', 60); await r.oauthPending.put({ stateHash: h, sealed: rnd(4), ttl: 60 });
       await r.usageLimits.put({ provider: 'p', metric: 'm', period: 'day', soft: 1 });
+      await r.oauthTokens.put('google', { ct: rnd(40), iv: rnd(12), dekVer: 1 }); await r.connectors.put({ id: 'cx_p3', name: 'x', type: 'http', tools: [{ name: 't', hash: 'h' }] }); await r.builds.record({ repo: 'a/b', issueNumber: 1, title: 't' });
     });
     const seenByB = await db.asUser(B, async (r) => ({
       account: await r.accounts.get(), profile: await r.profile.get(), settings: await r.settings.get(), keys: await r.keys.get(), secrets: await r.secrets.list(), sealed: await r.secrets.allSealed(),
       devices: await r.devices.list(), audit: await r.audit.list(), kv: await r.kv.get('k'), pending: await r.oauthPending.take(h), limits: await r.usageLimits.list(), ticket: await r.tickets.markUsed('j', 60),
+      tokens: await r.oauthTokens.allSealed(), connectors: await r.connectors.list(), builds: await r.builds.list(),
     }));
-    assert.deepEqual(seenByB, { account: null, profile: null, settings: {}, keys: null, secrets: [], sealed: [], devices: [], audit: [], kv: null, pending: null, limits: [], ticket: true });
+    assert.deepEqual(seenByB, { account: null, profile: null, settings: {}, keys: null, secrets: [], sealed: [], devices: [], audit: [], kv: null, pending: null, limits: [], ticket: true, tokens: [], connectors: [], builds: [] });
   });
 
   T('deletion: after the auth user is deleted every registered table is empty for that user, the other user is untouched', async ({ db, newUser, deleteUser }) => {
@@ -257,13 +339,14 @@ export function runDbContract(label, setup) {
         await r.accounts.ensure(); await r.profile.put({ v: 1 }); await r.settings.put({ s: 1 }); await r.keys.create(keyRec()); await r.secrets.put('N', sealedRec()); await r.devices.create(device());
         await r.audit.append({ action: 'a' }); await r.kv.set('k', 1, { ttlSec: 3600 }); await r.tickets.markUsed('j', 3600); await r.oauthPending.put({ stateHash: sha('p' + uid), sealed: rnd(4), ttl: 3600 });
         await r.usageLimits.put({ provider: 'p', metric: 'm', period: 'day', soft: 1 });
+        await r.oauthTokens.put('google', { ct: rnd(40), iv: rnd(12), dekVer: 1 }); await r.connectors.put({ id: 'cx_p3', name: 'x', type: 'http', tools: [{ name: 't', hash: 'h' }] }); await r.builds.record({ repo: 'a/b', issueNumber: 1, title: 't' });
       });
       await db.system.rlHit({ bucket: 'del-test', who: uid, windowSec: 3600, userId: U });
     }
     const before = await residualCheck(db, A);
     assert.equal(before.clean, false); assert.deepEqual(before.missing, []); assert.deepEqual(before.unknown, []);
     const counts = Object.fromEntries(before.nonzero.map((x) => [x.table, x.n]));
-    for (const t of ['accounts', 'profiles', 'settings', 'user_keys', 'user_secrets', 'devices', 'audit_log', 'kv_ephemeral', 'ticket_uses', 'oauth_pending', 'usage_limits', 'rate_limits']) assert.ok(counts[t] >= 1, t);
+    for (const t of ['accounts', 'profiles', 'settings', 'user_keys', 'user_secrets', 'devices', 'audit_log', 'kv_ephemeral', 'ticket_uses', 'oauth_pending', 'usage_limits', 'rate_limits', 'oauth_tokens', 'connectors', 'connector_tools', 'build_requests']) assert.ok(counts[t] >= 1, t);
     const bBefore = await residualCheck(db, B);
     await deleteUser(a);
     const after = await residualCheck(db, A);

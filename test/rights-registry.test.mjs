@@ -12,7 +12,7 @@ test('the registry is valid, frozen, unique, and every table fixture targets its
   assert.deepEqual(validateRegistry(), []);
   assert.equal(new Set(registryTables()).size, REGISTRY.length); assert.ok(Object.isFrozen(REGISTRY) && Object.isFrozen(REGISTRY[0]) && Object.isFrozen(REGISTRY[0].exportExclude));
   assert.equal(entryFor('profiles').exportAs, 'profile.json'); assert.equal(entryFor('nope'), null);
-  for (const e of REGISTRY) { assert.equal(e.ownerColumn, 'user_id', e.table); assert.equal(e.deleteVia, 'cascade', e.table); }
+  for (const e of REGISTRY) { assert.equal(e.ownerColumn, 'user_id', e.table); assert.equal(e.deleteVia, e.table === 'oauth_tokens' ? 'cascade+external' : 'cascade', e.table + ': only the tokens need an external revocation'); }
 });
 
 test('validateRegistry catches a broken entry', () => {

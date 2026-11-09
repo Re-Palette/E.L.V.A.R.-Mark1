@@ -29,3 +29,40 @@ export function keyInput(r) {
   return { kekId: r.kekId, dekVer: r.dekVer, wrapped: toBuf(r.wrapped), iv: toBuf(r.iv) };
 }
 export const key200 = (k) => { need(typeof k === 'string' && k.length >= 1 && k.length <= 200); return k; };
+
+// ---- P3: connections
+export const PROVIDER_RE = /^(google|cx:[A-Za-z0-9_-]{1,40})$/;
+export const CONNECTOR_ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
+export const OAUTH_STATUSES = Object.freeze(['ok', 'reauth_required']);
+export function oauthTokenInput(provider, r) {
+  need(typeof provider === 'string' && PROVIDER_RE.test(provider));
+  need(r && isBytes(r.ct) && r.ct.length >= 17 && r.ct.length <= 16400 && isBytes(r.iv, 12) && Number.isInteger(r.dekVer) && r.dekVer >= 1);
+  const scopes = r.scopes === undefined ? [] : r.scopes, status = r.status === undefined ? 'ok' : r.status, reason = r.reason ?? null, revokeUrl = r.revokeUrl ?? null;
+  need(Array.isArray(scopes) && scopes.length <= 40 && scopes.every((x) => typeof x === 'string' && x.length >= 1 && x.length <= 300));
+  need(OAUTH_STATUSES.includes(status) && (reason === null || (typeof reason === 'string' && reason.length <= 60)));
+  need(revokeUrl === null || (typeof revokeUrl === 'string' && revokeUrl.length <= 500 && /^https?:\/\//.test(revokeUrl)));
+  return { ct: toBuf(r.ct), iv: toBuf(r.iv), dekVer: r.dekVer, scopes: [...scopes], status, reason, revokeUrl };
+}
+const jsonLen = (o) => { try { return JSON.stringify(o).length; } catch { return Infinity; } };
+/** A connector manifest with its tools (server/connectors/manifest.js shape). The tools are stored as rows of their own. */
+export function connectorInput(c) {
+  need(c && typeof c === 'object' && !Array.isArray(c) && typeof c.id === 'string' && CONNECTOR_ID_RE.test(c.id));
+  const { tools = [], ...manifest } = c;
+  need(Array.isArray(tools) && tools.length <= 100 && jsonLen(manifest) <= 20000);
+  const seen = new Set();
+  const rows = tools.map((t, i) => {
+    need(t && typeof t === 'object' && typeof t.name === 'string' && t.name.length >= 1 && t.name.length <= 100 && !seen.has(t.name) && jsonLen(t) <= 40000);
+    need(t.hash === undefined || (typeof t.hash === 'string' && t.hash.length <= 100));
+    seen.add(t.name);
+    return { name: t.name, def: t, hash: t.hash || '', enabled: t.enabled === true, approval: ['ask', 'ask_high', 'auto', 'off'].includes(t.approval) ? t.approval : null, expose: ['pinned', 'gateway'].includes(t.expose) ? t.expose : null, pos: i };
+  });
+  const syncedAt = Number.isFinite(c.syncedAt) && c.syncedAt > 0 ? c.syncedAt : null;
+  return { id: c.id, manifest, enabled: c.enabled !== false, syncedAt, tools: rows };
+}
+export const BUILD_STATES = Object.freeze(['queued', 'working', 'review', 'done', 'failed']);
+export function buildInput(b) {
+  need(b && typeof b.repo === 'string' && /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/.test(b.repo) && Number.isInteger(b.issueNumber) && b.issueNumber >= 1);
+  const target = b.target === undefined ? 'builds' : b.target, state = b.state === undefined ? 'queued' : b.state;
+  need(['builds', 'self'].includes(target) && BUILD_STATES.includes(state) && typeof b.title === 'string' && b.title.length >= 1 && b.title.length <= 200);
+  return { repo: b.repo, target, issueNumber: b.issueNumber, state, title: b.title };
+}
