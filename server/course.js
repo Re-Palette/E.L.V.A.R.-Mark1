@@ -5,7 +5,7 @@
 // All arithmetic (credits, conflicts, checks, suggestions) is plain code. The app cannot see the university's registration site, the syllabus or the
 // course catalogue: the data is only what the owner tells / types in, and nothing is registered anywhere by this module.
 import crypto from 'node:crypto';
-import { brainReadRaw, brainWrite, brainRepoIsPrivate, brainConfigured, brainList } from './brain.js';
+import { brainReadRaw, brainWrite, brainConfigured, brainList } from './brain.js';
 import { U, TZ } from './profile/index.js';
 import { localDate, isoAt, tzLabel } from '../shared/tz.js';
 
@@ -304,7 +304,6 @@ export function classOccurrences({ month, byTerm = {}, settings = parseSettings(
 }
 
 // ---------------------------------------------------------------- IO
-async function guardPrivate() { if (!(await brainRepoIsPrivate())) throw new Error('第二の脳のリポジトリが公開になっているため、履修のデータは保存しません（プライベートにしてください）'); }
 export async function readSettings() { return parseSettings(await brainReadRaw('履修/設定.md').catch(() => null)); }
 export async function readRequirements() { return parseRequirements(await brainReadRaw('履修/卒業要件.md').catch(() => null)); }
 export async function readTerm(term) { return parseCourses(await brainReadRaw(termPath(term)).catch(() => null)); }
@@ -319,7 +318,7 @@ const resolveTerm = (w, nowMs) => (w ? (validTerm(w) ? w : parseTerm(w, nowMs)) 
 
 /** Adds courses (an identical name + time in the same term that is not 取消 is skipped). @returns {{added, skipped, term}} */
 export async function addCourses(list, { term, nowMs = Date.now() } = {}) {
-  await guardPrivate(); const req = await readRequirements(), cats = Object.keys(req.categories), byTerm = new Map(), added = []; let skipped = 0;
+  const req = await readRequirements(), cats = Object.keys(req.categories), byTerm = new Map(), added = []; let skipped = 0;
   for (const raw of (Array.isArray(list) ? list : []).slice(0, 40)) {
     const c = normalizeCourse(raw, { categories: cats }), t = resolveTerm(raw?.term || term, nowMs); if (!t) throw new Error('学期が分かりません（例：2026年度の後期）');
     if (!byTerm.has(t)) byTerm.set(t, await readTerm(t)); const cur = byTerm.get(t);
@@ -335,12 +334,12 @@ async function findCourse(id, term, nowMs) {
   throw new Error(`id ${id} の科目が見つかりません`);
 }
 export async function cancelCourse(id, term, { nowMs = Date.now() } = {}) {
-  await guardPrivate(); const f = await findCourse(id, term, nowMs); f.lines.splice(f.i, 1);
+  const f = await findCourse(id, term, nowMs); f.lines.splice(f.i, 1);
   await brainWrite({ path: termPath(f.t), content: f.lines.join('\n'), mode: 'replace' }); return { removed: { ...f.course, term: f.t }, term: f.t };
 }
 /** Changes courses (one `id` or several `ids`; the same patch for each). The term file is rewritten (git history keeps the old one). */
 export async function updateCourses({ id, ids, patch = {}, term, nowMs = Date.now() }) {
-  await guardPrivate(); const req = await readRequirements(), cats = Object.keys(req.categories), list = [...new Set([...(Array.isArray(ids) ? ids : []), ...(id ? [id] : [])])].slice(0, 40);
+  const req = await readRequirements(), cats = Object.keys(req.categories), list = [...new Set([...(Array.isArray(ids) ? ids : []), ...(id ? [id] : [])])].slice(0, 40);
   if (!list.length) throw new Error('どの科目か分かりません（id が必要です）'); const done = [];
   for (const one of list) {
     const f = await findCourse(one, term, nowMs), old = f.course, p = {}; for (const [k, v] of Object.entries(patch)) if (v !== undefined) p[k] = v;
@@ -353,7 +352,7 @@ export async function updateCourses({ id, ids, patch = {}, term, nowMs = Date.no
 
 /** Sets graduation requirements / CAP / required courses / period times / teaching periods. clear: 卒業単位 | 上限 | 区分:名前 | 必修科目 | 時限 | 授業期間 */
 export async function setRequirements(a = {}) {
-  await guardPrivate(); const req = await readRequirements(), set = await readSettings(), changed = []; let reqDirty = false, setDirty = false;
+  const req = await readRequirements(), set = await readSettings(), changed = []; let reqDirty = false, setDirty = false;
   const clear = cell(a.clear);
   if (clear) {
     reqDirty = true;

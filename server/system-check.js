@@ -90,19 +90,21 @@ export async function runServerChecks({ deep = false } = {}) {
       add('groq', '難しい推論（Groq）', r.ok ? 'ok' : r.status === 401 ? 'fail' : 'warn', r.ok ? `キー有効、モデル設定: ${env('GROQ_MODEL') || 'openai/gpt-oss-120b'}` : `エラー (${r.status})`, r.status === 401 ? 'GROQ_API_KEY を作り直して設定' : '');
     } catch (e) { add('groq', '難しい推論（Groq）', 'warn', `接続できません: ${why(e)}`); }
   })());
-  // Second brain
+  // Second brain (the user's own notes in the app's database)
   jobs.push((async () => {
-    if (!brainConfigured()) return add('brain', '第二の脳（GitHub）', 'off', '未設定です', 'BRAIN_GITHUB_TOKEN と BRAIN_REPO を設定');
+    if (!brainConfigured()) return add('brain', '第二の脳（アプリ内）', 'off', 'ログインが必要です');
     try {
       const b = await withTimeout(brainStatus(), 9000);
-      if (b.branchMissing) return add('brain', '第二の脳（GitHub）', 'fail', `リポジトリ ${b.repo} にブランチ ${b.branch} がありません`, 'READMEを付けてリポジトリを作り直すか、BRAIN_BRANCH を確認');
-      add('brain', '第二の脳（GitHub）', b.canPush === false ? 'warn' : 'ok', `${b.repo}（${b.private ? 'プライベート' : '公開！'}）ノート ${b.notes} 件` + (b.canPush === false ? '。書き込み権限がありません' : ''), b.private ? (b.canPush === false ? 'トークンの Contents を Read and write に' : '') : 'リポジトリをプライベートに変更');
-      if (!b.private) items[items.length - 1].status = 'warn';
+      add('brain', '第二の脳（アプリ内）', 'ok', `あなた専用の保管庫にノートが ${b.notes} 件あります（他の人には見えません）`);
       try { const prof = await withTimeout(brainProfileSummary({ force: true }), 4000); add('profile', '学習したプロフィール', prof ? 'ok' : 'off', prof ? `会話の前提として渡されています（${prof.split('\n').length}行）` : 'まだありません（「私のことを学習して」で作れます。週に1回は自動でも更新）'); } catch { add('profile', '学習したプロフィール', 'off', '確認できませんでした'); }
-    } catch (e) { add('brain', '第二の脳（GitHub）', e.status === 401 || e.status === 403 || e.status === 404 ? 'fail' : 'warn', `${e.message || why(e)}`, e.status === 404 ? 'BRAIN_REPO の綴りと、トークンの対象リポジトリを確認' : e.status === 401 ? 'BRAIN_GITHUB_TOKEN を作り直して設定' : ''); }
+    } catch (e) { add('brain', '第二の脳（アプリ内）', 'warn', `${e.message || why(e)}`); }
   })());
   // Sub-agents
-  add('notifsync', '通知の同期（スマホ→PC）', 'off', '準備中です（まもなく使えるようになります）');   // the relay moves to the platform database in P4
+  jobs.push((async () => {   // the relay of phone notifications (ciphertext in the user's own rows)
+    const db = currentConfig().db;
+    if (typeof db !== 'function') return add('notifsync', '通知の同期（スマホ→PC）', 'off', 'ログインが必要です');
+    try { const n = await withTimeout(db((r) => r.notif.count()), 6000); add('notifsync', '通知の同期（スマホ→PC）', 'ok', `使えます（暗号化したまま3日だけ保管。いま ${n} 件）`); } catch (e) { add('notifsync', '通知の同期（スマホ→PC）', 'warn', `確認できませんでした: ${why(e)}`); }
+  })());
   { const prov = pickProvider(), ready = Object.values(AGENTS).filter((a) => !a.available || a.available()).map((a) => a.label), notReady = Object.values(AGENTS).filter((a) => a.available && !a.available()).map((a) => a.label);
     const routes = Object.entries(AGENTS).filter(([, a]) => !a.available || a.available()).map(([id, a]) => `${a.label}=${routeFor(id).join('→')}`).join('、');
     add('agents', 'サブエージェント', prov && ready.length ? 'ok' : 'off', prov ? `担当ごとのAI（失敗時は右へ切り替え）: ${routes || 'なし'}。使える担当: ${ready.join('、') || 'なし'}${notReady.length ? `（連携が未設定で使えない担当: ${notReady.join('、')}）` : ''}` : 'AIのキーがありません（GROQ_API_KEY か GEMINI_API_KEY）', prov ? '' : 'どちらかのキーを設定'); }

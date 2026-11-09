@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { jpText, sarashinaChat, sarashinaConfigured } from '../server/sarashina.js';
 import { TOOL_MAP } from '../server/google/tools.js';
 import { chat } from '../server/chat-api.js';
+import { useVault } from './helpers/vault.mjs';
+useVault();   // a signed-in test user (the agent runner needs their second brain)
 
 const withFetch = async (impl, fn) => { const real = globalThis.fetch; globalThis.fetch = impl; try { return await fn(); } finally { globalThis.fetch = real; } };
 

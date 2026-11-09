@@ -151,7 +151,7 @@ export function runDbContract(label, setup) {
     await passTime(1300);
     assert.equal(await db.asUser(A, (r) => r.kv.get('short')), null, 'expired rows are invisible even before the sweep');
     const purged = await db.system.purgeExpired();
-    assert.ok(purged.kv_ephemeral >= 1); assert.deepEqual(Object.keys(purged).sort(), ['kv_ephemeral', 'oauth_pending', 'rate_limits', 'ticket_uses']);
+    assert.ok(purged.kv_ephemeral >= 1); assert.deepEqual(Object.keys(purged).sort(), ['conversations', 'kv_ephemeral', 'messages', 'note_revisions', 'notes', 'notif_items', 'oauth_pending', 'rate_limits', 'ticket_uses']);
     assert.deepEqual(await db.asUser(A, (r) => r.kv.get('k')), { n: 2 });
     assert.equal(await db.asUser(A, (r) => r.kv.del('k')), true); assert.equal(await db.asUser(A, (r) => r.kv.del('k')), false);
   });
@@ -539,6 +539,130 @@ export function runDbContract(label, setup) {
     // an admin does not get a way to read anything else through the repos: no method of `admin` returns content
     assert.deepEqual(await db.asUser(A, async (r) => Object.keys(r.admin).sort()), ['listUsers', 'setStatus']);
     assert.deepEqual(await db.asUser(A, (r) => r.profile.get()), null, 'an admin\'s repos are still only their own');
+  });
+
+  // ---------------------------------------------------------------- P4: notes, conversations, inbox, notification relay
+  T('notes: put / get / list / search per user; revisions kept (newest 30); trash, restore, permanent delete; bad paths refused; B never sees A\'s notes', async ({ db, newUser }) => {
+    const { A, B } = await two({ newUser });
+    const n = await db.asUser(A, async (r) => {
+      const a = await r.notes.put({ path: '好み/コーヒー.md', content: '# コーヒー\nブラックが好き。 100% の_豆' });
+      assert.equal(a.created, true); assert.equal(a.rev, 1);
+      for (let i = 2; i <= 36; i++) await r.notes.put({ path: '好み/コーヒー.md', content: '版' + i + ' ブラック' });
+      assert.equal((await r.notes.put({ path: '好み/コーヒー.md', content: '版36 ブラック' })).unchanged, true);
+      assert.equal((await r.notes.revisions(a.id)).length, 30); assert.equal((await r.notes.get('好み/コーヒー.md')).rev, 36);
+      assert.deepEqual((await r.notes.list({ folder: '好み' })).map((x) => x.path), ['好み/コーヒー.md']);
+      assert.deepEqual((await r.notes.search(['ブラック', '100%'])).map((x) => x.path), ['好み/コーヒー.md']);
+      assert.deepEqual(await r.notes.search(['%']), [], 'a % in the query is a character, not a wildcard');
+      assert.deepEqual(await r.notes.search(['宇宙旅行']), []);
+      return a;
+    });
+    await db.asUser(B, async (r) => {
+      assert.equal(await r.notes.get('好み/コーヒー.md'), null); assert.equal(await r.notes.getById(n.id), null); assert.deepEqual(await r.notes.list(), []);
+      assert.deepEqual(await r.notes.search(['ブラック']), []); assert.deepEqual(await r.notes.revisions(n.id), []); assert.equal(await r.notes.trash(n.id), false); assert.equal(await r.notes.purge(n.id), false);
+      assert.equal((await r.notes.put({ path: '好み/コーヒー.md', content: 'B のノート' })).created, true, 'the same path is a different note');
+    });
+    await db.asUser(A, async (r) => {
+      assert.equal((await r.notes.get('好み/コーヒー.md')).content, '版36 ブラック');
+      assert.equal(await r.notes.trash(n.id), true); assert.equal(await r.notes.get('好み/コーヒー.md'), null); assert.deepEqual(await r.notes.search(['ブラック']), []);
+      assert.equal((await r.notes.list({ trash: true })).length, 1); assert.equal(await r.notes.restore(n.id), true);
+      for (const bad of ['../x.md', 'x.txt', '/a.md', 'a//b.md', '.h/x.md', 'a/.x.md', '', 'a\n.md', 'x'.repeat(301) + '.md']) await assert.rejects(r.notes.put({ path: bad, content: 'x' }), code('invalid_value'));
+      await assert.rejects(r.notes.put({ path: 'a.md', content: 'x'.repeat(400001) }), code('invalid_value'));
+      assert.equal(await r.notes.purge(n.id), true); assert.deepEqual(await r.notes.revisions(n.id), []);
+    });
+  });
+
+  T('notes: the mirror marks (unpushed / markPushed) follow the revision; an import is already pushed', async ({ db, newUser }) => {
+    const { A } = await two({ newUser });
+    await db.asUser(A, async (r) => {
+      const a = await r.notes.put({ path: 'a.md', content: '1' }), b = await r.notes.put({ path: 'b.md', content: 'x', synced: true });
+      assert.deepEqual((await r.notes.unpushed()).map((x) => x.path), ['a.md']);
+      assert.equal(await r.notes.markPushed(a.id, 1), true); assert.equal(await r.notes.unpushedCount(), 0);
+      await r.notes.put({ path: 'a.md', content: '2' }); assert.deepEqual((await r.notes.unpushed()).map((x) => [x.path, x.rev]), [['a.md', 2]]);
+      await r.notes.put({ path: 'b.md', content: 'y', synced: true }); assert.equal(await r.notes.unpushedCount(), 1);
+      assert.equal(b.created, true);
+    });
+  });
+
+  T('messages: turns group into conversations (30-minute gaps), list / search / delete one / delete a conversation / purge; per user', async ({ db, newUser }) => {
+    const { A, B } = await two({ newUser });
+    const t0 = Date.parse('2026-11-04T12:00:00Z');
+    const r1 = await db.asUser(A, (r) => r.messages.append({ turns: [{ role: 'user', text: '明日の予定は？', at: t0 }, { role: 'assistant', text: '10時に打ち合わせです', at: t0 + 1 }, { role: 'user', text: 'ありがとう', at: t0 + 60000 }] }));
+    assert.equal(r1.added, 3);
+    const r2 = await db.asUser(A, (r) => r.messages.append({ turns: [{ role: 'user', text: '翌日の話', at: t0 + 86400e3 }] }));
+    assert.notEqual(r1.conversationId, r2.conversationId);
+    const r3 = await db.asUser(A, (r) => r.messages.append({ turns: [{ role: 'assistant', text: '続き', at: t0 + 120000 }] })); assert.equal(r3.conversationId, r1.conversationId, 'within 30 minutes: the same conversation');
+    await db.asUser(A, async (r) => {
+      const cs = await r.messages.conversations({}); assert.equal(cs.length, 2); assert.equal(cs[0].id, r2.conversationId); assert.equal(cs[1].count, 4); assert.equal(cs[1].preview, '明日の予定は？');
+      const c = await r.messages.conversation(r1.conversationId); assert.deepEqual(c.messages.map((m) => m.text), ['明日の予定は？', '10時に打ち合わせです', 'ありがとう', '続き']);
+      assert.deepEqual((await r.messages.list({ q: '打ち合わせ' })).map((m) => m.text), ['10時に打ち合わせです']);
+      assert.deepEqual((await r.messages.list({ q: '100%' })), [], 'a % is a character');
+      assert.equal((await r.messages.list({ since: new Date(t0 + 86400e3 - 1).toISOString() })).length, 1);
+      assert.equal(await r.messages.del(c.messages[0].id), true); assert.equal((await r.messages.conversation(r1.conversationId)).messages.length, 3);
+      for (const bad of [[], [{ role: 'x', text: 'a', at: 1 }], [{ role: 'user', text: '', at: 1 }], [{ role: 'user', text: 'a', at: NaN }]]) await assert.rejects(r.messages.append({ turns: bad }), code('invalid_value'));
+    });
+    await db.asUser(B, async (r) => {
+      assert.deepEqual(await r.messages.conversations({}), []); assert.equal(await r.messages.conversation(r1.conversationId), null); assert.deepEqual(await r.messages.list({ q: '打ち合わせ' }), []);
+      assert.equal(await r.messages.delConversation(r1.conversationId), false); assert.equal(await r.messages.purge({}), 0);
+    });
+    await db.asUser(A, async (r) => {
+      assert.equal(await r.messages.purge({ before: new Date(t0 + 3600e3).toISOString() }), 3); assert.equal(await r.messages.count(), 1); assert.equal((await r.messages.conversations({})).length, 1, 'the emptied conversation is gone');
+      assert.equal(await r.messages.delConversation(r2.conversationId), true); assert.equal(await r.messages.count(), 0);
+    });
+  });
+
+  T('retention: the sweep removes messages older than the user\'s own setting (default 180 days, 0 = keep), old revisions, old trash and relay items', async ({ db, newUser, passTime, now: clock }) => {
+    const { a, A, B } = await two({ newUser });
+    const now = clock ? clock() : Date.now();
+    await db.asUser(A, async (r) => { await r.settings.put({ MESSAGE_RETENTION_DAYS: '7' }); await r.messages.append({ turns: [{ role: 'user', text: '古い', at: now - 10 * 864e5 }, { role: 'user', text: '新しい', at: now - 1000 }], gapSec: 60 }); });
+    await db.asUser(B, async (r) => { await r.messages.append({ turns: [{ role: 'user', text: 'Bの古い(既定180日以内)', at: now - 10 * 864e5 }, { role: 'user', text: 'Bの200日前', at: now - 200 * 864e5 }], gapSec: 60 }); });
+    const swept = await db.system.purgeExpired(); assert.ok(swept.messages >= 2);
+    assert.deepEqual((await db.asUser(A, (r) => r.messages.list({}))).map((m) => m.text), ['新しい']);
+    assert.deepEqual((await db.asUser(B, (r) => r.messages.list({}))).map((m) => m.text), ['Bの古い(既定180日以内)']);
+    await db.asUser(A, async (r) => { const n = await r.notes.put({ path: 't.md', content: 'x' }); await r.notes.trash(n.id); });
+    assert.equal((await db.asUser(A, (r) => r.notes.list({ trash: true }))).length, 1, 'a note just put in the trash stays for 30 days');
+    void a; void passTime;
+  });
+
+  T('inbox: add / same key replaces and is unread again / mark read / delete / cap of 100; per user', async ({ db, newUser }) => {
+    const { A, B } = await two({ newUser });
+    const id = await db.asUser(A, async (r) => {
+      const x = await r.inbox.add({ kind: 'build', key: 'build:7', title: '製作：A（作業中）', url: 'https://example.test/pr/1' });
+      const y = await r.inbox.add({ kind: 'deliverable', key: 'build:7', title: '製作：A（完成）' }); assert.equal(y.id, x.id); assert.equal(y.kind, 'deliverable');
+      assert.equal(await r.inbox.markRead(x.id), true); assert.notEqual((await r.inbox.list({}))[0].readAt, null);
+      await r.inbox.add({ kind: 'build', key: 'build:7', title: '更新' }); assert.equal((await r.inbox.list({}))[0].readAt, null);
+      await assert.rejects(r.inbox.add({ kind: 'zzz', title: 'x' }), code('invalid_value')); await assert.rejects(r.inbox.add({ title: '' }), code('invalid_value')); await assert.rejects(r.inbox.add({ title: 'x', url: 'javascript:alert(1)' }), code('invalid_value'));
+      for (let i = 0; i < 110; i++) await r.inbox.add({ title: 'n' + i });
+      assert.equal((await r.inbox.list({ limit: 100 })).length, 100);
+      return x.id;
+    });
+    await db.asUser(B, async (r) => { assert.deepEqual(await r.inbox.list({}), []); assert.equal(await r.inbox.markRead(id), false); assert.equal(await r.inbox.del(id), false); assert.equal(await r.inbox.markAllRead(), 0); });
+    await db.asUser(A, async (r) => { assert.ok((await r.inbox.markAllRead()) > 0); assert.ok((await r.inbox.delAll()) > 0); assert.deepEqual(await r.inbox.list({}), []); });
+  });
+
+  T('notif relay: ciphertext items, de-duplicated by id, oldest first from `since`, cleared, per user; junk items are skipped', async ({ db, newUser, now: clock }) => {
+    const { A, B } = await two({ newUser });
+    const now = clock ? clock() : Date.now(), it = (id, at) => ({ id, at, iv: 'AAAAAAAAAAAAAAAA', ct: 'BBBBBBBBBBBBBBBBBBBBBBBB' });
+    await db.asUser(A, async (r) => {
+      assert.deepEqual(await r.notif.push([it('n1-aa', now - 2000), it('n2-aa', now - 1000), it('n1-aa', now - 2000), { id: 'bad id!', at: now, iv: 'x', ct: 'y' }, null]), { stored: 3 });
+      assert.deepEqual((await r.notif.pull({ since: 0 })).map((x) => x.id), ['n1-aa', 'n2-aa']); assert.deepEqual((await r.notif.pull({ since: now - 1500 })).map((x) => x.id), ['n2-aa']);
+      assert.equal(await r.notif.count(), 2);
+      await r.notif.push([it('old-aa', now - 4 * 864e5)]); assert.deepEqual((await r.notif.pull({ since: 0 })).map((x) => x.id), ['n1-aa', 'n2-aa'], 'older than 3 days is dropped');
+    });
+    await db.asUser(B, async (r) => { assert.deepEqual(await r.notif.pull({ since: 0 }), []); assert.equal(await r.notif.clear(), 0); });
+    await db.asUser(A, async (r) => { assert.equal((await r.notif.pull({ since: 0 })).length, 2); assert.equal(await r.notif.clear(), 2); assert.deepEqual(await r.notif.pull({ since: 0 }), []); });
+  });
+
+  T('P4 data is deleted with the account (residual check is zero) and the export covers it', async ({ db, newUser, deleteUser, now: clock }) => {
+    const now = clock ? clock() : Date.now();
+    const { a, A, B } = await two({ newUser });
+    await db.asUser(A, async (r) => { await r.notes.put({ path: 'a.md', content: '1' }); await r.notes.put({ path: 'a.md', content: '2' }); await r.messages.append({ turns: [{ role: 'user', text: 'hi', at: now }] }); await r.inbox.add({ title: 'x' }); await r.notif.push([{ id: 'n1-aa', at: now, iv: 'AAAAAAAAAAAAAAAA', ct: 'BBBBBBBBBBBBBBBBBBBBBBBB' }]); });
+    await db.asUser(B, (r) => r.notes.put({ path: 'b.md', content: 'B' }));
+    const { buildExport } = await import('../../server/rights/export.js');
+    const ex = await db.asUser(A, (r) => buildExport(r)); assert.equal(ex.files['notes.json'].notes[0].revisions.length, 1); assert.equal(ex.files['conversations.json'].conversations[0].messages.length, 1); assert.equal(ex.files['inbox.json'].inbox.length, 1); assert.equal(ex.files['notifications.json'].stored, 1);
+    assert.ok(!JSON.stringify(ex).includes('BBBBBBBB'), 'the relay\'s ciphertext is not exported');
+    await deleteUser(a);
+    const res = await residualCheck(db, mint(a)); assert.equal(res.clean, true);
+    assert.equal((await db.asUser(B, (r) => r.notes.get('b.md'))).content, 'B');
   });
 
   T('cron helpers: bootstrap admin needs a CONFIRMED account with that e-mail; receipts carry no user id', async ({ db, newUser }) => {

@@ -5,7 +5,7 @@
 import crypto from 'node:crypto';
 import { gfetch } from './http.js';
 import { googleConfig, googleConfigured, googleToolAllowed } from './config.js';
-import { brainConfigured, brainSearch, brainRead, brainList, brainWrite, brainGraph, brainProjects, brainSecretScan, brainWarm, brainCreateProject, brainAppendConversation, brainProjectMaterial, brainProjectAdd, brainRepoIsPrivate } from '../brain.js';
+import { brainConfigured, brainSearch, brainRead, brainList, brainWrite, brainGraph, brainProjects, brainSecretScan, brainWarm, brainCreateProject, brainProjectMaterial, brainProjectAdd } from '../brain.js';
 import { analyzeProjects } from '../project-intel.js';
 import { setSubscription, updateEntry, addEntries, cancelEntry, setBudget, addAsset, addRule, financeSummary, parseCsv, parsePaymentNotification, CATEGORIES as FIN_CATS } from '../finance.js';
 import { courseSummary, courseSuggest, addCourses, updateCourses, cancelCourse, setRequirements, classEvents, parseTerm } from '../course.js';
@@ -438,13 +438,12 @@ export const TOOLS = [
     schema: S({ name: str('ファイル名（一部でよい）。省略すると、いま選ばれているファイル'), tags: { type: 'array', items: { type: 'string' }, description: 'タグ（短い言葉。例: ["経費","2026"]）' }, memo: str('メモ（空文字で消す）'), kind: str('種類の名前: レポート/論文・領収書・請求書→「領収書・請求書」・契約書・履修・時間割・シフト表・議事録・資料/スライド・表計算・手紙・その他 のいずれか。空文字で自動判定に戻す') }),
     async run() { throw new Error('このツールはページ側（ブラウザ）が実行します'); } },
   { name: 'file_note_save', kind: 'write', danger: 'normal', auto: () => true, hidden: true, enabled: brainConfigured,   // the screen's 「第二の脳にも保存」 button (a summary note: title, kind, keywords, snippet/summary, tags; the owner's own record, no approval card)
-    description: '（画面のファイル一覧用）取り込んだファイルの要約ノート（種類・キーワード・要約・タグ。全文ではない）を、第二の脳の ファイル/ に保存する。リポジトリが公開のときは保存しない。',
+    description: '（画面のファイル一覧用）取り込んだファイルの要約ノート（種類・キーワード・要約・タグ。全文ではない）を、第二の脳の ファイル/ に保存する。',
     schema: S({ path: str('ファイル/<名前>.md'), content: str('Markdown本文'), replace: bool('すでに同じノートがあるとき上書きする（この画面が前に保存した同じファイルのノートの更新だけ）') }, ['path', 'content']),
     describe: (a) => `ファイルを第二の脳に保存: ${a.path}`,
     run: async (a) => {
       const path = String(a.path || '');
       if (!/^ファイル\/[^/]+\.md$/.test(path)) throw new Error('保存先は ファイル/ の中のノートだけです');
-      if (!(await brainRepoIsPrivate())) throw new Error('第二の脳のリポジトリが公開になっているため、ファイルの内容は保存しません（プライベートにしてください）');
       return brainWrite({ path, content: a.content, mode: a.replace === true ? 'replace' : 'create' });
     } },
 
@@ -540,12 +539,6 @@ export const TOOLS = [
     schema: S({}),
     async run() { throw new Error('このツールはページ側（ブラウザ）が実行します'); } },
 
-  // Everything said is kept in the second brain (会話/<日付>.md). Called by the page, not offered to the voice model.
-  { name: 'conversation_log', kind: 'write', danger: 'normal', auto: () => true, hidden: true, enabled: brainConfigured,
-    description: '（画面用）{{U}}と{{AS}}の会話の文字起こしを、第二の脳の 会話/日付.md に追記する。秘密情報は伏せる。公開リポジトリには書かない。',
-    schema: S({ turns: { type: 'array', items: { type: 'object' }, description: '会話の記録 [{at, user, model}]' } }, ['turns']),
-    describe: (a) => `会話の記録: ${(a.turns || []).length}件`,
-    run: (a) => brainAppendConversation(a) },
   // Project Intelligence: all projects at once — health, risks, the next action, how recently each was talked about, and which projects are related.
   { name: 'project_insights', kind: 'read',
     description: '第二の脳の全プロジェクトを横断して、状態・課題とリスク・次の行動・プロジェクト同士の関連を、実際のノートと会話の記録から計算して返す。「プロジェクトの状況は？」「危ないものは？」「次に何をすれば？」「プロジェクト同士の関連は？」と聞かれたら使う。このツールを呼ぶと、プロジェクト管理の画面（一覧・グラフ）も自動で開く。まだプロジェクトがなくても使える（count が0なら「まだプロジェクトがございません。新しいアイデアを話していただければ、作成をご提案いたします」、unconfigured が true なら「第二の脳が未設定です」と伝える）。結果は、危険・注意のものから、2〜3件を、理由と次の一手つきで短く伝える。進捗の記録を自動で更新させたいときは、delegate_agent の pintel（プロジェクト統合担当）。',

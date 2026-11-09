@@ -10,5 +10,6 @@ runDbContract('memory', async () => {
     deleteUser: async (uid) => db.testing.deleteUser(uid),
     makeAdmin: async (uid) => db.testing.makeAdmin(uid),
     passTime: async (ms) => db.testing.advance(ms),
+    now: () => db.testing.now(),   // the fake clock (earlier tests moved it)
   };
 });

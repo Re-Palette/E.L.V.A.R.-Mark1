@@ -21,7 +21,20 @@ const auditRow = (r) => ({ id: String(r.id), at: iso(r.at), actor: r.actor, acto
 const tokenMeta = (r) => ({ provider: r.provider, scopes: [...(r.scopes || [])], status: r.status, reason: r.reason, revokeUrl: r.revoke_url, dekVer: r.dek_ver, updatedAt: iso(r.updated_at) });
 const tokenFull = (r) => ({ ...tokenMeta(r), ct: Buffer.from(r.ct), iv: Buffer.from(r.iv) });
 const buildRow = (r) => ({ id: r.id, repo: r.repo, target: r.target, issueNumber: r.issue_number, prNumber: r.pr_number, state: r.state, title: r.title, createdAt: iso(r.created_at), updatedAt: iso(r.updated_at) });
+const noteMeta = (r) => ({ id: r.id, path: r.path, bytes: r.bytes, tags: [...(r.tags || [])], rev: r.rev, updatedAt: iso(r.updated_at), deletedAt: iso(r.deleted_at) });
+const noteFull = (r) => ({ ...noteMeta(r), content: r.content, pushedRev: r.pushed_rev ?? null, createdAt: iso(r.created_at) });
+const convRow = (r) => ({ id: r.id, channel: r.channel, startedAt: iso(r.started_at), lastAt: iso(r.last_at), count: num(r.n ?? 0), preview: r.preview ?? null });
+const msgRow = (r) => ({ id: String(r.id), conversationId: r.conversation_id, role: r.role, text: r.text, at: iso(r.at) });
+const inboxRow = (r) => ({ id: r.id, kind: r.kind, title: r.title, body: r.body, url: r.url, notePath: r.note_path, key: r.key, at: iso(r.at), readAt: iso(r.read_at) });
 const limitRow = (r) => ({ provider: r.provider, metric: r.metric, period: r.period, soft: num(r.soft), softAction: r.soft_action });
+
+/** Refuse a write that would take the user over their storage quota (accounts.storage_quota_bytes, default 500 MB): notes + their revisions + messages. */
+async function assertRoom(tx, uid, grow) {
+  const [r] = await tx`select coalesce((select storage_quota_bytes from app.accounts where user_id = ${uid}), 524288000) as quota,
+      coalesce((select sum(bytes) from app.notes where user_id = ${uid}), 0) + coalesce((select sum(octet_length(content)) from app.note_revisions where user_id = ${uid}), 0)
+      + coalesce((select sum(octet_length(text)) from app.messages where user_id = ${uid}), 0) as used`;
+  if (Number(r.used) + grow > Number(r.quota)) throw dbError('storage_quota_exceeded', 413);
+}
 
 export function pgRepos(tx, uid, afterCommit = () => {}) {
   return {
@@ -259,6 +272,187 @@ export function pgRepos(tx, uid, afterCommit = () => {}) {
       },
       async del(id) { V.need(requireUuid(id)); return (await tx`delete from app.build_requests where user_id = ${uid} and id = ${id}`).count > 0; },
       async delAll() { return (await tx`delete from app.build_requests where user_id = ${uid}`).count; },
+    },
+
+    /** The second brain: Markdown notes (docs/ELVAR_MULTIUSER.md 8.5). Changing the text keeps the old one as a revision (newest 30). */
+    notes: {
+      /** Without the trash by default. `folder` = a path prefix such as '家計' or '家計/'. */
+      async list({ folder = '', trash = false, limit = 5000 } = {}) {
+        V.need(typeof folder === 'string' && folder.length <= 300 && Number.isInteger(limit) && limit >= 1 && limit <= 20000);
+        const prefix = folder ? folder.replace(/^\/+|\/+$/g, '') + '/' : '';
+        return (await tx`select id, path, bytes, tags, rev, updated_at, deleted_at from app.notes where user_id = ${uid} and (deleted_at is not null) = ${trash === true}
+                         ${prefix ? tx`and left(path, ${prefix.length}) = ${prefix}` : tx``} order by path collate "C" limit ${limit}`).map(noteMeta);
+      },
+      async count() { const [r] = await tx`select count(*)::int as n from app.notes where user_id = ${uid} and deleted_at is null`; return r.n; },
+      /** Live notes only unless withTrashed. `lock` takes the row for the rest of the transaction (read-modify-write). */
+      async get(path, { withTrashed = false, lock = false } = {}) {
+        V.notePath(path);
+        const [r] = await tx`select id, path, content, bytes, tags, rev, pushed_rev, created_at, updated_at, deleted_at from app.notes where user_id = ${uid} and path = ${path}
+                             ${withTrashed ? tx`` : tx`and deleted_at is null`} ${lock ? tx`for update` : tx``}`;
+        return r ? noteFull(r) : null;
+      },
+      async getById(id) {
+        V.need(requireUuid(id));
+        const [r] = await tx`select id, path, content, bytes, tags, rev, pushed_rev, created_at, updated_at, deleted_at from app.notes where user_id = ${uid} and id = ${id}`;
+        return r ? noteFull(r) : null;
+      },
+      /** Create or replace the text of a note (a trashed note comes back). `synced` marks the text as already mirrored to the user's own repository (an import).
+       *  @throws storage_quota_exceeded (413) @returns {Promise<{id:string, path:string, rev:number, created:boolean, unchanged:boolean}>} */
+      async put({ path, content, tags, synced = false }) {
+        V.notePath(path); V.noteContent(content); const tg = V.noteTags(tags);
+        const [cur] = await tx`select id, content, rev, deleted_at from app.notes where user_id = ${uid} and path = ${path} for update`;
+        const unchanged = cur && cur.content === content;
+        if (!unchanged) await assertRoom(tx, uid, Buffer.byteLength(content, 'utf8'));   // the old text stays as a revision, so the net growth is the new text
+        if (!cur) {
+          const [n] = await tx`insert into app.notes (user_id, path, content, tags, pushed_rev) values (${uid}, ${path}, ${content}, ${tg ?? []}::text[], ${synced ? 1 : null}) returning id, rev`;
+          return { id: n.id, path, rev: n.rev, created: true, unchanged: false };
+        }
+        if (unchanged && !cur.deleted_at) { if (tg) await tx`update app.notes set tags = ${tg}::text[] where user_id = ${uid} and id = ${cur.id}`; return { id: cur.id, path, rev: cur.rev, created: false, unchanged: true }; }
+        if (!unchanged) {
+          await tx`insert into app.note_revisions (user_id, note_id, rev, content) values (${uid}, ${cur.id}, ${cur.rev}, ${cur.content}) on conflict (user_id, note_id, rev) do nothing`;
+          await tx`delete from app.note_revisions where user_id = ${uid} and note_id = ${cur.id} and rev not in (select rev from app.note_revisions where user_id = ${uid} and note_id = ${cur.id} order by rev desc limit ${V.NOTE_REVISIONS_KEPT})`;
+        }
+        const next = unchanged ? cur.rev : cur.rev + 1;
+        if (synced) await tx`update app.notes set content = ${content}, rev = ${next}, deleted_at = null, updated_at = now(), tags = coalesce(${tg}::text[], tags), pushed_rev = ${next} where user_id = ${uid} and id = ${cur.id}`;
+        else await tx`update app.notes set content = ${content}, rev = ${next}, deleted_at = null, updated_at = now(), tags = coalesce(${tg}::text[], tags) where user_id = ${uid} and id = ${cur.id}`;
+        return { id: cur.id, path, rev: next, created: false, unchanged: false };
+      },
+      async trash(id) { V.need(requireUuid(id)); return (await tx`update app.notes set deleted_at = now() where user_id = ${uid} and id = ${id} and deleted_at is null`).count > 0; },
+      async restore(id) { V.need(requireUuid(id)); return (await tx`update app.notes set deleted_at = null, updated_at = now() where user_id = ${uid} and id = ${id} and deleted_at is not null`).count > 0; },
+      /** Permanent: the note and all its revisions. */
+      async purge(id) { V.need(requireUuid(id)); return (await tx`delete from app.notes where user_id = ${uid} and id = ${id}`).count > 0; },
+      async emptyTrash() { return (await tx`delete from app.notes where user_id = ${uid} and deleted_at is not null`).count; },
+      async delAll() { return (await tx`delete from app.notes where user_id = ${uid}`).count; },
+      /** The revisions of a note, newest first (the current text is `rev` of the note itself). */
+      async revisions(id) {
+        V.need(requireUuid(id));
+        return (await tx`select rev, at, octet_length(content) as bytes from app.note_revisions where user_id = ${uid} and note_id = ${id} order by rev desc`).map((r) => ({ rev: r.rev, at: iso(r.at), bytes: r.bytes }));
+      },
+      async revision(id, rev) {
+        V.need(requireUuid(id) && Number.isInteger(rev) && rev >= 0);
+        const [r] = await tx`select rev, at, content from app.note_revisions where user_id = ${uid} and note_id = ${id} and rev = ${rev}`;
+        return r ? { rev: r.rev, at: iso(r.at), content: r.content } : null;
+      },
+      /** Notes that contain at least one of the terms (candidates; the caller scores them): PGroonga or a trigram index, see migration 05. */
+      async search(terms, { limit = 200 } = {}) {
+        const t = V.searchTerms(terms); V.need(Number.isInteger(limit) && limit >= 1 && limit <= 300);
+        const like = t.map(V.likePattern);
+        let rows;
+        try { rows = await tx.savepoint((sp) => sp`select id, path, content, updated_at from app.search_notes(${t}::text[], ${like}::text[], ${limit})`); }
+        catch (e) {   // an engine that does not know the operator: the plain ILIKE query gives the same candidates (slower)
+          if (e?.code === '57014') throw e;
+          rows = await tx`select id, path, left(content, 60000) as content, updated_at from app.notes where user_id = ${uid} and deleted_at is null and (content ilike any (${like}::text[]) or path ilike any (${like}::text[])) order by updated_at desc limit ${limit}`;
+        }
+        return rows.map((r) => ({ id: r.id, path: r.path, content: r.content, updatedAt: iso(r.updated_at) }));
+      },
+      /** Texts of live notes (path prefix optional), newest first, each cut at maxBytes characters. */
+      async texts({ prefix = '', limit = 300, maxChars = 60000 } = {}) {
+        V.need(typeof prefix === 'string' && prefix.length <= 300 && Number.isInteger(limit) && limit >= 1 && limit <= 2000 && Number.isInteger(maxChars) && maxChars >= 1 && maxChars <= 400000);
+        return (await tx`select path, left(content, ${maxChars}) as content, updated_at, bytes from app.notes where user_id = ${uid} and deleted_at is null ${prefix ? tx`and left(path, ${prefix.length}) = ${prefix}` : tx``} order by updated_at desc, path collate "C" limit ${limit}`)
+          .map((r) => ({ path: r.path, content: r.content, updatedAt: iso(r.updated_at), bytes: r.bytes }));
+      },
+      /** Notes changed since they were last mirrored to the user's own repository (github-brain). */
+      async unpushed({ limit = 40 } = {}) {
+        V.need(Number.isInteger(limit) && limit >= 1 && limit <= 200);
+        return (await tx`select id, path, content, rev from app.notes where user_id = ${uid} and deleted_at is null and rev > coalesce(pushed_rev, 0) order by updated_at limit ${limit}`).map((r) => ({ id: r.id, path: r.path, content: r.content, rev: r.rev }));
+      },
+      async unpushedCount() { const [r] = await tx`select count(*)::int as n from app.notes where user_id = ${uid} and deleted_at is null and rev > coalesce(pushed_rev, 0)`; return r.n; },
+      async markPushed(id, rev) { V.need(requireUuid(id) && Number.isInteger(rev) && rev >= 0); return (await tx`update app.notes set pushed_rev = ${rev} where user_id = ${uid} and id = ${id} and rev >= ${rev}`).count > 0; },
+    },
+
+    /** The conversation log (short-term memory). A conversation is a run of turns on one channel with no gap longer than 30 minutes. */
+    messages: {
+      /** @param {{turns: Array<{role:string,text:string,at:number}>, channel?: string, gapSec?: number}} o @returns {Promise<{conversationId:string, added:number}>} */
+      async append({ turns, channel = 'voice', gapSec = 1800 }) {
+        const t = V.messageTurns(turns); V.need(V.CHANNELS.includes(channel) && Number.isInteger(gapSec) && gapSec >= 1 && gapSec <= 86400);
+        await assertRoom(tx, uid, t.reduce((a, x) => a + Buffer.byteLength(x.text, 'utf8'), 0));
+        let cid = null;
+        for (const run of V.splitRuns(t, gapSec * 1000)) {
+          const first = run[0].at, last = run[run.length - 1].at;
+          const [open] = await tx`select id from app.conversations where user_id = ${uid} and channel = ${channel} and last_at >= to_timestamp(${first / 1000}) - make_interval(secs => ${gapSec}) and started_at <= to_timestamp(${last / 1000}) + make_interval(secs => ${gapSec}) order by last_at desc limit 1`;
+          cid = open ? open.id : (await tx`insert into app.conversations (user_id, channel, started_at, last_at) values (${uid}, ${channel}, to_timestamp(${first / 1000}), to_timestamp(${last / 1000})) returning id`)[0].id;
+          await tx`insert into app.messages (user_id, conversation_id, role, text, at) select ${uid}, ${cid}, m.role, m.text, to_timestamp(m.at / 1000.0) from jsonb_to_recordset(${tx.json(run)}::jsonb) as m(role text, text text, at double precision)`;
+          await tx`update app.conversations set last_at = greatest(last_at, to_timestamp(${last / 1000})), started_at = least(started_at, to_timestamp(${first / 1000})) where user_id = ${uid} and id = ${cid}`;
+        }
+        return { conversationId: cid, added: t.length };
+      },
+      async conversations({ limit = 50, before = null } = {}) {
+        V.need(Number.isInteger(limit) && limit >= 1 && limit <= 200 && (before === null || (typeof before === 'string' && !Number.isNaN(Date.parse(before)))));
+        return (await tx`select c.id, c.channel, c.started_at, c.last_at, (select count(*)::int from app.messages m where m.user_id = c.user_id and m.conversation_id = c.id) as n,
+                           (select left(m.text, 80) from app.messages m where m.user_id = c.user_id and m.conversation_id = c.id and m.role = 'user' order by m.id limit 1) as preview
+                         from app.conversations c where c.user_id = ${uid} ${before ? tx`and c.last_at < ${new Date(before)}` : tx``} order by c.last_at desc, c.id limit ${limit}`).map(convRow);
+      },
+      async conversation(id, { limit = 1000 } = {}) {
+        V.need(requireUuid(id) && Number.isInteger(limit) && limit >= 1 && limit <= 5000);
+        const [c] = await tx`select id, channel, started_at, last_at from app.conversations where user_id = ${uid} and id = ${id}`;
+        if (!c) return null;
+        const ms = await tx`select id, conversation_id, role, text, at from app.messages where user_id = ${uid} and conversation_id = ${id} order by at, id limit ${limit}`;
+        return { ...convRow({ ...c, n: ms.length }), messages: ms.map(msgRow) };
+      },
+      /** Newest first. `q` = words to find (ILIKE / PGroonga); `since` / `until` = ISO times. */
+      async list({ q = null, since = null, until = null, limit = 100 } = {}) {
+        V.need(Number.isInteger(limit) && limit >= 1 && limit <= 2000 && (since === null || !Number.isNaN(Date.parse(since))) && (until === null || !Number.isNaN(Date.parse(until))));
+        if (q) {
+          const t = V.searchTerms(String(q).split(/\s+/).filter(Boolean), 8), like = t.map(V.likePattern);
+          let rows;
+          try { rows = await tx.savepoint((sp) => sp`select id, conversation_id, role, text, at from app.search_messages(${t}::text[], ${like}::text[], ${Math.min(limit, 200)})`); }
+          catch (e) { if (e?.code === '57014') throw e; rows = await tx`select id, conversation_id, role, text, at from app.messages where user_id = ${uid} and text ilike any (${like}::text[]) order by at desc, id desc limit ${Math.min(limit, 200)}`; }
+          return rows.map(msgRow);
+        }
+        return (await tx`select id, conversation_id, role, text, at from app.messages where user_id = ${uid} ${since ? tx`and at >= ${new Date(since)}` : tx``} ${until ? tx`and at < ${new Date(until)}` : tx``} order by at desc, id desc limit ${limit}`).map(msgRow);
+      },
+      async count() { const [r] = await tx`select count(*)::int as n from app.messages where user_id = ${uid}`; return r.n; },
+      async del(id) { V.need(/^\d{1,18}$/.test(String(id))); return (await tx`delete from app.messages where user_id = ${uid} and id = ${String(id)}::bigint`).count > 0; },
+      async delConversation(id) { V.need(requireUuid(id)); return (await tx`delete from app.conversations where user_id = ${uid} and id = ${id}`).count > 0; },   // its messages go with it (cascade)
+      /** Everything before `before` (ISO), or everything when `before` is null. @returns {Promise<number>} messages deleted */
+      async purge({ before = null } = {}) {
+        V.need(before === null || (typeof before === 'string' && !Number.isNaN(Date.parse(before))));
+        const n = (await tx`delete from app.messages where user_id = ${uid} ${before ? tx`and at < ${new Date(before)}` : tx``}`).count;
+        await tx`delete from app.conversations c where c.user_id = ${uid} and not exists (select 1 from app.messages m where m.user_id = c.user_id and m.conversation_id = c.id)`;
+        return n;
+      },
+    },
+
+    /** The bell panel (reports, finished work, alerts). The same `key` replaces the older item. */
+    inbox: {
+      async list({ limit = 40 } = {}) {
+        V.need(Number.isInteger(limit) && limit >= 1 && limit <= V.INBOX_MAX_ITEMS);
+        return (await tx`select id, kind, title, body, url, note_path, key, at, read_at from app.inbox_items where user_id = ${uid} order by at desc, id limit ${limit}`).map(inboxRow);
+      },
+      async add(item) {
+        const x = V.inboxInput(item);
+        const [r] = await tx`insert into app.inbox_items (user_id, kind, title, body, url, note_path, key) values (${uid}, ${x.kind}, ${x.title}, ${x.body}, ${x.url}, ${x.notePath}, ${x.key})
+                             on conflict (user_id, key) where key is not null do update set kind = excluded.kind, title = excluded.title, body = excluded.body, url = excluded.url, note_path = excluded.note_path, at = now(), read_at = null
+                             returning id, kind, title, body, url, note_path, key, at, read_at`;
+        await tx`delete from app.inbox_items where user_id = ${uid} and id not in (select id from app.inbox_items where user_id = ${uid} order by at desc, id limit ${V.INBOX_MAX_ITEMS})`;
+        return inboxRow(r);
+      },
+      async markRead(id) { V.need(requireUuid(id)); return (await tx`update app.inbox_items set read_at = coalesce(read_at, now()) where user_id = ${uid} and id = ${id}`).count > 0; },
+      async markAllRead() { return (await tx`update app.inbox_items set read_at = now() where user_id = ${uid} and read_at is null`).count; },
+      async del(id) { V.need(requireUuid(id)); return (await tx`delete from app.inbox_items where user_id = ${uid} and id = ${id}`).count > 0; },
+      async delAll() { return (await tx`delete from app.inbox_items where user_id = ${uid}`).count; },
+    },
+
+    /** The phone-notification relay: ciphertext only, 3 days, 200 items. The phone's device token (scope notif:push / notif:pull) reaches nothing but this. */
+    notif: {
+      async push(items, { now = Date.now() } = {}) {
+        V.need(Array.isArray(items));
+        const ok = items.slice(0, 50).map((x) => { try { return V.notifItem(x); } catch { return null; } }).filter(Boolean);
+        if (!ok.length) return { stored: 0 };
+        const rows = ok.map((x) => ({ id: x.id, at: new Date(Math.min(x.at, now + 60_000)).toISOString(), iv: x.iv, ct: x.ct }));
+        await tx`delete from app.notif_items where user_id = ${uid} and at < ${new Date(now - V.NOTIF_KEEP_MS)}`;
+        await tx`insert into app.notif_items (user_id, id, at, iv, ct) select ${uid}, r.id, r.at, r.iv, r.ct from jsonb_to_recordset(${tx.json(rows)}::jsonb) as r(id text, at timestamptz, iv text, ct text) on conflict (user_id, id) do nothing`;
+        await tx`delete from app.notif_items where user_id = ${uid} and id not in (select id from app.notif_items where user_id = ${uid} order by at desc, id limit ${V.NOTIF_MAX_ITEMS})`;
+        return { stored: ok.length };
+      },
+      /** Items at or after `since` (ms), oldest first, at most 100. */
+      async pull({ since = 0, now = Date.now() } = {}) {
+        V.need(Number.isFinite(since) && since >= 0);
+        await tx`delete from app.notif_items where user_id = ${uid} and at < ${new Date(now - V.NOTIF_KEEP_MS)}`;
+        return (await tx`select id, at, iv, ct from app.notif_items where user_id = ${uid} and at >= ${new Date(Math.max(0, since))} order by at, id limit 100`).map((r) => ({ id: r.id, at: new Date(r.at).getTime(), iv: r.iv, ct: r.ct }));
+      },
+      async clear() { return (await tx`delete from app.notif_items where user_id = ${uid}`).count; },
+      async count() { const [r] = await tx`select count(*)::int as n from app.notif_items where user_id = ${uid} and at >= ${new Date(Date.now() - V.NOTIF_KEEP_MS)}`; return r.n; },
     },
 
     usageLimits: {

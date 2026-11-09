@@ -3,7 +3,7 @@
 // voice model only explain the numbers. There is no bank connection: entries come from the owner's voice, receipts/statements in mail, payment notifications
 // on the phone, and pasted card/bank CSV text.
 import crypto from 'node:crypto';
-import { brainReadRaw, brainWrite, brainRepoIsPrivate, brainConfigured } from './brain.js';
+import { brainReadRaw, brainWrite, brainConfigured } from './brain.js';
 import { U, TZ } from './profile/index.js';
 import { localDate } from '../shared/tz.js';
 
@@ -88,11 +88,9 @@ async function learnedRules() {
   return [...t.matchAll(/^\s*[-*]\s*(.+?)\s*(?:→|->|＝|=)\s*(\S+)\s*$/gm)].map((m) => ({ keyword: m[1].trim(), category: m[2].trim() })).filter((r) => CATEGORIES.includes(r.category));
 }
 async function readMonth(month) { return parseLedger(await brainReadRaw(pathOf(month)).catch(() => null)); }
-async function guardPrivate() { if (!(await brainRepoIsPrivate())) throw new Error('第二の脳のリポジトリが公開になっているため、家計のデータは保存しません（プライベートにしてください）'); }
 
 /** Adds entries (classified, deduplicated for imported / notification entries). @returns {{added:object[], skipped:number}} */
 export async function addEntries(list, { nowMs = Date.now(), source = '声', dedupe = false } = {}) {
-  await guardPrivate();
   const learned = await learnedRules(), byMonth = new Map(), added = []; let skipped = 0;
   for (const raw of (Array.isArray(list) ? list : []).slice(0, 80)) {
     const e = normalizeEntry(raw, { nowMs, learned, source: raw?.source || source }), month = monthOf(e.date);
@@ -112,7 +110,6 @@ export async function addEntries(list, { nowMs = Date.now(), source = '声', ded
 
 /** Removes one entry by id (the file is rewritten; git history keeps the old version). */
 export async function cancelEntry(id, month) {
-  await guardPrivate();
   const months = month ? [month] : [tzDate(Date.now()).slice(0, 7), tzDate(Date.now() - 31 * DAY).slice(0, 7)];
   for (const m of months) {
     const text = await brainReadRaw(pathOf(m)).catch(() => null); if (!text) continue;
@@ -125,7 +122,6 @@ export async function cancelEntry(id, month) {
 
 /** Changes one entry (by id; with no id, the most recent one). Only the given fields change; the month file is rewritten (git history keeps the old version). */
 export async function updateEntry({ id, patch = {}, nowMs = Date.now() }) {
-  await guardPrivate();
   const months = [tzDate(nowMs).slice(0, 7), tzDate(nowMs - 31 * DAY).slice(0, 7)];
   let found = null;
   for (const m of months) {
@@ -147,7 +143,6 @@ export async function updateEntry({ id, patch = {}, nowMs = Date.now() }) {
 const idxId = (e, cur) => idFor(e, cur.filter((x) => x.date === e.date && x.amount === e.amount && normDesc(x.description) === normDesc(e.description)).length);
 
 export async function setBudget({ category = '合計', amount }) {
-  await guardPrivate();
   const n = Math.round(Number(amount)); if (!Number.isFinite(n) || n < 0) throw new Error('予算の金額が分かりません');
   if (category !== '合計' && !CATEGORIES.includes(category)) throw new Error(`カテゴリは ${['合計', ...CATEGORIES].join(' / ')} のどれかです`);
   const cur = parseBudget(await brainReadRaw('家計/予算.md').catch(() => null)); cur[category] = n;
@@ -158,7 +153,6 @@ export async function setBudget({ category = '合計', amount }) {
 export function parseBudget(text) { const o = {}; for (const m of String(text || '').matchAll(/^\s*[-*]\s*(\S+?)\s*[：:]\s*(\d+)/gm)) o[m[1]] = Number(m[2]); return o; }
 
 export async function addAsset({ name, amount, kind = '資産', date, nowMs = Date.now() }) {
-  await guardPrivate();
   const n = Math.round(Number(String(amount).replace(/[,，円¥￥\s]/g, ''))); if (!Number.isFinite(n)) throw new Error('金額が分かりません');
   const nm = cell(name).slice(0, 40); if (!nm) throw new Error('名前（預金・現金・投資など）が分かりません');
   const k = kind === '負債' ? '負債' : '資産', d = /^\d{4}-\d{2}-\d{2}$/.test(String(date || '')) ? date : tzDate(nowMs);
@@ -169,7 +163,6 @@ export async function addAsset({ name, amount, kind = '資産', date, nowMs = Da
 export function parseAssets(text) { const out = []; for (const m of String(text || '').matchAll(/^\|\s*(\d{4}-\d{2}-\d{2})\s*\|([^|]+)\|\s*(資産|負債)\s*\|\s*(\d+)\s*\|/gm)) out.push({ date: m[1], name: m[2].trim(), kind: m[3], amount: Number(m[4]) }); return out; }
 
 export async function addRule({ keyword, category }) {
-  await guardPrivate();
   if (!CATEGORIES.includes(category)) throw new Error(`カテゴリは ${CATEGORIES.join(' / ')} のどれかです`);
   const kw = cell(keyword).slice(0, 30); if (kw.length < 2) throw new Error('キーワードは2文字以上にしてください');
   const exists = await brainReadRaw('家計/分類ルール.md').catch(() => null);
@@ -185,7 +178,6 @@ export function parseSubscriptions(text) {
 }
 /** action 'add' (also changes the amount / day of an existing one) or 'cancel' (解約: it disappears from the list and the totals). */
 export async function setSubscription({ name, monthly, day, action = 'add', nowMs = Date.now() }) {
-  await guardPrivate();
   const nm = cell(name).slice(0, 40); if (!nm) throw new Error('サービスの名前が分かりません');
   const cur = parseSubscriptions(await brainReadRaw('家計/サブスク.md').catch(() => null)), old = cur.find((x) => normDesc(x.name) === normDesc(nm));
   let m = Math.round(Number(String(monthly ?? '').replace(/[,，円¥￥\s]/g, '')));

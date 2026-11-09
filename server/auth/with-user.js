@@ -49,15 +49,19 @@ async function loadAccount(db, uid, now, { fresh = false } = {}) {
 }
 
 /**
- * What a device token (the Android notification sync) may touch: its own uid and the short-lived key/value store under the `notif:` prefix, nothing else.
- * No profile, settings, secrets, keys, devices, account, audit or usage: a leaked device token cannot read or change any of it through the server.
+ * What a device token (the Android notification sync) may touch: its own uid and the notification relay (ciphertext only) - `push` with the
+ * notif:push scope, `pull` / `count` with notif:pull. No notes, messages, profile, settings, secrets, keys, devices, account, audit or usage: a leaked
+ * device token cannot read or change any of it through the server.
  */
 export function limitDeviceRepos(r, scopes = []) {
-  if (!scopes.some((s) => s === 'notif:push' || s === 'notif:pull')) return Object.freeze({ uid: r.uid, afterCommit: r.afterCommit });
-  const k = (key) => { if (typeof key !== 'string' || !key.startsWith('notif:')) throw new DbError('forbidden', 403); return key; };
+  const push = scopes.includes('notif:push'), pull = scopes.includes('notif:pull');
+  if (!push && !pull) return Object.freeze({ uid: r.uid, afterCommit: r.afterCommit });
   return Object.freeze({
     uid: r.uid, afterCommit: r.afterCommit,
-    kv: Object.freeze({ get: (key) => r.kv.get(k(key)), set: (key, v, o) => r.kv.set(k(key), v, o), del: (key) => r.kv.del(k(key)) }),
+    notif: Object.freeze({
+      ...(push ? { push: (items, o) => r.notif.push(items, o) } : {}),
+      ...(pull ? { pull: (o) => r.notif.pull(o), count: () => r.notif.count() } : {}),
+    }),
   });
 }
 

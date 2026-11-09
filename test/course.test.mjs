@@ -2,26 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseSlots, parseSlot, slotsText, parseCourses, parseSettings, parseRequirements, normalizeCourse, normalizeStatus, matchCategory, findConflicts, creditTotals, checkTerm, suggestCourses, summarizeTerm, buildGrid, classOccurrences, termForDate, currentTerm, parseTerm, shiftTerm, addCourses, updateCourses, cancelCourse, setRequirements, courseSummary, courseSuggest, classEvents, readAllTerms, readSettings } from '../server/course.js';
 import { classifyDays, suggestShifts } from '../server/shift.js';
-import { _resetPrivacy } from '../server/brain.js';
 import { catColor, shiftTerm as vShiftTerm, timetableHtml, currentTermName } from '../web/src/course-view.js';
 import { executeGoogle } from '../server/google/index.js';
-import { enterTestUser } from './helpers/user-ctx.mjs';
-enterTestUser();   // a signed-in test user: approval tickets are keyed to the user and consumed in their own database
+import { runWithConfig, envConfig } from '../server/config/resolve.js';
+import { useVault } from './helpers/vault.mjs';
+const V = useVault();   // a signed-in test user with their own (empty) second brain in the in-memory database: approval tickets and notes are theirs
 
 const NOW = Date.parse('2026-11-15T12:00:00+09:00');
-async function withVault(fn, { isPrivate = true, google = true } = {}) {
-  const keep = { ...process.env }, real = globalThis.fetch, store = new Map(); let priv = isPrivate;
-  Object.assign(process.env, { BRAIN_GITHUB_TOKEN: 't', BRAIN_REPO: 'me/vault' }); delete process.env.BRAIN_DIR; _resetPrivacy();
+async function withVault(fn, { google = true } = {}) {
+  const keep = { ...process.env };
   if (google) Object.assign(process.env, { GOOGLE_CLIENT_ID: 'x', GOOGLE_CLIENT_SECRET: 'x', GOOGLE_REFRESH_TOKEN: 'x' });
-  globalThis.fetch = async (u, o = {}) => {
-    u = String(u);
-    if (/\/repos\/me\/vault$/.test(u)) return { ok: true, status: 200, json: async () => ({ full_name: 'me/vault', private: priv, permissions: { push: true } }) };
-    if (u.includes('/git/trees/')) return { ok: true, status: 200, json: async () => ({ tree: [...store.keys()].map((path) => ({ path, type: 'blob', size: 50 })) }) };
-    const p = decodeURIComponent(u).match(/\/contents\/([^?]+)/)?.[1];
-    if (o.method === 'PUT') { store.set(p, { text: Buffer.from(JSON.parse(o.body).content, 'base64').toString('utf8'), sha: 'n' + Math.random() }); return { ok: true, status: 200, json: async () => ({ commit: { sha: 'abc1234' } }) }; }
-    const f = store.get(p); return f ? { ok: true, status: 200, json: async () => ({ type: 'file', sha: f.sha, content: Buffer.from(f.text).toString('base64') }) } : { ok: false, status: 404, json: async () => ({ message: 'Not Found' }) };
-  };
-  try { return await fn({ store, setPrivate: (v) => { priv = v; _resetPrivacy(); } }); } finally { globalThis.fetch = real; for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]; Object.assign(process.env, keep); _resetPrivacy(); }
+  try { return await V.withVault(fn); } finally { for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]; Object.assign(process.env, keep); }
 }
 const C = (id, name, slot, credits, category, status = '履修', extra = {}) => { const { slots, kind } = parseSlots(slot); return { id, name, slots: slots.filter((s) => s.periods.length), kind, credits, category, status, required: false, instructor: '', room: '', grade: '', memo: '', ...extra }; };
 const T = '2026-後期';
@@ -196,9 +187,8 @@ test('vault: shift link reads the courses of the term in force; no 履修 data �
   });
 });
 
-test('public repo: course data is refused; unconfigured vault gives an empty summary', async () => {
-  await withVault(async () => { await assert.rejects(() => addCourses([{ name: 'a', slot: '月1', credits: 1 }]), /プライベート/); await assert.rejects(() => setRequirements({ totalCredits: 100 }), /プライベート/); }, { isPrivate: false });
-  const keep = process.env.BRAIN_GITHUB_TOKEN; delete process.env.BRAIN_GITHUB_TOKEN; try { const s = await courseSummary({ nowMs: NOW }); assert.equal(s.unconfigured, true); assert.equal(s.empty, true); } finally { if (keep) process.env.BRAIN_GITHUB_TOKEN = keep; }
+test('without a signed-in user there is no vault: the summary is empty and says so', async () => {
+  await runWithConfig(envConfig(), async () => { const s = await courseSummary({ nowMs: NOW }); assert.equal(s.unconfigured, true); assert.equal(s.empty, true); });
 });
 
 test('tools: course_add records by voice (no card), course_update ids, course_cancel needs approval unless confirmed, summary / suggest / requirements work, shift_suggest avoids classes', async () => {

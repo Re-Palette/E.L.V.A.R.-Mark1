@@ -18,6 +18,19 @@ export const EXPORTERS = {
   'connections.json': async (r) => ({ connections: (await r.oauthTokens.list()).map((t) => ({ provider: t.provider, scopes: t.scopes, status: t.status, reason: t.reason, updatedAt: t.updatedAt })), note: 'ログインの値（トークン）は、安全のため書き出しません（連携の状態とスコープだけ）' }),
   'connectors.json': async (r) => exportConnectors(await r.connectors.list(), Object.fromEntries((await r.secrets.list()).filter((s) => s.name.startsWith('cx:')).map((s) => [s.name, 'set'])), r.uid),
   'builds.json': async (r) => ({ builds: await r.builds.list({ limit: 200 }) }),
+  // P4: the notes (current text, trash flag, kept revisions), the conversation log, the notification box, the relay's ciphertext (ids and times only)
+  'notes.json': async (r) => {
+    const all = [...await r.notes.list({ limit: 20000 }), ...await r.notes.list({ trash: true, limit: 20000 })], notes = [];
+    for (const m of all) { const n = await r.notes.getById(m.id); notes.push({ path: n.path, content: n.content, tags: n.tags, rev: n.rev, createdAt: n.createdAt, updatedAt: n.updatedAt, trashed: n.deletedAt !== null, revisions: await Promise.all((await r.notes.revisions(m.id)).map(async (v) => ({ ...v, content: (await r.notes.revision(m.id, v.rev))?.content }))) }); }
+    return { notes, note: 'ノートは Markdown のまま（content）。Obsidian などでそのまま開けます' };
+  },
+  'conversations.json': async (r) => {
+    const list = await r.messages.conversations({ limit: 200 }), conversations = [];
+    for (const c of list) conversations.push(await r.messages.conversation(c.id, { limit: 5000 }));
+    return { conversations, note: '会話の記録です（秘密情報は保存の前に伏せてあります）' };
+  },
+  'inbox.json': async (r) => ({ inbox: await r.inbox.list({ limit: 100 }) }),
+  'notifications.json': async (r) => ({ stored: await r.notif.count(), note: 'スマホの通知の中継は、暗号化されたまま3日だけ保管される一時的な写しです（中身は書き出しません。元の通知はスマホにあります）' }),
   'usage.json': async (r) => {
     const to = new Date(), from = new Date(to.getTime() - 400 * 86400_000);
     return { daily: await r.usage.daily({ from: dayStr(from), to: dayStr(to) }), limits: await r.usageLimits.list(), storage: await r.usage.storage() };

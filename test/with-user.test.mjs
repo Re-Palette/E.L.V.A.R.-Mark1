@@ -232,19 +232,19 @@ test('freshAccount: a sensitive route reads the status from the database, ignori
   assert.deepEqual({ ok: r.ok, status: r.status, error: r.error }, { ok: false, status: 403, error: 'account_suspended' });
 }));
 
-test('a device context gets a reduced repos object: its uid and the notif: key/value store, nothing else', () => fresh(async (db) => {
+test('a device context gets a reduced repos object: its uid and the notification relay (by scope), nothing else', () => fresh(async (db) => {
   const a = db.testing.newUser(), b = db.testing.newUser(), hA = await bearer(a), hB = await bearer(b);
   const dev = (await call('POST', '/api/elvar/t/devices', hA, { scopes: ['notif:push'] })).body;
   const ctx = (await authenticate('device:notif:push', req('POST', { 'x-elvar-token': dev.token }))).ctx;
   const seen = await ctx.db(async (r) => r);
-  assert.deepEqual(Object.keys(seen).sort(), ['afterCommit', 'kv', 'uid'], 'the only things a device can reach');
-  for (const n of ['profile', 'settings', 'secrets', 'keys', 'devices', 'accounts', 'audit', 'usage', 'usageLimits', 'tickets', 'oauthPending']) assert.equal(seen[n], undefined, n);
+  assert.deepEqual(Object.keys(seen).sort(), ['afterCommit', 'notif', 'uid'], 'the only things a device can reach');
+  for (const n of ['profile', 'settings', 'secrets', 'keys', 'devices', 'accounts', 'audit', 'usage', 'usageLimits', 'tickets', 'oauthPending', 'kv', 'notes', 'messages', 'inbox']) assert.equal(seen[n], undefined, n);
   assert.ok(Object.isFrozen(seen));
-  await ctx.db((r) => r.kv.set('notif:items', { n: 1 }, { ttlSec: 60 }));
-  assert.deepEqual(await ctx.db((r) => r.kv.get('notif:items')), { n: 1 });
-  await assert.rejects(ctx.db((r) => r.kv.get('other:key')), (e) => e.code === 'forbidden');
-  await assert.rejects(ctx.db((r) => r.kv.set('GEMINI_API_KEY', 1, { ttlSec: 60 })), (e) => e.code === 'forbidden');
+  assert.deepEqual(Object.keys(seen.notif), ['push'], 'a push token can only push');
+  const item = { id: 'n1-aaaa', at: Date.now(), iv: 'AAAAAAAAAAAAAAAA', ct: 'BBBBBBBBBBBBBBBBBBBB' };
+  assert.deepEqual(await ctx.db((r) => r.notif.push([item])), { stored: 1 });
   const ctxB = (await authenticate('user', req('GET', hB))).ctx;
-  assert.equal(await ctxB.db((r) => r.kv.get('notif:items')), null, 'another user never sees it');
-  assert.deepEqual(Object.keys(limitDeviceRepos({ uid: 'x', afterCommit() {} }, ['something:else'])).sort(), ['afterCommit', 'uid'], 'a scope that needs no storage gets none');
+  assert.deepEqual(await ctxB.db((r) => r.notif.pull({ since: 0 })), [], 'another user never sees it');
+  assert.equal((await ctx.db(async (r) => r)).notif.pull, undefined);
+assert.deepEqual(Object.keys(limitDeviceRepos({ uid: 'x', afterCommit() {} }, ['something:else'])).sort(), ['afterCommit', 'uid'], 'a scope that needs no storage gets none');
 }));

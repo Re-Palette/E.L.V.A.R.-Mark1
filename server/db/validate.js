@@ -66,3 +66,56 @@ export function buildInput(b) {
   need(['builds', 'self'].includes(target) && BUILD_STATES.includes(state) && typeof b.title === 'string' && b.title.length >= 1 && b.title.length <= 200);
   return { repo: b.repo, target, issueNumber: b.issueNumber, state, title: b.title };
 }
+
+// ---- P4: notes, conversations, inbox, notification relay
+export const NOTE_MAX_BYTES = 400000;
+export const NOTE_REVISIONS_KEPT = 30;
+/** A vault-relative note path: ends in .md, no empty / dot-leading segments (no .., no hidden files), no control characters, at most 300 characters. */
+export function notePath(p) {
+  need(typeof p === 'string' && p.length >= 4 && p.length <= 300 && /\.md$/.test(p) && !/[\u0000-\u001f\u007f]/.test(p) && !p.startsWith('/'));
+  need(p.split('/').every((s) => s.length > 0 && !s.startsWith('.')));
+  return p;
+}
+export const noteContent = (c) => { need(typeof c === 'string' && Buffer.byteLength(c, 'utf8') <= NOTE_MAX_BYTES); return c; };
+export function noteTags(t) { if (t === undefined || t === null) return null; need(Array.isArray(t) && t.length <= 30 && t.every((x) => typeof x === 'string' && x.length >= 1 && x.length <= 60)); return [...t]; }
+export const MESSAGE_ROLES = Object.freeze(['user', 'assistant', 'tool']);
+export const CHANNELS = Object.freeze(['voice', 'text', 'agent', 'import']);
+export const MESSAGE_MAX = 8000;
+/** [{ role, text, at(ms) }] -> the same, validated (1..120 messages per call). */
+export function messageTurns(turns) {
+  need(Array.isArray(turns) && turns.length >= 1 && turns.length <= 120);
+  return turns.map((t) => {
+    need(t && MESSAGE_ROLES.includes(t.role) && typeof t.text === 'string' && t.text.length >= 1 && t.text.length <= MESSAGE_MAX && Number.isFinite(t.at) && t.at > 0 && t.at < 4e12);
+    return { role: t.role, text: t.text, at: Math.floor(t.at) };
+  });
+}
+export const INBOX_KINDS = Object.freeze(['report', 'deliverable', 'build', 'alert', 'notice']);
+export function inboxInput(x) {
+  need(x && typeof x === 'object');
+  const kind = x.kind === undefined ? 'notice' : x.kind, body = x.body ?? '', url = x.url || null, notePath = x.notePath || null, key = x.key || null;
+  need(INBOX_KINDS.includes(kind) && typeof x.title === 'string' && x.title.length >= 1 && x.title.length <= 120 && typeof body === 'string' && body.length <= 2000);
+  need(url === null || (typeof url === 'string' && url.length <= 500 && /^https?:\/\//.test(url)));
+  need(notePath === null || (typeof notePath === 'string' && notePath.length <= 300));
+  need(key === null || (typeof key === 'string' && key.length >= 1 && key.length <= 100));
+  return { kind, title: x.title, body, url, notePath, key };
+}
+export const NOTIF_ID_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
+const B64 = /^[A-Za-z0-9+/_=-]+$/;
+export function notifItem(x) {
+  need(x && typeof x.id === 'string' && NOTIF_ID_RE.test(x.id) && Number.isFinite(x.at) && x.at > 0
+    && typeof x.iv === 'string' && x.iv.length >= 12 && x.iv.length <= 32 && B64.test(x.iv) && typeof x.ct === 'string' && x.ct.length >= 16 && x.ct.length <= 6000 && B64.test(x.ct));
+  return { id: x.id, at: Math.floor(x.at), iv: x.iv, ct: x.ct };
+}
+export const NOTIF_KEEP_MS = 3 * 864e5, NOTIF_MAX_ITEMS = 200, INBOX_MAX_ITEMS = 100;
+/** `%`-escape one search term for ILIKE (the escape character is a backslash). */
+export const likePattern = (t) => '%' + String(t).replace(/[\\%_]/g, (c) => '\\' + c) + '%';
+export function searchTerms(terms, max = 40) {
+  need(Array.isArray(terms) && terms.length >= 1);
+  const t = [...new Set(terms.map((x) => String(x)).filter((x) => x.length >= 1 && x.length <= 100))].slice(0, max); need(t.length >= 1); return t;
+}
+/** Turns sorted by time and cut into runs: a gap longer than gapMs starts a new conversation. */
+export function splitRuns(turns, gapMs) {
+  const t = [...turns].sort((a, b) => a.at - b.at), runs = [];
+  for (const x of t) { const r = runs[runs.length - 1]; if (r && x.at - r[r.length - 1].at <= gapMs) r.push(x); else runs.push([x]); }
+  return runs;
+}

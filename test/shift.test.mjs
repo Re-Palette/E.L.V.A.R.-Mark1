@@ -1,25 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseTime, hhmm, parseDateWord, shiftPay, defaultBreak, parseJobs, parseShifts, parseGoals, goalFor, normalizeShift, summarize, suggestShifts, setJob, setGoal, addShifts, updateShift, cancelShift, shiftSummary, readShifts } from '../server/shift.js';
-import { _resetPrivacy } from '../server/brain.js';
 import { monthCells, hhmmShort } from '../web/src/shift-view.js';
 import { executeGoogle } from '../server/google/index.js';
-import { enterTestUser } from './helpers/user-ctx.mjs';
-enterTestUser();   // a signed-in test user: approval tickets are keyed to the user and consumed in their own database
+import { useVault } from './helpers/vault.mjs';
+const V = useVault();   // a signed-in test user with their own (empty) second brain in the in-memory database: approval tickets and notes are theirs
 
 const NOW = Date.parse('2026-11-15T12:00:00+09:00');
-async function withVault(fn, { isPrivate = true } = {}) {
-  const keep = { ...process.env }, real = globalThis.fetch, store = new Map(); let priv = isPrivate;
-  Object.assign(process.env, { BRAIN_GITHUB_TOKEN: 't', BRAIN_REPO: 'me/vault', GOOGLE_CLIENT_ID: 'x', GOOGLE_CLIENT_SECRET: 'x', GOOGLE_REFRESH_TOKEN: 'x' }); delete process.env.BRAIN_DIR; _resetPrivacy();
-  globalThis.fetch = async (u, o = {}) => {
-    u = String(u);
-    if (/\/repos\/me\/vault$/.test(u)) return { ok: true, status: 200, json: async () => ({ full_name: 'me/vault', private: priv, permissions: { push: true } }) };
-    if (u.includes('/git/trees/')) return { ok: true, status: 200, json: async () => ({ tree: [...store.keys()].map((path) => ({ path, type: 'blob', size: 50 })) }) };
-    const p = decodeURIComponent(u).match(/\/contents\/([^?]+)/)?.[1];
-    if (o.method === 'PUT') { store.set(p, { text: Buffer.from(JSON.parse(o.body).content, 'base64').toString('utf8'), sha: 'n' + Math.random() }); return { ok: true, status: 200, json: async () => ({ commit: { sha: 'abc1234' } }) }; }
-    const f = store.get(p); return f ? { ok: true, status: 200, json: async () => ({ type: 'file', sha: f.sha, content: Buffer.from(f.text).toString('base64') }) } : { ok: false, status: 404, json: async () => ({ message: 'Not Found' }) };
-  };
-  try { return await fn({ store, setPrivate: (v) => { priv = v; _resetPrivacy(); } }); } finally { globalThis.fetch = real; for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]; Object.assign(process.env, keep); _resetPrivacy(); }
+async function withVault(fn, { google = true } = {}) {
+  const keep = { ...process.env };
+  if (google) Object.assign(process.env, { GOOGLE_CLIENT_ID: 'x', GOOGLE_CLIENT_SECRET: 'x', GOOGLE_REFRESH_TOKEN: 'x' });
+  try { return await V.withVault(fn); } finally { for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]; Object.assign(process.env, keep); }
 }
 
 
@@ -80,7 +71,6 @@ test('vault: job / goal / shifts are written to シフト/*.md; summary reads th
     await assert.rejects(() => cancelShift('zzzzzz', null, { nowMs: NOW }), /見つかりません/);
   });
 });
-test('public repo: shift data is refused', async () => { await withVault(async () => { await assert.rejects(() => setJob({ name: 'x', hourly: 1000 }), /プライベート/); }, { isPrivate: false }); });
 test('tools: shift_add (calendar:false) records by voice; shift_cancel needs approval unless confirmed (screen button); shift_summary works with nothing set', async () => {
   await withVault(async () => {
     assert.equal((await executeGoogle({ tool: 'shift_job', args: { name: 'コンビニ', hourly: '1200', transport: '400' } })).body.ok, true);

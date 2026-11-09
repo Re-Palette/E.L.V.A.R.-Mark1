@@ -1,25 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { updateEntry, parseDateWord, setSubscription, parseSubscriptions, emptySummary, classify, normalizeEntry, parseLedger, addEntries, cancelEntry, setBudget, parseBudget, addAsset, parseAssets, addRule, summarize, findSubscriptions, parseCsv, parsePaymentNotification, financeSummary } from '../server/finance.js';
-import { _resetPrivacy } from '../server/brain.js';
 import { trendSvg, yen } from '../web/src/finance-view.js';
 import { executeGoogle } from '../server/google/index.js';
-import { enterTestUser } from './helpers/user-ctx.mjs';
-enterTestUser();   // a signed-in test user: approval tickets are keyed to the user and consumed in their own database
+import { runWithConfig, envConfig } from '../server/config/resolve.js';
+import { useVault } from './helpers/vault.mjs';
+const V = useVault();   // a signed-in test user with their own (empty) second brain in the in-memory database: approval tickets and notes are theirs
 
 const NOW = Date.parse('2026-11-15T12:00:00+09:00');
-async function withVault(fn, { isPrivate = true } = {}) {
-  const keep = { ...process.env }, real = globalThis.fetch, store = new Map(); let priv = isPrivate;
-  Object.assign(process.env, { BRAIN_GITHUB_TOKEN: 't', BRAIN_REPO: 'me/vault', GOOGLE_CLIENT_ID: 'x', GOOGLE_CLIENT_SECRET: 'x', GOOGLE_REFRESH_TOKEN: 'x' }); delete process.env.BRAIN_DIR; _resetPrivacy();
-  globalThis.fetch = async (u, o = {}) => {
-    u = String(u);
-    if (/\/repos\/me\/vault$/.test(u)) return { ok: true, status: 200, json: async () => ({ full_name: 'me/vault', private: priv, permissions: { push: true } }) };
-    if (u.includes('/git/trees/')) return { ok: true, status: 200, json: async () => ({ tree: [...store.keys()].map((path) => ({ path, type: 'blob', size: 50 })) }) };
-    const p = decodeURIComponent(u).match(/\/contents\/([^?]+)/)?.[1];
-    if (o.method === 'PUT') { store.set(p, { text: Buffer.from(JSON.parse(o.body).content, 'base64').toString('utf8'), sha: 'n' + Math.random() }); return { ok: true, status: 200, json: async () => ({ commit: { sha: 'abc1234' } }) }; }
-    const f = store.get(p); return f ? { ok: true, status: 200, json: async () => ({ type: 'file', sha: f.sha, content: Buffer.from(f.text).toString('base64') }) } : { ok: false, status: 404, json: async () => ({ message: 'Not Found' }) };
-  };
-  try { return await fn({ store, setPrivate: (v) => { priv = v; _resetPrivacy(); } }); } finally { globalThis.fetch = real; for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]; Object.assign(process.env, keep); _resetPrivacy(); }
+async function withVault(fn, { google = true } = {}) {
+  const keep = { ...process.env };
+  if (google) Object.assign(process.env, { GOOGLE_CLIENT_ID: 'x', GOOGLE_CLIENT_SECRET: 'x', GOOGLE_REFRESH_TOKEN: 'x' });
+  try { return await V.withVault(fn); } finally { for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]; Object.assign(process.env, keep); }
 }
 
 test('classify: Japanese merchants / services go to the right category; the owner\'s own rules win; income is detected', () => {
@@ -50,9 +42,6 @@ test('ledger: entries are appended to 家計/YYYY-MM.md (table, header once), de
   });
 });
 
-test('finance data is never written to a public repo', async () => {
-  await withVault(async () => { await assert.rejects(() => addEntries([{ amount: 100, description: 'x店' }], { nowMs: NOW }), /公開になっている/); await assert.rejects(() => setBudget({ amount: 1000 }), /公開になっている/); }, { isPrivate: false });
-});
 
 test('budget, assets and classification rules are saved as readable notes and read back', async () => {
   await withVault(async ({ store }) => {
@@ -112,15 +101,15 @@ test('finance tools: recording needs no approval, cancelling does; summary reads
 });
 
 test('nothing recorded / vault not set up: the summary still has every field the screen draws (zeros), flagged empty / unconfigured; the read tools are always offered', async () => {
-  const keep = { ...process.env }; delete process.env.BRAIN_GITHUB_TOKEN; delete process.env.BRAIN_REPO;
+  const keep = { ...process.env };
   try {
-    const u = await financeSummary({ nowMs: NOW }); assert.equal(u.unconfigured, true); assert.equal(u.empty, true);
+    const u = await runWithConfig(envConfig(), () => financeSummary({ nowMs: NOW })); assert.equal(u.unconfigured, true); assert.equal(u.empty, true);
     for (const k of ['month', 'spent', 'income', 'balance', 'count', 'categories', 'budgetTotal', 'budgets', 'subscriptions', 'subscriptionMonthly', 'assets', 'suggestions', 'recent', 'monthly', 'projected', 'note']) assert.ok(k in u, k);
     assert.equal(u.month, '2026-11'); assert.deepEqual(u.monthly.map((m) => m.month), ['2026-06', '2026-07', '2026-08', '2026-09', '2026-10', '2026-11']); assert.ok(u.monthly.every((m) => m.spent === 0)); assert.equal(u.assets.list.length, 0);
     assert.deepEqual(emptySummary({ month: '2026-03', nowMs: NOW }).monthly.map((m) => m.month), ['2025-10', '2025-11', '2025-12', '2026-01', '2026-02', '2026-03']);
     const { declarations } = await import('../server/google/tools.js'); Object.assign(process.env, { GOOGLE_CLIENT_ID: 'x', GOOGLE_CLIENT_SECRET: 'x', GOOGLE_REFRESH_TOKEN: 'x' });
-    const names = declarations().map((d) => d.name); assert.ok(names.includes('finance_summary') && names.includes('finance_view') && !names.includes('finance_add'), 'read tools offered without the vault; recording needs it');
-    const r = await executeGoogle({ tool: 'finance_summary', args: {} }); assert.equal(r.status, 200); assert.equal(r.body.result.unconfigured, true);
+    const names = await runWithConfig(envConfig(), () => declarations().map((d) => d.name)); assert.ok(names.includes('finance_summary') && names.includes('finance_view') && !names.includes('finance_add'), 'read tools offered without the vault; recording needs it');
+    const r = await runWithConfig(envConfig(), () => executeGoogle({ tool: 'finance_summary', args: {} })); assert.equal(r.status, 200); assert.equal(r.body.result.unconfigured, true);
   } finally { for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]; Object.assign(process.env, keep); }
   await withVault(async () => { const e = await financeSummary({ nowMs: NOW }); assert.equal(e.empty, true); assert.ok(!e.unconfigured); assert.equal(e.spent, 0); });
 });

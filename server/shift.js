@@ -4,7 +4,7 @@
 // Pay and suggestions are computed by plain code (no model arithmetic). Suggestions avoid the owner's Google Calendar events and the shifts already
 // recorded; they are proposals — nothing is registered until the owner agrees. Pay is an estimate: 深夜割増 (22:00–5:00, +25 %) is added, 休憩 is unpaid.
 import crypto from 'node:crypto';
-import { brainReadRaw, brainWrite, brainRepoIsPrivate, brainConfigured } from './brain.js';
+import { brainReadRaw, brainWrite, brainConfigured } from './brain.js';
 import { U, TZ } from './profile/index.js';
 import { localDate, startOfLocalDay, tzLabel } from '../shared/tz.js';
 
@@ -88,14 +88,12 @@ export function parseGoals(text) {
 export const goalFor = (g, month) => ({ income: g.monthly[month]?.月収目標 ?? g.defaults.月収目標 ?? null, hours: g.monthly[month]?.月の目標時間 ?? g.defaults.月の目標時間 ?? null, weeklyCap: g.defaults.週の上限時間 ?? null, yearCap: g.defaults.年収上限 ?? null });
 
 // ---------------------------------------------------------------- IO
-async function guardPrivate() { if (!(await brainRepoIsPrivate())) throw new Error('第二の脳のリポジトリが公開になっているため、シフトのデータは保存しません（プライベートにしてください）'); }
 export async function readJobs() { return parseJobs(await brainReadRaw('シフト/職場.md').catch(() => null)); }
 export async function readGoals() { return parseGoals(await brainReadRaw('シフト/目標.md').catch(() => null)); }
 export async function readShifts(month) { return parseShifts(await brainReadRaw(monthPath(month)).catch(() => null)); }
 
 /** Registers / changes (action 'add') or removes ('remove') a job. */
 export async function setJob({ name, hourly, transport, action = 'add' }) {
-  await guardPrivate();
   const nm = cell(name).slice(0, 40); if (!nm) throw new Error('職場の名前が分かりません');
   const cur = await readJobs(), old = cur.find((j) => norm(j.name) === norm(nm));
   let h = num(hourly), t = num(transport);
@@ -108,7 +106,6 @@ export async function setJob({ name, hourly, transport, action = 'add' }) {
 
 /** Sets a goal / limit. key: 月収目標 | 年収上限 | 週の上限時間 | 月の目標時間. month (YYYY-MM) makes it apply to that month only (月収目標・月の目標時間 only). */
 export async function setGoal({ key = '月収目標', value, month }) {
-  await guardPrivate();
   if (!GOAL_KEYS.includes(key)) throw new Error(`目標の種類は ${GOAL_KEYS.join(' / ')} のどれかです`);
   const v = num(value); if (!Number.isFinite(v) || v < 0) throw new Error('目標の数字が分かりません');
   if (month && !/^\d{4}-\d{2}$/.test(month)) throw new Error('month は YYYY-MM で指定してください');
@@ -139,7 +136,6 @@ export function normalizeShift(raw, { jobs = [], nowMs = Date.now() } = {}) {
 const idFor = (s, n) => crypto.createHash('sha1').update(`${s.date}|${s.start}|${s.end}|${s.job}|${n}`).digest('hex').slice(0, 6);
 /** Adds shifts (a shift that exactly repeats an existing one is skipped). @returns {{added:object[], skipped:number}} */
 export async function addShifts(list, { nowMs = Date.now() } = {}) {
-  await guardPrivate();
   const jobs = await readJobs(), byMonth = new Map(), added = []; let skipped = 0;
   for (const raw of (Array.isArray(list) ? list : []).slice(0, 40)) {
     const s = normalizeShift(raw, { jobs, nowMs }), month = monthOf(s.date);
@@ -162,13 +158,13 @@ async function findShift(id, month, nowMs) {
   throw new Error(`id ${id} のシフトが見つかりません`);
 }
 export async function cancelShift(id, month, { nowMs = Date.now() } = {}) {
-  await guardPrivate(); const f = await findShift(id, month, nowMs);
+  const f = await findShift(id, month, nowMs);
   f.lines.splice(f.i, 1); await brainWrite({ path: monthPath(f.m), content: f.lines.join('\n'), mode: 'replace' });
   return { removed: f.shift };
 }
 /** Changes one shift (date / start / end / break / job / note / eventId). The month file is rewritten (git history keeps the old one); changing the date may move it to another month file. */
 export async function updateShift({ id, patch = {}, month, nowMs = Date.now() }) {
-  await guardPrivate(); const jobs = await readJobs(), f = await findShift(id, month, nowMs), old = f.shift;
+  const jobs = await readJobs(), f = await findShift(id, month, nowMs), old = f.shift;
   const merged = normalizeShift({ date: patch.date ?? old.date, start: patch.start ?? old.start, end: patch.end ?? old.end, breakMin: patch.breakMin !== undefined ? patch.breakMin : old.breakMin, job: patch.job ?? old.job, note: patch.note ?? old.note, eventId: patch.eventId ?? old.eventId }, { jobs: jobs.length ? jobs : [{ name: old.job }], nowMs });
   const next = { ...merged, id: old.id };
   if (monthOf(next.date) === f.m) { f.lines[f.i] = rowOf(next); await brainWrite({ path: monthPath(f.m), content: f.lines.join('\n'), mode: 'replace' }); }

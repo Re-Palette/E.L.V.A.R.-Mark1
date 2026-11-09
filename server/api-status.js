@@ -2,7 +2,7 @@
 // services that have no free ping are reported as "key set, not verified" unless `deep` (which spends a few requests).
 import { readConfig } from './live-token-core.js';
 import { googleStatus } from './google/index.js';
-import { brainStatus, brainConfigured } from './brain.js';
+import { brainConfigured } from './brain.js';
 import { buildConfigured } from './build.js';
 import { sarashinaConfigured, sarashinaEnabled, sarashinaChat, sarashinaKeyInfo, sarashinaBaseUrl } from './sarashina.js';
 import { env } from './config/resolve.js';
@@ -79,13 +79,17 @@ export async function apiConnections({ deep = false } = {}) {
       add('google', 'Google（Gmail・カレンダー・Drive・タスク）', g.authenticated ? 'ok' : 'fail', g.authenticated ? '接続できています（認証OK）' : `認証できません: ${g.error || '不明'}`, g.authenticated ? {} : { fix: 'Googleの連携をやり直す' });
     } catch (e) { add('google', 'Google（Gmail・カレンダー・Drive・タスク）', 'warn', `確認できませんでした: ${why(e)}`, { verified: false }); }
   })());
-  jobs.push((async () => {
-    if (!brainConfigured()) return add('github', 'GitHub（第二の脳）', 'off', '未設定です', { fix: 'BRAIN_GITHUB_TOKEN と BRAIN_REPO を設定' });
+  jobs.push((async () => {   // the optional mirror of the second brain to the user's OWN GitHub repository (server/brain-sync.js)
+    const label = 'GitHub（第二の脳の同期・任意）';
+    if (!brainConfigured()) return add('github', label, 'off', 'ログインが必要です', { fix: 'ログインして使います' });
+    if (!(env('BRAIN_GITHUB_TOKEN') && /^[\w.-]+\/[\w.-]+$/.test(env('BRAIN_REPO') || ''))) return add('github', label, 'off', '使っていません（ノートはこのアプリの中だけにあります。任意）', { fix: '自分のGitHubに写したいときだけ、設定で BRAIN_GITHUB_TOKEN と BRAIN_REPO を入れる' });
     try {
-      const b = await withTimeout(brainStatus(), 9000);
-      if (b.branchMissing) return add('github', 'GitHub（第二の脳）', 'fail', `ブランチ ${b.branch} がありません`);
-      add('github', 'GitHub（第二の脳）', b.canPush === false ? 'warn' : 'ok', b.canPush === false ? '読めますが、書き込み権限がありません（記録できません）' : `接続できています（ノート ${b.notes} 件）`, { fix: b.canPush === false ? 'トークンの Contents を Read and write に' : undefined });
-    } catch (e) { add('github', 'GitHub（第二の脳）', 'fail', `接続できません: ${why(e)}`, { fix: 'トークンとリポジトリ名を確認' }); }
+      const r = await withTimeout(fetch(`https://api.github.com/repos/${env('BRAIN_REPO')}`, { headers: { authorization: `Bearer ${env('BRAIN_GITHUB_TOKEN')}`, accept: 'application/vnd.github+json', 'user-agent': 'elvar-status' } }), 9000);
+      if (r.status === 401 || r.status === 403) return add('github', label, 'fail', `トークンが拒否されました (${r.status})`, { fix: 'BRAIN_GITHUB_TOKEN を作り直して設定' });
+      if (r.status === 404) return add('github', label, 'fail', 'リポジトリが見つかりません', { fix: 'BRAIN_REPO の綴りと、トークンの対象リポジトリを確認' });
+      const j = await r.json().catch(() => ({}));
+      add('github', label, j.permissions && j.permissions.push === false ? 'warn' : 'ok', j.permissions && j.permissions.push === false ? '読めますが、書き込み権限がありません（写せません）' : '接続できています', { fix: j.permissions && j.permissions.push === false ? 'トークンの Contents を Read and write に' : '' });
+    } catch (e) { add('github', label, 'fail', `接続できません: ${why(e)}`, { fix: 'トークンとリポジトリ名を確認' }); }
   })());
   jobs.push((async () => {   // build requests: repo reachable + a Claude Code workflow present?
     const label = 'GitHub（Claude Codeへの製作依頼）';

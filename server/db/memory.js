@@ -27,6 +27,12 @@ const tokenMeta = (r) => ({ provider: r.provider, scopes: [...r.scopes], status:
 const tokenFull = (r) => ({ ...tokenMeta(r), ct: Buffer.from(r.ct), iv: Buffer.from(r.iv) });
 const buildRow = (r) => ({ id: r.id, repo: r.repo, target: r.target, issueNumber: r.issue_number, prNumber: r.pr_number, state: r.state, title: r.title, createdAt: iso(r.created_at), updatedAt: iso(r.updated_at) });
 
+const noteMeta = (n) => ({ id: n.id, path: n.path, bytes: Buffer.byteLength(n.content, 'utf8'), tags: [...n.tags], rev: n.rev, updatedAt: iso(n.updated_at), deletedAt: n.deleted_at === null ? null : iso(n.deleted_at) });
+const noteFull = (n) => ({ ...noteMeta(n), content: n.content, pushedRev: n.pushed_rev ?? null, createdAt: iso(n.created_at) });
+const convRow = (c) => ({ id: c.id, channel: c.channel, startedAt: iso(c.started_at), lastAt: iso(c.last_at), count: c.n ?? 0, preview: c.preview ?? null });
+const msgRow = (m) => ({ id: String(m.id), conversationId: m.conversation_id, role: m.role, text: m.text, at: iso(m.at) });
+const inboxRow = (r) => ({ id: r.id, kind: r.kind, title: r.title, body: r.body, url: r.url, notePath: r.note_path, key: r.key, at: iso(r.at), readAt: r.read_at === null ? null : iso(r.read_at) });
+
 export function createMemoryDb({ now = null } = {}) {
   let offset = 0;
   const clock = now || (() => Date.now() + offset);
@@ -40,6 +46,12 @@ export function createMemoryDb({ now = null } = {}) {
   const find = (t, uid, pred = () => true) => tables[t].find((r) => r.user_id === uid && pred(r));
   const remove = (t, pred) => { const n = tables[t].length; tables[t] = tables[t].filter((r) => !pred(r)); return n - tables[t].length; };
   const live = (r) => r.expires_at > clock();
+  // the same rule as the Postgres repos: notes + revisions + messages must stay within the account's storage quota (default 500 MB)
+  const assertRoom = (uid, grow) => {
+    const a = find('accounts', uid), quota = a ? a.storage_quota_bytes : DEFAULT_QUOTA, size = (t) => Buffer.byteLength(t, 'utf8');
+    const used = rows('notes', uid).reduce((x, n) => x + size(n.content), 0) + rows('note_revisions', uid).reduce((x, n) => x + size(n.content), 0) + rows('messages', uid).reduce((x, n) => x + size(n.text), 0);
+    if (used + grow > quota) throw dbError('storage_quota_exceeded', 413);
+  };
 
   function repos(uid, hooks = []) {
     return {
@@ -242,6 +254,131 @@ export function createMemoryDb({ now = null } = {}) {
         async del(id) { V.need(UUID_RE.test(id)); return remove('build_requests', (r) => r.user_id === uid && r.id === id) > 0; },
         async delAll() { return remove('build_requests', (r) => r.user_id === uid); },
       },
+      notes: {
+        async list({ folder = '', trash = false, limit = 5000 } = {}) {
+          V.need(typeof folder === 'string' && folder.length <= 300 && Number.isInteger(limit) && limit >= 1 && limit <= 20000);
+          const prefix = folder ? folder.replace(/^\/+|\/+$/g, '') + '/' : '';
+          return rows('notes', uid).filter((n) => (n.deleted_at !== null) === (trash === true) && n.path.startsWith(prefix)).sort((a, b) => (a.path < b.path ? -1 : 1)).slice(0, limit).map(noteMeta);
+        },
+        async count() { return rows('notes', uid).filter((n) => n.deleted_at === null).length; },
+        async get(path, { withTrashed = false } = {}) { V.notePath(path); const n = find('notes', uid, (x) => x.path === path && (withTrashed || x.deleted_at === null)); return n ? noteFull(n) : null; },
+        async getById(id) { V.need(UUID_RE.test(id)); const n = find('notes', uid, (x) => x.id === id); return n ? noteFull(n) : null; },
+        async put({ path, content, tags, synced = false }) {
+          V.notePath(path); V.noteContent(content); const tg = V.noteTags(tags);
+          const cur = find('notes', uid, (x) => x.path === path), unchanged = cur && cur.content === content;
+          if (!unchanged) assertRoom(uid, Buffer.byteLength(content, 'utf8'));
+          if (!cur) { const n = { user_id: uid, id: crypto.randomUUID(), path, content, tags: tg ?? [], rev: 1, pushed_rev: synced ? 1 : null, deleted_at: null, created_at: clock(), updated_at: clock() }; tables.notes.push(n); return { id: n.id, path, rev: 1, created: true, unchanged: false }; }
+          if (unchanged && cur.deleted_at === null) { if (tg) cur.tags = tg; return { id: cur.id, path, rev: cur.rev, created: false, unchanged: true }; }
+          if (!unchanged) {
+            if (!find('note_revisions', uid, (r) => r.note_id === cur.id && r.rev === cur.rev)) tables.note_revisions.push({ user_id: uid, note_id: cur.id, rev: cur.rev, content: cur.content, at: clock() });
+            const keep = new Set(rows('note_revisions', uid).filter((r) => r.note_id === cur.id).sort((a, b) => b.rev - a.rev).slice(0, V.NOTE_REVISIONS_KEPT).map((r) => r.rev));
+            remove('note_revisions', (r) => r.user_id === uid && r.note_id === cur.id && !keep.has(r.rev));
+          }
+          const next = unchanged ? cur.rev : cur.rev + 1;
+          Object.assign(cur, { content, rev: next, deleted_at: null, updated_at: clock(), tags: tg ?? cur.tags, ...(synced ? { pushed_rev: next } : {}) });
+          return { id: cur.id, path, rev: next, created: false, unchanged: false };
+        },
+        async trash(id) { V.need(UUID_RE.test(id)); const n = find('notes', uid, (x) => x.id === id && x.deleted_at === null); if (!n) return false; n.deleted_at = clock(); return true; },
+        async restore(id) { V.need(UUID_RE.test(id)); const n = find('notes', uid, (x) => x.id === id && x.deleted_at !== null); if (!n) return false; n.deleted_at = null; n.updated_at = clock(); return true; },
+        async purge(id) { V.need(UUID_RE.test(id)); remove('note_revisions', (r) => r.user_id === uid && r.note_id === id); return remove('notes', (n) => n.user_id === uid && n.id === id) > 0; },
+        async emptyTrash() { const ids = rows('notes', uid).filter((n) => n.deleted_at !== null).map((n) => n.id); remove('note_revisions', (r) => r.user_id === uid && ids.includes(r.note_id)); return remove('notes', (n) => n.user_id === uid && n.deleted_at !== null); },
+        async delAll() { remove('note_revisions', (r) => r.user_id === uid); return remove('notes', (n) => n.user_id === uid); },
+        async revisions(id) { V.need(UUID_RE.test(id)); return rows('note_revisions', uid).filter((r) => r.note_id === id).sort((a, b) => b.rev - a.rev).map((r) => ({ rev: r.rev, at: iso(r.at), bytes: Buffer.byteLength(r.content, 'utf8') })); },
+        async revision(id, rev) { V.need(UUID_RE.test(id) && Number.isInteger(rev) && rev >= 0); const r = find('note_revisions', uid, (x) => x.note_id === id && x.rev === rev); return r ? { rev: r.rev, at: iso(r.at), content: r.content } : null; },
+        async search(terms, { limit = 200 } = {}) {
+          const t = V.searchTerms(terms).map((x) => x.toLowerCase()); V.need(Number.isInteger(limit) && limit >= 1 && limit <= 300);   // what the ILIKE candidate query does
+          return rows('notes', uid).filter((n) => n.deleted_at === null && t.some((x) => n.content.toLowerCase().includes(x) || n.path.toLowerCase().includes(x))).sort((a, b) => b.updated_at - a.updated_at).slice(0, limit)
+            .map((n) => ({ id: n.id, path: n.path, content: n.content.slice(0, 60000), updatedAt: iso(n.updated_at) }));
+        },
+        async texts({ prefix = '', limit = 300, maxChars = 60000 } = {}) {
+          V.need(typeof prefix === 'string' && prefix.length <= 300 && Number.isInteger(limit) && limit >= 1 && limit <= 2000 && Number.isInteger(maxChars) && maxChars >= 1 && maxChars <= 400000);
+          return rows('notes', uid).filter((n) => n.deleted_at === null && n.path.startsWith(prefix)).sort((a, b) => b.updated_at - a.updated_at || (a.path < b.path ? -1 : 1)).slice(0, limit)
+            .map((n) => ({ path: n.path, content: n.content.slice(0, maxChars), updatedAt: iso(n.updated_at), bytes: Buffer.byteLength(n.content, 'utf8') }));
+        },
+        async unpushed({ limit = 40 } = {}) { V.need(Number.isInteger(limit) && limit >= 1 && limit <= 200); return rows('notes', uid).filter((n) => n.deleted_at === null && n.rev > (n.pushed_rev ?? 0)).sort((a, b) => a.updated_at - b.updated_at).slice(0, limit).map((n) => ({ id: n.id, path: n.path, content: n.content, rev: n.rev })); },
+        async unpushedCount() { return rows('notes', uid).filter((n) => n.deleted_at === null && n.rev > (n.pushed_rev ?? 0)).length; },
+        async markPushed(id, rev) { V.need(UUID_RE.test(id) && Number.isInteger(rev) && rev >= 0); const n = find('notes', uid, (x) => x.id === id && x.rev >= rev); if (!n) return false; n.pushed_rev = rev; return true; },
+      },
+      messages: {
+        async append({ turns, channel = 'voice', gapSec = 1800 }) {
+          const t = V.messageTurns(turns); V.need(V.CHANNELS.includes(channel) && Number.isInteger(gapSec) && gapSec >= 1 && gapSec <= 86400);
+          const gap = gapSec * 1000; assertRoom(uid, t.reduce((a, x) => a + Buffer.byteLength(x.text, 'utf8'), 0));
+          let cid = null;
+          for (const run of V.splitRuns(t, gap)) {
+            const first = run[0].at, last = run[run.length - 1].at;
+            let c = rows('conversations', uid).filter((x) => x.channel === channel && x.last_at >= first - gap && x.started_at <= last + gap).sort((a, b) => b.last_at - a.last_at)[0];
+            if (!c) { c = { user_id: uid, id: crypto.randomUUID(), channel, started_at: first, last_at: last }; tables.conversations.push(c); }
+            for (const m of run) tables.messages.push({ user_id: uid, id: ++auditSeq, conversation_id: c.id, role: m.role, text: m.text, at: m.at });
+            c.last_at = Math.max(c.last_at, last); c.started_at = Math.min(c.started_at, first); cid = c.id;
+          }
+          return { conversationId: cid, added: t.length };
+        },
+        async conversations({ limit = 50, before = null } = {}) {
+          V.need(Number.isInteger(limit) && limit >= 1 && limit <= 200 && (before === null || (typeof before === 'string' && !Number.isNaN(Date.parse(before)))));
+          const b = before ? Date.parse(before) : Infinity;
+          return rows('conversations', uid).filter((c) => c.last_at < b).sort((a, c) => c.last_at - a.last_at || (a.id < c.id ? -1 : 1)).slice(0, limit).map((c) => {
+            const ms = rows('messages', uid).filter((m) => m.conversation_id === c.id).sort((x, y) => x.id - y.id);
+            return convRow({ ...c, n: ms.length, preview: ms.find((m) => m.role === 'user')?.text.slice(0, 80) ?? null });
+          });
+        },
+        async conversation(id, { limit = 1000 } = {}) {
+          V.need(UUID_RE.test(id) && Number.isInteger(limit) && limit >= 1 && limit <= 5000);
+          const c = find('conversations', uid, (x) => x.id === id); if (!c) return null;
+          const ms = rows('messages', uid).filter((m) => m.conversation_id === id).sort((a, b) => a.at - b.at || a.id - b.id).slice(0, limit);
+          return { ...convRow({ ...c, n: ms.length }), messages: ms.map(msgRow) };
+        },
+        async list({ q = null, since = null, until = null, limit = 100 } = {}) {
+          V.need(Number.isInteger(limit) && limit >= 1 && limit <= 2000 && (since === null || !Number.isNaN(Date.parse(since))) && (until === null || !Number.isNaN(Date.parse(until))));
+          let ms = rows('messages', uid);
+          if (q) { const t = V.searchTerms(String(q).split(/\s+/).filter(Boolean), 8).map((x) => x.toLowerCase()); ms = ms.filter((m) => t.some((x) => m.text.toLowerCase().includes(x))); limit = Math.min(limit, 200); }
+          else { if (since) ms = ms.filter((m) => m.at >= Date.parse(since)); if (until) ms = ms.filter((m) => m.at < Date.parse(until)); }
+          return ms.sort((a, b) => b.at - a.at || b.id - a.id).slice(0, limit).map(msgRow);
+        },
+        async count() { return rows('messages', uid).length; },
+        async del(id) { V.need(/^\d{1,18}$/.test(String(id))); return remove('messages', (m) => m.user_id === uid && m.id === Number(id)) > 0; },
+        async delConversation(id) { V.need(UUID_RE.test(id)); remove('messages', (m) => m.user_id === uid && m.conversation_id === id); return remove('conversations', (c) => c.user_id === uid && c.id === id) > 0; },
+        async purge({ before = null } = {}) {
+          V.need(before === null || (typeof before === 'string' && !Number.isNaN(Date.parse(before))));
+          const b = before ? Date.parse(before) : Infinity;
+          const n = remove('messages', (m) => m.user_id === uid && m.at < b);
+          remove('conversations', (c) => c.user_id === uid && !tables.messages.some((m) => m.user_id === uid && m.conversation_id === c.id));
+          return n;
+        },
+      },
+      inbox: {
+        async list({ limit = 40 } = {}) { V.need(Number.isInteger(limit) && limit >= 1 && limit <= V.INBOX_MAX_ITEMS); return rows('inbox_items', uid).sort((a, b) => b.at - a.at || (a.id < b.id ? -1 : 1)).slice(0, limit).map(inboxRow); },
+        async add(item) {
+          const x = V.inboxInput(item); let r = x.key ? find('inbox_items', uid, (q) => q.key === x.key) : null;
+          if (r) Object.assign(r, { kind: x.kind, title: x.title, body: x.body, url: x.url, note_path: x.notePath, at: clock(), read_at: null });
+          else { r = { user_id: uid, id: crypto.randomUUID(), kind: x.kind, title: x.title, body: x.body, url: x.url, note_path: x.notePath, key: x.key, at: clock(), read_at: null }; tables.inbox_items.push(r); }
+          const keep = new Set(rows('inbox_items', uid).sort((a, b) => b.at - a.at || (a.id < b.id ? -1 : 1)).slice(0, V.INBOX_MAX_ITEMS).map((q) => q.id));
+          remove('inbox_items', (q) => q.user_id === uid && !keep.has(q.id));
+          return inboxRow(r);
+        },
+        async markRead(id) { V.need(UUID_RE.test(id)); const r = find('inbox_items', uid, (x) => x.id === id); if (!r) return false; r.read_at ??= clock(); return true; },
+        async markAllRead() { let n = 0; for (const r of rows('inbox_items', uid)) if (r.read_at === null) { r.read_at = clock(); n++; } return n; },
+        async del(id) { V.need(UUID_RE.test(id)); return remove('inbox_items', (r) => r.user_id === uid && r.id === id) > 0; },
+        async delAll() { return remove('inbox_items', (r) => r.user_id === uid); },
+      },
+      notif: {
+        async push(items, { now = clock() } = {}) {
+          V.need(Array.isArray(items));
+          const ok = items.slice(0, 50).map((x) => { try { return V.notifItem(x); } catch { return null; } }).filter(Boolean);
+          if (!ok.length) return { stored: 0 };
+          remove('notif_items', (r) => r.user_id === uid && r.at < now - V.NOTIF_KEEP_MS);
+          for (const x of ok) if (!find('notif_items', uid, (r) => r.id === x.id)) tables.notif_items.push({ user_id: uid, id: x.id, at: Math.min(x.at, now + 60_000), iv: x.iv, ct: x.ct });
+          const keep = new Set(rows('notif_items', uid).sort((a, b) => b.at - a.at || (a.id < b.id ? -1 : 1)).slice(0, V.NOTIF_MAX_ITEMS).map((r) => r.id));
+          remove('notif_items', (r) => r.user_id === uid && !keep.has(r.id));
+          return { stored: ok.length };
+        },
+        async pull({ since = 0, now = clock() } = {}) {
+          V.need(Number.isFinite(since) && since >= 0);
+          remove('notif_items', (r) => r.user_id === uid && r.at < now - V.NOTIF_KEEP_MS);
+          return rows('notif_items', uid).filter((r) => r.at >= since).sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : 1)).slice(0, 100).map((r) => ({ id: r.id, at: r.at, iv: r.iv, ct: r.ct }));
+        },
+        async clear() { return remove('notif_items', (r) => r.user_id === uid); },
+        async count() { return rows('notif_items', uid).filter((r) => r.at >= clock() - V.NOTIF_KEEP_MS).length; },
+      },
       usageLimits: {
         async list() { return rows('usage_limits', uid).sort((a, b) => `${a.provider}|${a.metric}|${a.period}`.localeCompare(`${b.provider}|${b.metric}|${b.period}`)).map((r) => ({ provider: r.provider, metric: r.metric, period: r.period, soft: r.soft, softAction: r.soft_action })); },
         async put({ provider, metric, period, soft, softAction = 'warn' }) {
@@ -288,6 +425,12 @@ export function createMemoryDb({ now = null } = {}) {
       return {
         kv_ephemeral: remove('kv_ephemeral', (r) => r.expires_at <= clock()), rate_limits: remove('rate_limits', (r) => r.expires_at <= clock()),
         ticket_uses: remove('ticket_uses', (r) => r.exp <= clock()), oauth_pending: remove('oauth_pending', (r) => r.expires_at <= clock()),
+        // P4 (migration 14): the same sweeps as app.purge_expired()
+        notif_items: remove('notif_items', (r) => r.at <= clock() - 3 * 864e5),
+        note_revisions: remove('note_revisions', (r) => r.at <= clock() - 90 * 864e5),
+        notes: remove('notes', (r) => r.deleted_at !== null && r.deleted_at <= clock() - 30 * 864e5),
+        messages: remove('messages', (m) => { const s = tables.settings.find((x) => x.user_id === m.user_id)?.settings?.MESSAGE_RETENTION_DAYS, d = /^[0-9]{1,5}$/.test(String(s ?? '')) ? Number(s) : 180; return d > 0 && m.at < clock() - d * 864e5; }),
+        conversations: remove('conversations', (c) => c.last_at < clock() - 864e5 && !tables.messages.some((m) => m.user_id === c.user_id && m.conversation_id === c.id)),
       };
     },
     async residualCheck(vuid) {
@@ -333,9 +476,24 @@ export function createMemoryDb({ now = null } = {}) {
       receipts: () => receipts.map((r) => ({ ...r })),
       /** What `delete from auth.users` does: every row of the user goes (on delete cascade). */
       deleteUser(uid) { users.delete(uid); profilesOfUsers.delete(uid); for (const e of REGISTRY) tables[e.table] = tables[e.table].filter((r) => r[e.ownerColumn] !== uid); },
+      setQuota(uid, bytes) { const r = find('accounts', uid) || (tables.accounts.push({ user_id: uid, status: 'active', storage_quota_bytes: DEFAULT_QUOTA, hard_limits: {}, suspended_reason: null, created_at: clock() }), find('accounts', uid)); r.storage_quota_bytes = bytes; },
       setAccountStatus(uid, status) { const r = find('accounts', uid); if (r) r.status = status; },
       makeAdmin(uid) { if (!find('admins', uid)) tables.admins.push({ user_id: uid, granted_by: null, granted_at: clock() }); },
       advance(ms) { offset += ms; },
+      now: () => clock(),
+      /** A Map-like synchronous view of one user's live notes ({ text } by path) for tests: get / has / set / keys / delete. set() writes the row directly (no quota, no revision). */
+      notesView(uid) {
+        const live = () => tables.notes.filter((n) => n.user_id === uid && n.deleted_at === null);
+        return {
+          get: (p) => { const n = live().find((x) => x.path === p); return n ? { text: n.content, rev: n.rev } : undefined; },
+          has: (p) => live().some((x) => x.path === p),
+          keys: () => live().map((n) => n.path)[Symbol.iterator](),
+          set: (p, v) => { const n = tables.notes.find((x) => x.user_id === uid && x.path === p); const text = typeof v === 'string' ? v : v.text, at = (typeof v === 'object' && v.at) || clock(); if (n) Object.assign(n, { content: text, deleted_at: null, rev: n.rev + 1, updated_at: at }); else tables.notes.push({ user_id: uid, id: crypto.randomUUID(), path: p, content: text, tags: [], rev: 1, pushed_rev: null, deleted_at: null, created_at: at, updated_at: at }); },
+          delete: (p) => remove('notes', (n) => n.user_id === uid && n.path === p) > 0,
+          [Symbol.iterator]() { return live().map((n) => [n.path, { text: n.content }])[Symbol.iterator](); },
+          get size() { return live().length; },
+        };
+      },
     },
   };
 }
