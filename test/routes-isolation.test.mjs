@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { startHarness } from './helpers/api-harness.mjs';
 import { ROUTES, isUserAuth } from '../server/router.js';
 import { mintVerifiedUid } from '../server/db/verified-uid.js';
+import { getStorage } from '../server/storage/index.js';
 
 const A_KEY = 'AIzaSy-USER-A-SECRET-KEY-aaaa1111', B_KEY = 'AIzaSy-USER-B-SECRET-KEY-bbbb2222';
 const A_NAME = 'A-PRIVATE-PERSONA-NAME';
@@ -14,6 +15,9 @@ const A_CLIENT = 'a-private-client-0001.apps.googleusercontent.com', B_CLIENT = 
 const A_REFRESH = 'A-GOOGLE-REFRESH-TOKEN-xyz', A_CX_NAME = 'A-PRIVATE-CONNECTOR', A_CX_TOKEN = 'A-CONNECTOR-BEARER-TOKEN-777', A_CX_HOST = 'a-private.example.com', A_BUILD = 'A-PRIVATE-BUILD', A_BUILD_REPO = 'a-user/private-builds';
 // P4: A's notes (with an older version), conversation, notification box and relay item
 const A_NOTE_PATH = 'A-PRIVATE-FOLDER/secret-plan.md', A_NOTE_TEXT = 'A-PRIVATE-NOTE-BODY-12345', A_NOTE_OLD = 'A-PRIVATE-OLDER-VERSION-777', A_MSG = 'A-PRIVATE-MESSAGE-WORDS', A_INBOX = 'A-PRIVATE-INBOX-TITLE', A_RELAY_CT = 'QUFBQS1SRUxBWS1DSVBIRVJURVhU';
+// P5: A's file vault (a ready file with text, memo and tag; an upload that is reserved and uploaded but not finalized yet) and its objects in Storage
+const A_FILE_NAME = 'A-PRIVATE-FILE-NAME.txt', A_FILE_TEXT = 'A-PRIVATE-FILE-TEXT-9876', A_FILE_MEMO = 'A-PRIVATE-FILE-MEMO', A_FILE_TAG = 'A-PRIVATE-FILE-TAG', A_FILE_BYTES = Buffer.from('A-PRIVATE-FILE-BYTES-and-the-text A-PRIVATE-FILE-TEXT-9876');
+const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
 const ORIGIN = 'https://elvar.example.test';
 
 /** A stand-in for Google's token and revoke endpoints (the only network the Google routes use here). */
@@ -63,14 +67,22 @@ async function world(h) {
     await r.notif.push([{ id: 'n1-aaaa', at: Date.now(), iv: 'AAAAAAAAAAAAAAAA', ct: A_RELAY_CT }]);
     return { noteId: note.id, trashedId: trashed.id, convId: c.conversationId, msgId: msg.id, inboxId: inbox.id };
   });
+  const st = await getStorage();
+  const putTo = (up, bytes) => st.uploadWithToken(new URL(up.url).searchParams.get('token'), bytes, { contentType: up.headers['content-type'] });
+  const fr = (await h.call('POST', '/api/elvar/files/reserve', A, { name: A_FILE_NAME, size: A_FILE_BYTES.length, sha256: sha256(A_FILE_BYTES), textBytes: Buffer.byteLength(A_FILE_TEXT) })).body; await putTo(fr.upload, A_FILE_BYTES);
+  const fin = (await h.call('POST', `/api/elvar/files/${fr.fileId}/finalize`, A, { text: A_FILE_TEXT, title: 'A-PRIVATE-TITLE', keywords: ['A-PRIVATE-KEYWORD'], snippet: 'A-PRIVATE-SNIPPET', analysis: { ext: 'txt' } })); assert.equal(fin.status, 200, JSON.stringify(fin.body));
+  await h.call('PATCH', `/api/elvar/files/${fr.fileId}`, A, { memo: A_FILE_MEMO, tags: [A_FILE_TAG] });
+  const pendingBytes = Buffer.from('A-PENDING-UPLOAD-BYTES'), pr = (await h.call('POST', '/api/elvar/files/reserve', A, { name: 'A-PENDING.txt', size: pendingBytes.length, sha256: sha256(pendingBytes) })).body; await putTo(pr.upload, pendingBytes);
+  const files = { id: fr.fileId, pendingId: pr.fileId, pendingBytes, aPath: st.testing.list().filter((k) => k.includes(`users/${a}/`)) };
   const snapshotA = async () => JSON.stringify([(await h.call('GET', '/api/elvar/config', A)).body, (await h.call('GET', '/api/elvar/profile', A)).body, (await h.call('GET', '/api/elvar/devices', A)).body, (await h.call('GET', '/api/elvar/usage', A)).body,
     (await h.call('GET', '/api/elvar/connect/google/status', A)).body, (await h.call('GET', '/api/elvar/connectors', A)).body, (await h.call('GET', '/api/elvar/builds', A)).body,
-    await h.db.asUser(mintVerifiedUid(a, 'test'), async (r) => [await r.notes.list(), await r.notes.list({ trash: true }), await r.notes.revisions(mem.noteId), await r.messages.conversations({}), await r.messages.count(), await r.inbox.list({}), await r.notif.pull({ since: 0 })])]);
-  return { a, b, A, B, dev, snapshotA, cx: cx.body.connector, build, mem };
+    await h.db.asUser(mintVerifiedUid(a, 'test'), async (r) => [await r.notes.list(), await r.notes.list({ trash: true }), await r.notes.revisions(mem.noteId), await r.messages.conversations({}), await r.messages.count(), await r.inbox.list({}), await r.notif.pull({ since: 0 })]),
+    (await h.call('GET', '/api/elvar/files', A)).body, (await h.call('GET', `/api/elvar/files/${files.id}/text`, A)).body, st.testing.list().filter((k) => k.includes(`users/${a}/`)).sort(), st.testing.get(files.aPath[0]) && st.testing.list().length >= 0]);
+  return { a, b, A, B, dev, snapshotA, cx: cx.body.connector, build, mem, files, st };
 }
 const noA = (value, w) => {
   const t = typeof value === 'string' ? value : JSON.stringify(value);
-  for (const s of [A_KEY, A_NAME, 'Alice-Secret-Name', 'a-user/private-notes', 'a-phone', w.dev.id, w.dev.token, w.a, A_CLIENT, A_GSECRET, A_REFRESH, A_CX_NAME, A_CX_TOKEN, A_CX_HOST, A_BUILD, A_BUILD_REPO, w.cx.id, w.build.id, A_NOTE_PATH, A_NOTE_TEXT, A_NOTE_OLD, A_MSG, A_INBOX, A_RELAY_CT, 'A-TRASHED-BODY', 'A-INBOX-BODY', w.mem.noteId, w.mem.convId, w.mem.inboxId]) assert.ok(!t.includes(s), `B's answer contains ${s}`);
+  for (const s of [A_KEY, A_NAME, 'Alice-Secret-Name', 'a-user/private-notes', 'a-phone', w.dev.id, w.dev.token, w.a, A_CLIENT, A_GSECRET, A_REFRESH, A_CX_NAME, A_CX_TOKEN, A_CX_HOST, A_BUILD, A_BUILD_REPO, w.cx.id, w.build.id, A_NOTE_PATH, A_NOTE_TEXT, A_NOTE_OLD, A_MSG, A_INBOX, A_RELAY_CT, 'A-TRASHED-BODY', 'A-INBOX-BODY', w.mem.noteId, w.mem.convId, w.mem.inboxId, A_FILE_NAME, A_FILE_TEXT, A_FILE_MEMO, A_FILE_TAG, 'A-PRIVATE-TITLE', 'A-PRIVATE-KEYWORD', 'A-PRIVATE-SNIPPET', 'A-PENDING', w.files.id, w.files.pendingId, sha256(A_FILE_BYTES), `users/${w.a}`]) assert.ok(!t.includes(s), `B's answer contains ${s}`);
 };
 
 // "METHOD /path" -> async (h, w) => void
@@ -271,6 +283,77 @@ Object.assign(CASES, {
   },
 });
 void U;
+
+// ---- P5: the file vault. B calls each route with A's file ids and A's words (and A's content hash) and reaches nothing of A's: not the list, not the text, not the original in Storage.
+Object.assign(CASES, {
+  'GET /api/elvar/files': async (h, w) => {
+    const r = await h.call('GET', '/api/elvar/files', w.B); assert.deepEqual(r.body.files, []); noA(r.body, w);
+    assert.deepEqual(r.body.usage.breakdown, { files: 0, text: 0, notes: 0, messages: 0 }); assert.equal(r.body.usage.reservedBytes, 0, 'A\'s bytes and A\'s reservation are not B\'s');
+    assert.equal((await h.call('GET', '/api/elvar/files', w.A)).body.files.length, 1);
+  },
+  'GET /api/elvar/files/search': async (h, w) => {
+    for (const q of [A_FILE_TEXT, 'A-PRIVATE-FILE-NAME', A_FILE_TAG, 'A-PRIVATE-KEYWORD', A_FILE_MEMO]) { const r = await h.call('GET', '/api/elvar/files/search', w.B, {}, { q }); assert.deepEqual(r.body.results, [], q); assert.deepEqual(r.body.forModel, []); noA({ ...r.body, query: undefined }, w); }   // the answer echoes B's own query
+    assert.equal((await h.call('GET', '/api/elvar/files/search', w.A, {}, { q: A_FILE_TEXT })).body.results[0].id, w.files.id, 'A finds their own file by its text');
+  },
+  'POST /api/elvar/files/reserve': async (h, w) => {
+    const before = await w.snapshotA();
+    // the same content as A's file: B is not told that it exists elsewhere (no duplicate answer), gets its own reservation under its own prefix
+    const r = await h.call('POST', '/api/elvar/files/reserve', w.B, { name: A_FILE_NAME, size: A_FILE_BYTES.length, sha256: sha256(A_FILE_BYTES) }); assert.equal(r.status, 200); assert.ok(r.body.fileId && !r.body.duplicate); assert.notEqual(r.body.fileId, w.files.id);
+    assert.ok(new URL(r.body.upload.url).pathname.includes(`/users/${w.b}/files/${r.body.fileId}/`), 'B\'s upload link is for B\'s own path'); assert.ok(!r.body.upload.url.includes(w.a));
+    await w.st.uploadWithToken(new URL(r.body.upload.url).searchParams.get('token'), Buffer.from('B writes something else'), {});   // the link writes B's path and nothing else
+    assert.deepEqual(w.st.testing.list().filter((k) => k.includes(`users/${w.a}/`)).sort(), w.files.aPath.sort(), 'A\'s objects are the same set as before');
+    assert.equal(w.st.testing.get(w.files.aPath.find((k) => k.includes(w.files.id)).replace(/^user-files\//, '')).toString(), A_FILE_BYTES.toString(), 'and A\'s original is untouched');
+    for (const bad of [{ name: 'x.txt', size: 5, sha256: 'zz' }, { name: 'x.html', size: 5, sha256: 'a'.repeat(64) }, { name: 'x.txt', size: -1, sha256: 'a'.repeat(64) }]) assert.ok((await h.call('POST', '/api/elvar/files/reserve', w.B, bad)).status >= 400);
+    assert.equal(await w.snapshotA(), before, 'nothing of A changed');
+  },
+  'POST /api/elvar/files/delete-all': async (h, w) => {
+    assert.equal((await h.call('POST', '/api/elvar/files/delete-all', w.B, {})).status, 400, 'needs the confirmation');
+    const before = await w.snapshotA(); const r = await h.call('POST', '/api/elvar/files/delete-all', w.B, { confirm: 'delete' }); assert.deepEqual(r.body, { ok: true, deleted: 0 });
+    assert.equal(await w.snapshotA(), before, 'A\'s files and originals survive B\'s delete-all');
+  },
+  'GET /api/elvar/files/:id': async (h, w) => { for (const id of [w.files.id, w.files.pendingId]) { const r = await h.call('GET', `/api/elvar/files/${id}`, w.B); assert.equal(r.status, 404); noA(r.body, w); } assert.equal((await h.call('GET', `/api/elvar/files/${w.files.id}`, w.A)).status, 200); },
+  'PATCH /api/elvar/files/:id': async (h, w) => {
+    const before = await w.snapshotA(); const r = await h.call('PATCH', `/api/elvar/files/${w.files.id}`, w.B, { name: 'hijacked.txt', tags: ['B'], memo: 'B WAS HERE', kindLabel: '契約書' }); assert.equal(r.status, 404); noA(r.body, w);
+    assert.equal(await w.snapshotA(), before, 'A\'s file is unchanged');
+  },
+  'DELETE /api/elvar/files/:id': async (h, w) => {
+    const before = await w.snapshotA();
+    for (const id of [w.files.id, w.files.pendingId]) assert.equal((await h.call('DELETE', `/api/elvar/files/${id}`, w.B)).status, 404);
+    assert.equal(await w.snapshotA(), before, 'A\'s files and their originals in Storage are still there');
+  },
+  'GET /api/elvar/files/:id/text': async (h, w) => { const r = await h.call('GET', `/api/elvar/files/${w.files.id}/text`, w.B); assert.equal(r.status, 404); noA(r.body, w); assert.equal((await h.call('GET', `/api/elvar/files/${w.files.id}/text`, w.A)).body.text, A_FILE_TEXT); },
+  'PUT /api/elvar/files/:id/text': async (h, w) => {
+    const before = await w.snapshotA(); const r = await h.call('PUT', `/api/elvar/files/${w.files.id}/text`, w.B, { text: 'B REPLACES A\'S TEXT', title: 'B' }); assert.equal(r.status, 404);
+    assert.equal(await w.snapshotA(), before, 'A\'s extracted text is unchanged');
+  },
+  'GET /api/elvar/files/:id/download': async (h, w) => {
+    for (const id of [w.files.id, w.files.pendingId]) { const r = await h.call('GET', `/api/elvar/files/${id}/download`, w.B); assert.equal(r.status, 404); noA(r.body, w); assert.ok(!JSON.stringify(r.body).includes('/storage/v1/'), 'no signed link for A\'s original'); }
+    assert.ok((await h.call('GET', `/api/elvar/files/${w.files.id}/download`, w.A)).body.url.includes('/object/sign/user-files/'), 'A gets their own link');
+  },
+  'POST /api/elvar/files/:id/finalize': async (h, w) => {
+    const before = await w.snapshotA();
+    const r = await h.call('POST', `/api/elvar/files/${w.files.pendingId}/finalize`, w.B, { text: 'B FINALIZES A\'S UPLOAD', title: 'B' }); assert.equal(r.status, 404); noA(r.body, w);
+    assert.equal(await w.snapshotA(), before, 'A\'s upload is still waiting, with its object');
+    const own = await h.call('POST', `/api/elvar/files/${w.files.pendingId}/finalize`, w.A, { text: '' }); assert.equal(own.status, 200, 'and A can still finish it');
+  },
+  'POST /api/elvar/files/:id/cancel': async (h, w) => {
+    const before = await w.snapshotA();
+    assert.equal((await h.call('POST', `/api/elvar/files/${w.files.pendingId}/cancel`, w.B, {})).status, 404); assert.equal((await h.call('POST', `/api/elvar/files/${w.files.id}/cancel`, w.B, {})).status, 404);
+    assert.equal(await w.snapshotA(), before, 'A\'s reservation and object are untouched');
+    assert.equal((await h.call('POST', `/api/elvar/files/${w.files.pendingId}/finalize`, w.A, {})).status, 200);
+  },
+  'POST /api/elvar/admin/users/:id/quota': async (h, w) => {
+    const before = await w.snapshotA(), quota = async () => (await h.call('GET', '/api/elvar/files', w.A)).body.usage.quotaBytes;
+    const q0 = await quota();
+    assert.equal((await h.call('POST', `/api/elvar/admin/users/${w.a}/quota`, w.B, { bytes: 1 })).status, 403, 'a user cannot change anybody\'s quota, not even their own');
+    assert.equal((await h.call('POST', `/api/elvar/admin/users/${w.b}/quota`, w.B, { bytes: 10 ** 12 })).status, 403);
+    assert.equal(await quota(), q0); assert.equal(await w.snapshotA(), before);
+    const adminB = await h.bearer(w.b, { app_metadata: { elvar_role: 'admin' } }); h.db.testing.makeAdmin(w.b);
+    assert.equal((await h.call('POST', `/api/elvar/admin/users/${w.a}/quota`, adminB, { bytes: -5 })).status, 400);
+    assert.equal((await h.call('POST', `/api/elvar/admin/users/${w.a}/quota`, adminB, { bytes: 1234 })).status, 200, 'an admin can');
+    assert.equal(await quota(), 1234);
+  },
+});
 
 
 const keyOf = (r) => `${r.method} ${r.path}`;

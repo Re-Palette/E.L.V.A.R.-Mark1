@@ -15,7 +15,7 @@ const hits = (re) => files.filter((f) => re.test(read(f)));
 
 // Files that may import server/db/service.js. P1 has none besides the tests; each later phase adds its module here on purpose
 // (server/rights/purge.js, server/admin/*, the cron handlers for the storage sweep and reconciliation).
-const SERVICE_IMPORTERS = new Set(['server/rights/purge.js', 'server/admin/api.js', 'server/admin/cron.js']);   // purge: delete the Auth user; admin: ban / unban; cron: grant the admin claim
+const SERVICE_IMPORTERS = new Set(['server/rights/purge.js', 'server/admin/api.js', 'server/admin/cron.js', 'server/storage/supabase.js']);   // purge: delete the Auth user; admin: ban / unban; cron: grant the admin claim; storage/supabase.js: the Storage sweeps (list and remove users/<uid>/ objects)
 const SERVICE_OK_DIRS = ['test/'];
 const KEY_READERS = new Set(['server/db/service.js', 'server/config/keys.js', 'server/index.js']);   // keys.js only names it in the ledger; index.js SETS a made-up one for the local dev login (never reads a real one)
 

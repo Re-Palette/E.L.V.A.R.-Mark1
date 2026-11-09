@@ -1,0 +1,94 @@
+// A fake Storage with the same interface and the same POLICIES as the real one (server/storage/supabase.js + the policies of migration 07). For `npm test` and the
+// local dev stack (ELVAR_DB=memory ELVAR_DEV_AUTH=1); it refuses to run in production. Objects live in this process only.
+//   private bucket              nothing is public: every read goes through a signed link made for the owner
+//   own prefix only             an identity reaches only users/<its uid>/... (other people's objects look absent, like Row Level Security makes them)
+//   writes need a reservation   createUploadUrl asks `canInsert(uid, path)` (the database: a live pending app.files row for exactly this path)
+//   no overwrite                an object is never replaced (no update policy; the upload fails with 409)
+//   60 MB per object            the bucket's file_size_limit
+// The "HTTP" side (what the browser's PUT / GET reach) is uploadWithToken / downloadWithToken; the dev server exposes them under /dev-supabase/storage/v1 and tests call them.
+import crypto from 'node:crypto';
+import { dbError } from '../db/errors.js';
+import { pathOwner, requireOwnPath, USER_BUCKET, USER_BUCKETS, MAX_OBJECT_BYTES } from './index.js';
+
+if (process.env.VERCEL || process.env.NODE_ENV === 'production') throw new Error('server/storage/memory.js must never run in production');
+
+const UPLOAD_TTL_MS = 30 * 60_000;
+const enc = (p) => p.split('/').map(encodeURIComponent).join('/');
+
+export function createMemoryStorage({ canInsert = () => true, baseUrl = () => '', now = () => Date.now(), maxObjectBytes = MAX_OBJECT_BYTES } = {}) {
+  const objects = new Map();    // `${bucket}/${path}` -> { bytes: Buffer, contentType, createdAt }
+  const uploads = new Map();    // token -> { bucket, path, exp }
+  const downloads = new Map();  // token -> { bucket, path, exp, name }
+  const key = (bucket, path) => `${bucket}/${path}`;
+  const token = () => crypto.randomBytes(24).toString('base64url');
+  const url = (kind, bucket, path, tok) => `${baseUrl()}/storage/v1/object/${kind}/${bucket}/${enc(path)}?token=${tok}`;
+  const sweepTokens = () => { for (const m of [uploads, downloads]) for (const [k, v] of m) if (v.exp <= now()) m.delete(k); };
+
+  const forUser = ({ uid }) => {
+    const me = String(uid).toLowerCase();
+    const own = (path) => pathOwner(path) === me;
+    return {
+      /** Needs the same things the policy files_upload needs: the caller's own path, a live reservation, and nothing there yet. */
+      async createUploadUrl(path) {
+        if (!own(path) || !canInsert(me, path)) throw dbError('storage_forbidden', 403);
+        if (objects.has(key(USER_BUCKET, path))) throw dbError('storage_conflict', 409);
+        sweepTokens(); const t = token(); uploads.set(t, { bucket: USER_BUCKET, path, exp: now() + UPLOAD_TTL_MS });
+        return { url: url('upload/sign', USER_BUCKET, path, t), method: 'PUT', expiresInSec: UPLOAD_TTL_MS / 1000 };
+      },
+      /** The real object's size, or null (another user's object is "not there", exactly like Row Level Security makes it). */
+      async stat(path) {
+        if (!own(path)) return null;
+        const o = objects.get(key(USER_BUCKET, path)); return o ? { size: o.bytes.length, contentType: o.contentType } : null;
+      },
+      /** SHA-256 of the real bytes (streamed in the real implementation), refusing anything over maxBytes. */
+      async hash(path, { maxBytes = maxObjectBytes } = {}) {
+        if (!own(path)) return null;
+        const o = objects.get(key(USER_BUCKET, path)); if (!o) return null;
+        if (o.bytes.length > maxBytes) return { size: o.bytes.length, sha256: null, tooLarge: true };
+        return { size: o.bytes.length, sha256: crypto.createHash('sha256').update(o.bytes).digest('hex') };
+      },
+      async createDownloadUrl(path, { name = '', expiresInSec = 300 } = {}) {
+        if (!own(path) || !objects.has(key(USER_BUCKET, path))) throw dbError('not_found', 404);
+        sweepTokens(); const t = token(); downloads.set(t, { bucket: USER_BUCKET, path, exp: now() + expiresInSec * 1000, name });
+        return `${url('sign', USER_BUCKET, path, t)}${name ? `&download=${encodeURIComponent(name)}` : ''}`;
+      },
+      /** Deletes the caller's own objects; anything else is silently left alone (the delete policy). @returns {Promise<number>} how many were removed */
+      async remove(paths) { let n = 0; for (const p of paths) if (own(p) && objects.delete(key(USER_BUCKET, p))) n++; return n; },
+    };
+  };
+
+  const service = {
+    async list(prefix, { bucket = USER_BUCKET } = {}) { return [...objects.keys()].filter((k) => k.startsWith(`${bucket}/${prefix}`)).map((k) => k.slice(bucket.length + 1)); },
+    async remove(paths, { bucket = USER_BUCKET } = {}) { let n = 0; for (const p of paths) if (objects.delete(key(bucket, p))) n++; return n; },
+    async count(prefix, { bucket = USER_BUCKET } = {}) { return (await this.list(prefix, { bucket })).length; },
+  };
+
+  return {
+    kind: 'memory', forUser, service,
+    /** The browser's PUT to a signed upload link. */
+    async uploadWithToken(tok, bytes, { contentType = 'application/octet-stream' } = {}) {
+      const u = uploads.get(tok);
+      if (!u || u.exp <= now()) throw Object.assign(new Error('invalid_token'), { status: 401, code: 'invalid_token' });
+      if (bytes.length > maxObjectBytes) throw Object.assign(new Error('too_large'), { status: 413, code: 'too_large' });
+      if (objects.has(key(u.bucket, u.path))) throw Object.assign(new Error('exists'), { status: 409, code: 'exists' });
+      objects.set(key(u.bucket, u.path), { bytes: Buffer.from(bytes), contentType, createdAt: now() });
+      uploads.delete(tok);
+      return { path: u.path };
+    },
+    /** The browser's GET of a signed download link. */
+    async downloadWithToken(tok) {
+      const d = downloads.get(tok);
+      if (!d || d.exp <= now()) throw Object.assign(new Error('invalid_token'), { status: 401, code: 'invalid_token' });
+      const o = objects.get(key(d.bucket, d.path)); if (!o) throw Object.assign(new Error('not_found'), { status: 404, code: 'not_found' });
+      return { bytes: o.bytes, contentType: o.contentType, name: d.name };
+    },
+    testing: {
+      /** Put an object without any policy (test set-up, or tampering with what was uploaded). */
+      put(path, bytes, { contentType = 'application/octet-stream', bucket = USER_BUCKET } = {}) { objects.set(key(bucket, path), { bytes: Buffer.from(bytes), contentType, createdAt: now() }); },
+      get: (path, bucket = USER_BUCKET) => objects.get(key(bucket, path))?.bytes ?? null,
+      has: (path, bucket = USER_BUCKET) => objects.has(key(bucket, path)),
+      list: () => [...objects.keys()],
+      ownerOf: pathOwner, requireOwnPath, buckets: USER_BUCKETS,
+    },
+  };
+}

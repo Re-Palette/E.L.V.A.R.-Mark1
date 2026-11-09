@@ -2,8 +2,10 @@
 //   1. sweep expired short-lived rows (kv, rate limits, ticket uses, oauth pending)
 //   2. bootstrap admin: the confirmed account whose e-mail equals ELVAR_BOOTSTRAP_ADMIN_EMAIL becomes an admin (table row + signed claim)
 //   3. purge the accounts whose deletion is due (the 7-day grace is over)
+//   4. the file vault (P5): remove the Storage objects of deleted files and of uploads that never finished (service key), drop their rows, and recount every user's storage usage
 import { setAppMetadata } from '../db/service.js';
 import { purgeDue } from '../rights/purge.js';
+import { getStorage, USER_BUCKET } from '../storage/index.js';
 
 export async function dailyCron({ user: ctx }, { env = process.env, setClaim = setAppMetadata, purge = purgeDue } = {}) {
   const out = { swept: null, admin: null, purge: null, errors: [] };
@@ -17,5 +19,18 @@ export async function dailyCron({ user: ctx }, { env = process.env, setClaim = s
     return { granted: true };
   });
   out.purge = await step('purge', async () => purge(await (await import('../db/index.js')).getDb()));
+  out.files = await step('files-sweep', () => sweepFiles(ctx.system));
+  out.reconciled = await step('storage-reconcile', () => ctx.system.reconcileStorage());
   return { status: 200, body: out };
+}
+
+/** Stale file rows (deleting, or a reservation that ran out 5 minutes ago): the object first, then the row. A failure on one file does not stop the others. */
+export async function sweepFiles(system, { storage = null, limit = 200 } = {}) {
+  const st = storage || await getStorage();
+  let removed = 0, failed = 0;
+  for (const f of await system.staleFiles(limit)) {
+    try { await st.service.remove([f.objectPath], { bucket: USER_BUCKET }); if (await system.dropStaleFile(f.userId, f.id)) removed++; }
+    catch (e) { failed++; console.error('[elvar] cron: could not sweep a file:', e?.code || e?.message); }
+  }
+  return { removed, failed };
 }

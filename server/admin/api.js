@@ -36,3 +36,15 @@ export const suspendUser = ({ user, params, body }) => {
   return setStatus(user, params, 'suspended', reason || null);
 };
 export const unsuspendUser = ({ user, params }) => setStatus(user, params, 'active', null);
+
+/** The storage quota of one user, in bytes (O1: the default is 500 MB; this changes it for that user only). Recorded in the user's own audit log (actor admin). */
+export async function setQuota({ user, params, body }) {
+  if (!isUuid(params.id)) return bad(404, 'not_found');
+  const id = params.id.toLowerCase(), bytes = body?.bytes;
+  if (!Number.isInteger(bytes) || bytes < 0 || bytes > 1099511627776) return bad(400, 'bad_quota', '容量は 0 以上、1TB 以下のバイト数で指定してください');
+  await requireFresh(user);
+  await user.db((r) => r.admin.setQuota(id, bytes));   // throws forbidden for a non-admin, not_found for an unknown user
+  invalidateAccount(id);
+  audit('admin-set-quota', { by: user.uid.uid, target: id, bytes });
+  return { status: 200, body: { storageQuotaBytes: bytes } };
+}

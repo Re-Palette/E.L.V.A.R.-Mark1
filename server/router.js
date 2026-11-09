@@ -15,6 +15,7 @@ import * as GOOGLE from './google/connect.js';
 import * as CX from './connectors/api.js';
 import * as BUILDS from './account/builds.js';
 import * as MEM from './account/notes.js';
+import * as FILES from './account/files.js';
 import * as SYNC from './brain-sync.js';
 import * as ADMIN from './admin/api.js';
 import { dailyCron } from './admin/cron.js';
@@ -46,6 +47,7 @@ export const ROUTES = [
   { method: 'GET', path: '/api/elvar/admin/users', auth: 'admin', handler: ADMIN.listUsers },
   { method: 'POST', path: '/api/elvar/admin/users/:id/suspend', auth: 'admin', authOpts: FRESH, handler: ADMIN.suspendUser },
   { method: 'POST', path: '/api/elvar/admin/users/:id/unsuspend', auth: 'admin', authOpts: FRESH, handler: ADMIN.unsuspendUser },
+  { method: 'POST', path: '/api/elvar/admin/users/:id/quota', auth: 'admin', authOpts: FRESH, handler: ADMIN.setQuota },
   // ---- cron
   { method: 'GET', path: '/api/elvar/cron/daily', auth: 'cron', handler: dailyCron },
   { method: 'POST', path: '/api/elvar/cron/daily', auth: 'cron', handler: dailyCron },
@@ -99,6 +101,20 @@ export const ROUTES = [
   { method: 'GET', path: '/api/elvar/brain-sync/status', auth: 'user', handler: SYNC.syncStatusRoute },
   { method: 'POST', path: '/api/elvar/brain-sync/import', auth: 'user', handler: SYNC.syncImportRoute },
   { method: 'POST', path: '/api/elvar/brain-sync/push', auth: 'user', handler: SYNC.syncPushRoute },
+  // ---- the file vault (P5): originals in Supabase Storage under users/<uid>/, metadata + memory + extracted text in the database, quota enforced before the upload starts.
+  //      The browser uploads straight to a signed Storage link (reserve -> PUT -> finalize) and downloads from a signed link; no file passes through these functions.
+  { method: 'GET', path: '/api/elvar/files', auth: 'user', handler: FILES.listFiles },
+  { method: 'GET', path: '/api/elvar/files/search', auth: 'user', handler: FILES.searchFiles },
+  { method: 'POST', path: '/api/elvar/files/reserve', auth: 'user', handler: FILES.reserveFile },
+  { method: 'POST', path: '/api/elvar/files/delete-all', auth: 'user', handler: FILES.deleteAllFiles },
+  { method: 'GET', path: '/api/elvar/files/:id', auth: 'user', handler: FILES.getFile },
+  { method: 'PATCH', path: '/api/elvar/files/:id', auth: 'user', handler: FILES.patchFile },
+  { method: 'DELETE', path: '/api/elvar/files/:id', auth: 'user', handler: FILES.deleteFile },
+  { method: 'GET', path: '/api/elvar/files/:id/text', auth: 'user', handler: FILES.getFileText },
+  { method: 'PUT', path: '/api/elvar/files/:id/text', auth: 'user', handler: FILES.putFileText },
+  { method: 'GET', path: '/api/elvar/files/:id/download', auth: 'user', handler: FILES.downloadFile },
+  { method: 'POST', path: '/api/elvar/files/:id/finalize', auth: 'user', handler: FILES.finalizeFile },
+  { method: 'POST', path: '/api/elvar/files/:id/cancel', auth: 'user', handler: FILES.cancelUpload },
   // ---- build requests (Claude Code through the user's own GitHub repository)
   { method: 'GET', path: '/api/elvar/builds', auth: 'user', handler: BUILDS.listBuilds },
   { method: 'DELETE', path: '/api/elvar/builds/:id', auth: 'user', handler: BUILDS.deleteBuild },
