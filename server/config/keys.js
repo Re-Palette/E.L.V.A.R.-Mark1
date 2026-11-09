@@ -71,6 +71,16 @@ export const KEYS = [
   infra('ELVAR_ACCESS_TOKEN', 'auth', 'Shared access token (env mode)'),
   infra('ELVAR_PROFILE', 'profile', 'Profile JSON (env mode)'),
   infra('GOOGLE_API_MOCK_ORIGIN', 'test', 'Test only: mock Google origin'),
+  // Multi-user platform (docs/ELVAR_MULTIUSER.md). Platform-level values only: every user's own keys live encrypted in the database.
+  infra('ELVAR_DB', 'platform', 'Force the database layer: memory (tests)'),
+  infra('ELVAR_DB_URL', 'platform', 'Postgres connection string of the elvar_app role (Supavisor transaction mode)'),
+  infra('ELVAR_KEK', 'platform', 'Key-encryption key for per-user keys: <id>:<base64 32 bytes>'),
+  infra('ELVAR_KEK_PREV', 'platform', 'Previous key-encryption key(s), comma separated, only while rotating'),
+  infra('SUPABASE_URL', 'platform', 'Supabase project URL (JWT issuer and JWKS)'),
+  infra('SUPABASE_PUBLISHABLE_KEY', 'platform', 'Supabase publishable (anon) key'),
+  infra('SUPABASE_SECRET_KEY', 'platform', 'Supabase service-role key (read only by server/db/service.js)'),
+  infra('CRON_SECRET', 'platform', 'Bearer secret Vercel Cron sends to /api/elvar/cron/*'),
+  infra('ELVAR_TEST_MODE', 'test', 'Test only: allows test-minted user identities'),
 ];
 
 // Families of keys with a variable part (AGENT_LLM_<AGENT>, ROUTE_<CAP>, STD_*_MODEL ...) are settings too.
