@@ -17,6 +17,7 @@ import { sendJson } from '../http.js';
 import { getVerifier, bearerFrom, AuthError } from './jwt.js';
 import { deviceTokenFrom, parseDeviceToken } from './device-token.js';
 import { userConfigShell, cronConfig } from './user-config.js';
+import { loadUserConfig } from './load-user-config.js';
 
 // The account status (active / suspended / pending_deletion) is cached per warm instance for 30 seconds. That is the documented bound on how long a
 // suspension or a deletion request made on ANOTHER instance can go unnoticed by ordinary requests. The instance that makes the change calls
@@ -63,7 +64,18 @@ export function limitDeviceRepos(r, scopes = []) {
 function makeCtx(db, extra) {
   // A device token is for one narrow job: its ctx.db hands out a reduced repos object (limitDeviceRepos), never the user's whole account.
   const ctx = { ...extra, db: extra.kind === 'device' ? (fn) => db.asUser(ctx.uid, (r) => fn(limitDeviceRepos(r, ctx.scopes))) : (fn) => db.asUser(ctx.uid, fn) };
-  ctx.cfg = userConfigShell(ctx);
+  ctx.cfg = userConfigShell(ctx);   // until loadConfig(): the strict shell (platform defaults only)
+  ctx.system = db.system;
+  // The user's own settings, secrets and profile (one transaction as that user, cached 10 s per instance). Routes and wrappers call it before the handler.
+  if (extra.kind === 'user' || extra.kind === 'admin') {
+    ctx.loadConfig = async (o) => {
+      try { return (ctx.cfg = await loadUserConfig(ctx, o)); }
+      catch (e) {   // the user was deleted from Auth after the status cache was filled: creating their key row violates the foreign key (23503)
+        if (e instanceof DbError && e.code === 'invalid_reference') { accountCache.delete(ctx.uid.uid); throw new AuthError('account_deleted'); }
+        throw e;
+      }
+    };
+  }
   return ctx;
 }
 
@@ -121,7 +133,11 @@ async function authCron(req) {
  * Sensitive operations (delete the account, change the e-mail, export, admin actions): the access token must be recent (default 10 minutes) and
  * Supabase Auth must still accept it (a revoked session fails). Throws AuthError 401 'reauth_required' so the client signs in again.
  */
-export async function requireFresh(ctx, maxAgeSec = 600, { fetchImpl = globalThis.fetch, env = process.env, now = Date.now() } = {}) {
+let freshFetchOverride = null;
+/** Tests / the local dev server: the fetch requireFresh() and signOutEverywhere() use to reach Supabase Auth. null restores the global fetch. */
+export const _setAuthFetch = (f) => { freshFetchOverride = f; };
+export const authFetch = () => freshFetchOverride || globalThis.fetch;
+export async function requireFresh(ctx, maxAgeSec = 600, { fetchImpl = authFetch(), env = process.env, now = Date.now() } = {}) {
   if (!ctx?.jwt || !(now / 1000 - ctx.jwt.iat <= maxAgeSec)) throw new AuthError('reauth_required');
   const url = String(env.SUPABASE_URL || '').replace(/\/+$/, ''), anon = env.SUPABASE_PUBLISHABLE_KEY || '';
   if (!url || !anon) throw new AuthError('auth_unconfigured', 503);
@@ -137,6 +153,7 @@ export async function requireFresh(ctx, maxAgeSec = 600, { fetchImpl = globalThi
 // ---- wrappers for Vercel functions (api/*.js) and the local server
 const guard = (e) => {
   if (e instanceof AuthError || (e instanceof DbError && e.status < 500)) return { status: e.status, body: { error: e.code } };
+  if (e?.code === 'kek_missing' || e?.code === 'auth_unconfigured') { console.error('[elvar] platform is not configured:', e.code); return { status: 503, body: { error: 'platform_unconfigured' } }; }
   console.error('[elvar]', e?.code || e?.message || e);
   return { status: e instanceof DbError && e.status === 503 ? 503 : 500, body: { error: e instanceof DbError && e.status === 503 ? 'db_unavailable' : 'internal_error' } };
 };
@@ -145,6 +162,7 @@ function wrap(kind, handler, opts) {
     try {
       const a = await authenticate(kind, req, opts);
       if (!a.ok) return sendJson(res, { status: a.status, body: { error: a.error } });
+      if (a.ctx.loadConfig) await a.ctx.loadConfig();
       return await runWithConfig(a.ctx.cfg || undefined, () => handler(req, res, a.ctx));
     } catch (e) { return sendJson(res, guard(e)); }
   };
@@ -155,6 +173,27 @@ export const withUser = (handler, opts) => wrap('user', handler, opts);
 export const withAdmin = (handler, opts) => wrap('admin', handler, opts);
 /** Device token with the given scope (Android notification sync). */
 export const withDevice = (scope) => (handler, opts) => wrap(`device:${scope}`, handler, opts);
+/**
+ * The Android notification sync and the browser use the same endpoint: a device token (x-elvar-token: elv2...) needs `scopeFor(req)`, anything else must be a
+ * signed-in user. handler(req, res, ctx) either way.
+ */
+export const withUserOrDevice = (scopeFor) => (handler, opts) => async (req, res) => {
+  const kind = deviceTokenFrom(req) ? `device:${scopeFor(req)}` : 'user';
+  return wrap(kind, handler, opts)(req, res);
+};
 /** Vercel Cron: Authorization: Bearer CRON_SECRET. handler(req, res, { kind:'cron', system }) */
 export const withCron = (handler) => wrap('cron', handler);
 
+
+/**
+ * End every session of the caller (Supabase Auth: POST /auth/v1/logout?scope=global with the caller's own token). Used by account deletion.
+ * Best effort: the account is already pending_deletion, which blocks every request, so a failure here is logged, not fatal.
+ */
+export async function signOutEverywhere(ctx, { fetchImpl = authFetch(), env = process.env } = {}) {
+  const url = String(env.SUPABASE_URL || '').replace(/\/+$/, ''), anon = env.SUPABASE_PUBLISHABLE_KEY || '';
+  if (!ctx?.jwt?.token || !url || !anon) return false;
+  try {
+    const res = await fetchImpl(`${url}/auth/v1/logout?scope=global`, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(8000), headers: { apikey: anon, authorization: `Bearer ${ctx.jwt.token}` } });
+    return res.ok || res.status === 204;
+  } catch (e) { console.error('[elvar] global sign-out failed:', e?.message || e); return false; }
+}

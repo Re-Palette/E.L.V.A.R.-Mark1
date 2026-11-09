@@ -15,9 +15,9 @@ const hits = (re) => files.filter((f) => re.test(read(f)));
 
 // Files that may import server/db/service.js. P1 has none besides the tests; each later phase adds its module here on purpose
 // (server/rights/purge.js, server/admin/*, the cron handlers for the storage sweep and reconciliation).
-const SERVICE_IMPORTERS = new Set([]);
+const SERVICE_IMPORTERS = new Set(['server/rights/purge.js', 'server/admin/api.js', 'server/admin/cron.js']);   // purge: delete the Auth user; admin: ban / unban; cron: grant the admin claim
 const SERVICE_OK_DIRS = ['test/'];
-const KEY_READERS = new Set(['server/db/service.js', 'server/config/keys.js']);   // keys.js only names it in the ledger of environment variables
+const KEY_READERS = new Set(['server/db/service.js', 'server/config/keys.js', 'server/index.js']);   // keys.js only names it in the ledger; index.js SETS a made-up one for the local dev login (never reads a real one)
 
 test('only server/db/service.js reads the service-role key (SUPABASE_SECRET_KEY / service_role)', () => {
   const readers = hits(/SUPABASE_SECRET_KEY|SERVICE_ROLE_KEY|service_role/).filter((f) => !f.startsWith('test/') && !f.startsWith('supabase/') && !f.startsWith('docs/') && !KEY_READERS.has(f));
@@ -39,7 +39,7 @@ test('the browser side (web/, extension/, desktop/, android/) never mentions the
 test('only server/db/pool.js imports the Postgres driver or reads ELVAR_DB_URL (and tests / the test:db runner)', () => {
   const ok = (f) => f === 'server/db/pool.js' || f.startsWith('test/') || f === 'scripts/test-db.mjs';
   assert.deepEqual(hits(/from\s+['"]postgres['"]|require\(\s*['"]postgres['"]\s*\)|import\(\s*['"]postgres['"]\s*\)/).filter((f) => !ok(f)), []);
-  assert.deepEqual(hits(/ELVAR_DB_URL/).filter((f) => !ok(f) && !['server/db/index.js', 'server/config/keys.js'].includes(f)), []);
+  assert.deepEqual(hits(/ELVAR_DB_URL/).filter((f) => !ok(f) && !['server/db/index.js', 'server/config/keys.js', 'server/dev/dev-auth-guard.js'].includes(f)), []);
 });
 
 test('the browser never receives table access: the Data API exposes only public and graphql_public, never app', () => {

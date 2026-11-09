@@ -456,7 +456,7 @@ export const TOOLS = [
 
   // Which APIs are connected (by voice + the panel). Executed in the page, like system_check.
   { name: 'api_status', kind: 'read', alwaysOn: true,
-    description: '各API（Gemini・Groq・Sarashina・Exa・NewsData・天気・Google・GitHub・Upstash）が接続できているかを調べ、画面に一覧を出す。「APIの接続状況は？」「どれがつながってる？」「どのAPIが使える？」と聞かれたら使う。接続中／キーだけ設定済み（未確認）／異常／未設定を、分けて短く伝える。念入りに、と言われたら deep=true（検索やニュースのAPIも実際に呼ぶ）。',
+    description: '各API（Gemini・Groq・Sarashina・Exa・NewsData・天気・Google・GitHub）が接続できているかを調べ、画面に一覧を出す。「APIの接続状況は？」「どれがつながってる？」「どのAPIが使える？」と聞かれたら使う。接続中／キーだけ設定済み（未確認）／異常／未設定を、分けて短く伝える。念入りに、と言われたら deep=true（検索やニュースのAPIも実際に呼ぶ）。',
     schema: S({ deep: bool('Exa・NewsDataも実際に呼んで確かめる（少し利用枠を使う）') }),
     async run() { throw new Error('このツールはページ側（ブラウザ）が実行します'); } },
 

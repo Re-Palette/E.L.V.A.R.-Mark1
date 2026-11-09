@@ -1,44 +1,44 @@
-// Configuration access. Priority: vault (set in the app) > env > default. `getConfig(req)` authenticates the request and builds the
-// per-request cfg; `env(name)` is the synchronous accessor used all over server/ (AsyncLocalStorage carries the cfg through awaits).
-import crypto from 'node:crypto';
+// Configuration access. `env(name)` is the synchronous accessor used all over server/; AsyncLocalStorage carries the request's cfg through awaits.
+//
+// A request made by a signed-in user (or by cron) always runs inside a STRICT cfg (server/auth/user-config.js, server/auth/load-user-config.js):
+// the user's own settings, secrets and profile first, then only the platform defaults the ledger allows (keys.js `platform: true`). Outside any
+// request (scripts, tests) `env()` reads process.env as before. There is no owner mode any more (O8).
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { DEFAULT_PROFILE, mergeProfile } from '../profile/defaults.js';
 import { KEYS, keyInfo, isSecret, isPlatformDefault } from './keys.js';
-import { authenticate } from './auth.js';
-import { getStore } from '../store/index.js';
-import { readDoc, ticketKeyFromDek, connectorKeyFromDek } from './vault.js';
-import { loadLogin } from '../google/login-record.js';
-import { currentScope } from '../connectors/data.js';
 
 const als = new AsyncLocalStorage();
 
+// ELVAR_PROFILE (one line of JSON) is a scripts-and-tests convenience for code that runs OUTSIDE a request. A signed-in user's request never sees it:
+// their cfg carries their own profile (server/auth/load-user-config.js).
 function envProfile() {
   const raw = process.env.ELVAR_PROFILE;
   if (!raw) return DEFAULT_PROFILE;
   try { return mergeProfile(JSON.parse(raw)); } catch { return DEFAULT_PROFILE; }
 }
 
-/** cfg: { get(name), source(name), secretStatus(), profile, connectors, features, version, auth, ticketKey?, notifSecret? } */
+/** cfg: { get(name), source(name), secretStatus(), profile, connectors, features, version, auth } for code that runs outside a request. */
 export function envConfig(auth = { mode: 'env' }) {
-  const profile = envProfile();
   return {
+    get profile() { return envProfile(); },
+    get features() { return envProfile().features || {}; },
     get: (name) => process.env[name],
     source: (name) => (process.env[name] ? 'env' : 'default'),
     secretStatus: () => secretStatus((n) => process.env[n], () => 'env'),
-    profile, connectors: [], features: profile.features || {}, version: 0, google: null, cxSecret: () => '',
+    connectors: [], version: 0, google: null, cxSecret: () => '',
     auth: { mode: auth.mode, deviceId: auth.deviceId },
   };
 }
 
 const last4 = (v) => (typeof v === 'string' && v.length >= 8 ? v.slice(-4) : null);
-function secretStatus(get, source) {
+export function secretStatus(get, source) {
   const out = {};
   for (const k of KEYS) if (k.kind === 'secret') { const v = get(k.name); out[k.name] = { set: Boolean(v), source: v ? source(k.name) : 'default', last4: v ? last4(String(v)) : null }; }
   return out;
 }
 
-// Settings that moved into the profile (the vault's profile wins over the old env names).
-const FROM_PROFILE = {
+// Settings that live in the profile (the profile wins over a setting of the same name).
+export const FROM_PROFILE = {
   GEMINI_LIVE_VOICE: (p) => p.assistant.voice,
   GEMINI_LIVE_INPUT_LANGS: (p) => p.locale.inputLangs.join(','),
   GOOGLE_TIMEZONE: (p) => p.locale.timeZone,
@@ -46,67 +46,17 @@ const FROM_PROFILE = {
 };
 export const PROFILE_KEYS = Object.keys(FROM_PROFILE);
 
-/** `google` = the decrypted tok:google record (the login made in the app), or null. */
-export function vaultConfig(doc, auth, docVer, google = null) {
-  const profile = mergeProfile(doc.profile || {});
-  const secrets = doc.secrets || {}, settings = doc.settings || {};
-  const own = (name) => {
-    if (FROM_PROFILE[name]) return FROM_PROFILE[name](profile);
-    const info = keyInfo(name);
-    if (!info || info.kind === 'infra') return undefined;
-    const v = info.kind === 'secret' ? secrets[name] : settings[name];
-    return v === undefined || v === null || v === '' ? undefined : v;
-  };
-  const get = (name) => { const v = own(name); return v !== undefined ? v : process.env[name]; };
-  const source = (name) => (own(name) !== undefined ? 'app' : process.env[name] ? 'env' : 'default');
-  return {
-    get, source, secretStatus: () => secretStatus(get, source),
-    profile, connectors: Array.isArray(doc.connectors) ? doc.connectors : [], features: profile.features || {}, version: docVer, google,
-    auth: { mode: 'vault', deviceId: auth.deviceId },
-    ticketKey: ticketKeyFromDek(auth.dek), connectorKey: connectorKeyFromDek(auth.dek), notifSecret: doc.notifSecret || null,
-    cxSecret: (id, what = 'auth') => currentScope().getSecret(secrets, id, what),
-  };
-}
-
-// warm-instance cache of the decrypted doc: sha256(token) -> { docVer, doc, at }. Valid while meta.docVer is unchanged, at most 30 s.
-const warm = new Map();
-const WARM_MS = 30_000;
-async function loadDoc(auth, token) {
-  const k = crypto.createHash('sha256').update(token).digest('hex'), now = Date.now();
-  const hit = warm.get(k);
-  if (hit && hit.docVer === auth.meta.docVer && now - hit.at < WARM_MS) return hit;
-  const store = getStore();
-  const [{ doc, ver }, tok] = await Promise.all([readDoc(store, auth.dek, auth.meta), loadLogin(store, auth.dek).catch(() => null)]);
-  const rec = { docVer: auth.meta.docVer, doc, ver, google: tok || null, at: now };
-  warm.set(k, rec);
-  if (warm.size > 50) for (const [kk, v] of warm) if (now - v.at > WARM_MS) warm.delete(kk);
-  return rec;
-}
-export const _clearWarmCache = () => warm.clear();
-
-/** Request-level resolution. @returns {{ok:boolean, status:number, error?:string, auth:object, cfg:object, doc?:object}} cfg is always usable (env only when not authenticated) */
-export async function getConfig(req) {
-  const auth = await authenticate(req);
-  if (!auth.ok) return { ok: false, status: auth.status, error: auth.error, auth, cfg: envConfig({ mode: 'none' }) };
-  if (auth.mode !== 'vault') return { ok: true, status: 200, auth, cfg: envConfig(auth) };
-  try {
-    const { doc, docVer, google } = await loadDoc(auth, String(req.headers['x-elvar-token']));
-    return { ok: true, status: 200, auth, cfg: vaultConfig(doc, auth, docVer, google), doc };
-  } catch (e) {
-    console.error('[elvar] vault read failed:', e?.code || e?.message);
-    return { ok: false, status: 500, error: 'vault_unavailable', auth, cfg: envConfig({ mode: 'none' }) };
-  }
-}
-
 export const runWithConfig = (cfg, fn) => als.run(cfg, fn);
+/** Tests only: make `cfg` the configuration of the current async context (and everything it starts), e.g. a test file's whole run. */
+export const _enterConfigForTests = (cfg) => als.enterWith(cfg);
 export const currentConfig = () => als.getStore() || envConfig();
 
-/** Synchronous accessor: cfg.get(name) -> process.env[name] -> undefined. */
+/** Synchronous accessor: cfg.get(name) -> (outside a request: process.env) -> undefined. In a user or cron request only platform defaults come from the environment. */
 export function env(name) {
   const cfg = currentConfig();
   const v = cfg.get(name);
   if (v !== undefined && v !== null) return v;
-  if (cfg.strictUser && !isPlatformDefault(name)) return undefined;   // in a user (or cron) context only allow-listed platform defaults come from the environment (M5)
+  if (cfg.strictUser && !isPlatformDefault(name)) return undefined;   // M5: a user's API keys, personal settings and infrastructure never come from the platform environment
   return process.env[name];
 }
 

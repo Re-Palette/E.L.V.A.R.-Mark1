@@ -12,7 +12,7 @@ const SQL = Object.fromEntries(FILES.map((f) => [f, fs.readFileSync(path.join(DI
 // comments removed, so a rule is not satisfied (or broken) by prose
 const code = (s) => s.replace(/--[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
 const ALL = FILES.map((f) => code(SQL[f])).join('\n');
-const PLATFORM = new Set(['data_registry', 'deletion_receipts']);
+const PLATFORM = new Set(['data_registry', 'deletion_receipts', 'platform_config', 'blocked_email_domains', 'signup_invites']);
 const norm = (s) => String(s).replace(/\s+/g, ' ').trim();
 
 function tables() {

@@ -9,7 +9,7 @@
 //                        then deleted. A leaked Redis alone cannot read a pending flow: it needs the state, which only exists in the authorize URL.
 // Codes, tokens and secrets are never logged.
 import crypto from 'node:crypto';
-import { seal, open, hkdf } from '../config/vault.js';
+import { seal, open, hkdf } from '../crypto/envelope.js';
 import { newVerifier, challengeS256 } from './pkce.js';
 
 export const PENDING_TTL = 600;

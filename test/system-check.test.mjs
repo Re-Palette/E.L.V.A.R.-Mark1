@@ -29,12 +29,14 @@ test('system check (server): reports what it measured; optional features are "of
       if (u.includes('api.groq.com')) return { ok: true, status: 200, json: async () => ({}) };
       return { ok: true, status: 200, json: async () => ({}) };
     };
-    const r = await runServerChecks();
+    const { runWithConfig, envConfig } = await import('../server/config/resolve.js');
+    const asUser = (fn) => runWithConfig({ ...envConfig(), auth: { mode: 'user', userId: '11111111-1111-4111-8111-111111111111' } }, fn);
+    const r = await asUser(() => runServerChecks());
     assert.equal(by(r, 'gemini').status, 'fail'); assert.match(by(r, 'gemini').detail, /拒否/);
     assert.equal(by(r, 'groq').status, 'ok'); assert.equal(by(r, 'access').status, 'ok');
     assert.equal(by(r, 'news').status, 'ok'); assert.match(by(r, 'news').detail, /通信は確認していません/);
     assert.ok(!seen.some((u) => u.includes('newsdata.io')), 'a normal check spends no news credit');
-    const d = await runServerChecks({ deep: true });
+    const d = await asUser(() => runServerChecks({ deep: true }));
     assert.ok(seen.some((u) => u.includes('newsdata.io')), 'deep check probes news'); assert.match(by(d, 'news').detail, /1クレジット/);
   });
 });
@@ -60,7 +62,7 @@ test('api connections: one row per service; free probes only; key-only services 
   globalThis.fetch = async (url) => { urls.push(String(url)); if (String(url).includes('groq')) return { ok: false, status: 401, json: async () => ({}) }; if (String(url).includes('sarashina')) return { ok: false, status: 429, json: async () => ({}) }; return { ok: true, status: 200, json: async () => ({}) }; };
   try {
     const rows = await apiConnections({}); const by = Object.fromEntries(rows.map((r) => [r.id, r]));
-    assert.deepEqual(rows.map((r) => r.id), ['api-gemini', 'api-groq', 'api-sarashina', 'api-exa', 'api-newsdata', 'api-weather', 'api-google', 'api-github', 'api-build', 'api-upstash']);
+    assert.deepEqual(rows.map((r) => r.id), ['api-gemini', 'api-groq', 'api-sarashina', 'api-exa', 'api-newsdata', 'api-weather', 'api-google', 'api-github', 'api-build', 'api-notifsync']);
     assert.equal(by['api-gemini'].status, 'ok'); assert.equal(by['api-gemini'].verified, true); assert.equal(stateWord(by['api-gemini']), '接続中');
     assert.equal(by['api-groq'].status, 'fail'); assert.match(by['api-groq'].detail, /拒否/);
     assert.equal(by['api-sarashina'].status, 'warn'); assert.match(by['api-sarashina'].detail, /上限/);
@@ -74,7 +76,7 @@ test('api connections: one row per service; free probes only; key-only services 
 test('system check: reports where each key comes from (app / env) and the missing required key', async () => {
   const { runWithConfig, envConfig } = await import('../server/config/resolve.js');
   const st = { GEMINI_API_KEY: { set: false, source: 'default', last4: null }, GROQ_API_KEY: { set: true, source: 'app', last4: 'AB12' }, EXA_API_KEY: { set: true, source: 'env', last4: null } };
-  const cfg = { ...envConfig(), auth: { mode: 'vault' }, secretStatus: () => st };
+  const cfg = { ...envConfig(), auth: { mode: 'user' }, secretStatus: () => st };
   const realFetch = globalThis.fetch; globalThis.fetch = async () => { throw new Error('offline'); };
   try {
     const r = await runWithConfig(cfg, () => runServerChecks({}));

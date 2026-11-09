@@ -4,6 +4,8 @@ import { parseTime, hhmm, parseDateWord, shiftPay, defaultBreak, parseJobs, pars
 import { _resetPrivacy } from '../server/brain.js';
 import { monthCells, hhmmShort } from '../web/src/shift-view.js';
 import { executeGoogle } from '../server/google/index.js';
+import { enterTestUser } from './helpers/user-ctx.mjs';
+enterTestUser();   // a signed-in test user: approval tickets are keyed to the user and consumed in their own database
 
 const NOW = Date.parse('2026-11-15T12:00:00+09:00');
 async function withVault(fn, { isPrivate = true } = {}) {

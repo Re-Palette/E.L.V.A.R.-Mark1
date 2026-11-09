@@ -9,6 +9,7 @@ import { completeText, usable } from './llm.js';
 import { A, AS, U, currentProfile } from './profile/index.js';
 import { env, currentConfig } from './config/resolve.js';
 import { listConnectorDeclarations } from './connectors/index.js';
+import { recordGemini } from './usage.js';
 
 const API = 'https://generativelanguage.googleapis.com/v1beta/models';
 const model = (k, d) => env(k) || d;
@@ -23,6 +24,7 @@ async function gen(m, body, timeoutMs = 25000) {
   try { r = await fetch(`${API}/${encodeURIComponent(m)}:generateContent`, { method: 'POST', signal: AbortSignal.timeout(timeoutMs), headers: { 'x-goog-api-key': key, 'content-type': 'application/json' }, body: JSON.stringify(body) }); }
   catch (e) { throw Object.assign(new Error(`Geminiに接続できません: ${e?.cause?.code || e?.message || e}`), { status: 502 }); }
   const j = await r.json().catch(() => ({}));
+  if (r.ok) await recordGemini(j);
   if (!r.ok) throw Object.assign(new Error(`Geminiのエラー (${r.status}): ${String(j?.error?.message || '').slice(0, 160)}`), { status: r.status === 429 ? 429 : 502, quota: r.status === 429, modelGone: r.status === 404 || (r.status === 400 && /not (found|supported)|no longer|deprecated|unsupported|invalid model/i.test(String(j?.error?.message || ''))) });
   return j;
 }

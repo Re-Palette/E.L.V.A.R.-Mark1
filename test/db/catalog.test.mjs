@@ -8,7 +8,7 @@ import { REGISTRY, validateRegistry } from '../../server/rights/registry.js';
 test.after(() => admin.end({ timeout: 5 }));
 
 // Tables of schema app that hold no user data and therefore have no user_id (and no registry row).
-const PLATFORM_TABLES = new Set(['data_registry', 'deletion_receipts']);
+const PLATFORM_TABLES = new Set(['data_registry', 'deletion_receipts', 'platform_config', 'blocked_email_domains', 'signup_invites']);
 const norm = (s) => String(s).replace(/\s+/g, ' ').trim();
 
 test('every table of schema app has row level security enabled and forced', async () => {
@@ -125,7 +125,7 @@ test('write-restricted tables really are: no insert/update/delete grant on accou
   const priv = async (t, p) => (await admin`select has_table_privilege('authenticated', ${'app.' + t}, ${p}) as ok`)[0].ok;
   for (const t of ['accounts', 'usage_events', 'usage_daily', 'storage_usage', 'deletion_requests']) for (const p of ['insert', 'update', 'delete']) assert.equal(await priv(t, p), false, `${t} ${p}`);
   for (const t of ['audit_log', 'ticket_uses']) { assert.equal(await priv(t, 'insert'), true); for (const p of ['update', 'delete']) assert.equal(await priv(t, p), false, `${t} ${p}`); }
-  for (const t of ['admins', 'rate_limits', 'data_registry', 'deletion_receipts']) for (const p of ['select', 'insert', 'update', 'delete']) assert.equal(await priv(t, p), false, `${t} ${p}`);
+  for (const t of ['admins', 'rate_limits', 'data_registry', 'deletion_receipts', 'platform_config', 'blocked_email_domains', 'signup_invites']) for (const p of ['select', 'insert', 'update', 'delete']) assert.equal(await priv(t, p), false, `${t} ${p}`);
 });
 
 test('definer functions: fixed search_path, never executable by public or anon, and exactly the expected callers', async () => {
@@ -134,6 +134,9 @@ test('definer functions: fixed search_path, never executable by public or anon, 
   const EXPECT = {   // function -> roles that may execute it
     _secure: [], ensure_account: ['authenticated'], is_admin: ['authenticated'], device_lookup: ['elvar_app'],
     rl_hit: ['elvar_app'], purge_expired: ['elvar_app'], residual_check: ['elvar_app'],
+    // migration 12: the Auth hook (supabase_auth_admin only, none of the roles listed here), the caller-scoped ones, the admin ones (they check is_admin themselves), the cron / purge helpers
+    before_user_created: [], record_usage: ['authenticated'], request_deletion: ['authenticated'], cancel_deletion: ['authenticated'],
+    admin_users: ['authenticated'], admin_set_status: ['authenticated'], due_deletions: ['elvar_app'], record_deletion_receipt: ['elvar_app'], bootstrap_admin: ['elvar_app'],
   };
   assert.deepEqual(fns.map((f) => f.proname).sort(), Object.keys(EXPECT).sort(), 'a function was added or removed: update this list deliberately');
   for (const f of fns) {

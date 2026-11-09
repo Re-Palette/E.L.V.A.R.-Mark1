@@ -1,54 +1,70 @@
 // One route table for /api/elvar/* (Vercel: the single function api/elvar.js; local: server/index.js). Vercel's Hobby plan allows 12 functions, so new
 // endpoints never get a file of their own.
-//   auth: 'none'  - anyone (state, login, claim: protected by their own checks and rate limits)
-//         'owner' - a valid device token (or the env token / local loopback before setup)   [single-owner mode, removed in P2]
+//   auth: 'none'  - anyone (the public state page): protected by its own limits
 //         'user'  - a signed-in user (Supabase access token); the handler gets `user` = { uid, db(fn), cfg, ... }  (server/auth/with-user.js)
 //         'admin' - a signed-in admin (token claim AND a row in app.admins)
 //         'device:<scope>' - a per-user device token with that scope (Android notification sync)
 //         'cron'  - Vercel Cron (Authorization: Bearer CRON_SECRET); the handler gets `user` = { system }
-//         'state' - a browser coming back from another site (the Google callback): no device token, protected by a single-use `state`; it may answer HTML
-import { getConfig, runWithConfig, envConfig } from './config/resolve.js';
-import * as A from './config/auth.js';
-import * as API from './elvar-api.js';
-import * as G from './google/connect.js';
-import * as CX from './connectors/api.js';
+//         'state' - a browser coming back from another site (an OAuth callback): no token, protected by a single-use `state`; it may answer HTML
+//   authOpts: { allowPendingDeletion, freshAccount }  see server/auth/with-user.js
+// Every route that is not 'none' / 'state' / 'cron' needs a cross-user test: test/routes-isolation.test.mjs (the "real route table" test fails otherwise).
+import { runWithConfig } from './config/resolve.js';
+import * as API from './account/api.js';
+import { getState } from './account/state.js';
+import { comingSoon, comingSoonStatus, comingSoonPage } from './account/coming-soon.js';
+import * as ADMIN from './admin/api.js';
+import { dailyCron } from './admin/cron.js';
 import { authenticate } from './auth/with-user.js';
+import { strictConfig } from './auth/user-config.js';
 
 const bad = (status, error) => ({ status, body: { error } });
+const FRESH = { freshAccount: true };
 
 export const ROUTES = [
-  { method: 'GET', path: '/api/elvar/state', auth: 'none', handler: ({ req }) => A.setupState(req) },
-  { method: 'POST', path: '/api/elvar/setup/claim', auth: 'none', handler: ({ req, body }) => A.claim(req, body) },
-  { method: 'POST', path: '/api/elvar/auth/login', auth: 'none', handler: ({ req, body }) => A.login(req, body) },
-  { method: 'POST', path: '/api/elvar/auth/logout', auth: 'owner', handler: ({ auth }) => A.logout(auth) },
-  { method: 'POST', path: '/api/elvar/auth/password', auth: 'owner', handler: ({ req, auth, body }) => A.changeOwnerPassword(req, auth, body) },
-  { method: 'GET', path: '/api/elvar/devices', auth: 'owner', handler: ({ auth }) => A.listDevices(auth) },
-  { method: 'DELETE', path: '/api/elvar/devices/:id', auth: 'owner', handler: ({ auth, params }) => A.removeDevice(auth, params.id) },
-  { method: 'GET', path: '/api/elvar/config', auth: 'owner', handler: API.getConfigRoute },
-  { method: 'PATCH', path: '/api/elvar/config', auth: 'owner', handler: API.patchConfig },
-  { method: 'POST', path: '/api/elvar/config/test', auth: 'owner', handler: API.postConfigTest },
-  { method: 'GET', path: '/api/elvar/profile', auth: 'owner', handler: API.getProfile },
-  { method: 'PUT', path: '/api/elvar/profile', auth: 'owner', handler: API.putProfile },
-  { method: 'GET', path: '/api/elvar/session', auth: 'owner', handler: API.getSession },
-  { method: 'GET', path: '/api/elvar/connect/google/status', auth: 'owner', handler: G.connectStatus },
-  { method: 'POST', path: '/api/elvar/connect/google/start', auth: 'owner', handler: G.connectStart },
-  { method: 'POST', path: '/api/elvar/connect/google/claim', auth: 'owner', handler: G.connectClaim },
-  { method: 'POST', path: '/api/elvar/connect/google/disconnect', auth: 'owner', handler: G.connectDisconnect },
-  { method: 'GET', path: '/api/elvar/connect/google/callback', auth: 'state', handler: G.connectCallback },
-  { method: 'GET', path: '/api/elvar/connectors', auth: 'owner', handler: CX.listConnectors },
-  { method: 'POST', path: '/api/elvar/connectors', auth: 'owner', handler: CX.createConnector },
-  { method: 'GET', path: '/api/elvar/connectors/export', auth: 'owner', handler: CX.exportAll },
-  { method: 'POST', path: '/api/elvar/connectors/delete-all', auth: 'owner', handler: CX.deleteAll },
-  { method: 'GET', path: '/api/elvar/connectors/:id', auth: 'owner', handler: CX.getConnector },
-  { method: 'PATCH', path: '/api/elvar/connectors/:id', auth: 'owner', handler: CX.patchConnector },
-  { method: 'DELETE', path: '/api/elvar/connectors/:id', auth: 'owner', handler: CX.deleteConnector },
-  { method: 'POST', path: '/api/elvar/connectors/:id/sync', auth: 'owner', handler: CX.syncConnector },
-  { method: 'POST', path: '/api/elvar/connectors/:id/oauth/start', auth: 'owner', handler: CX.oauthStart },
-  { method: 'POST', path: '/api/elvar/connectors/:id/oauth/claim', auth: 'owner', handler: CX.oauthClaim },
-  { method: 'GET', path: '/api/elvar/oauth/callback', auth: 'state', handler: CX.oauthCallback },
+  { method: 'GET', path: '/api/elvar/state', auth: 'none', handler: getState },
+  // ---- the signed-in user's own data
+  { method: 'GET', path: '/api/elvar/session', auth: 'user', handler: API.getSession },
+  { method: 'GET', path: '/api/elvar/config', auth: 'user', handler: API.getConfigRoute },
+  { method: 'PATCH', path: '/api/elvar/config', auth: 'user', authOpts: FRESH, handler: API.patchConfig },
+  { method: 'POST', path: '/api/elvar/config/test', auth: 'user', handler: API.postConfigTest },
+  { method: 'GET', path: '/api/elvar/profile', auth: 'user', handler: API.getProfile },
+  { method: 'PUT', path: '/api/elvar/profile', auth: 'user', handler: API.putProfile },
+  { method: 'GET', path: '/api/elvar/devices', auth: 'user', handler: API.listDevices },
+  { method: 'POST', path: '/api/elvar/devices', auth: 'user', authOpts: FRESH, handler: API.createDevice },
+  { method: 'DELETE', path: '/api/elvar/devices/:id', auth: 'user', handler: API.removeDevice },
+  { method: 'GET', path: '/api/elvar/usage', auth: 'user', handler: API.getUsage },
+  // ---- the account itself (principle 7)
+  { method: 'GET', path: '/api/elvar/account/deletion', auth: 'user', authOpts: { allowPendingDeletion: true }, handler: API.getDeletion },
+  { method: 'GET', path: '/api/elvar/account/export', auth: 'user', authOpts: FRESH, handler: API.exportData },
+  { method: 'POST', path: '/api/elvar/account/delete', auth: 'user', authOpts: FRESH, handler: API.deleteAccount },
+  { method: 'POST', path: '/api/elvar/account/delete/cancel', auth: 'user', authOpts: { allowPendingDeletion: true, freshAccount: true }, handler: API.cancelDeletion },
+  // ---- admin: metadata only
+  { method: 'GET', path: '/api/elvar/admin/users', auth: 'admin', handler: ADMIN.listUsers },
+  { method: 'POST', path: '/api/elvar/admin/users/:id/suspend', auth: 'admin', authOpts: FRESH, handler: ADMIN.suspendUser },
+  { method: 'POST', path: '/api/elvar/admin/users/:id/unsuspend', auth: 'admin', authOpts: FRESH, handler: ADMIN.unsuspendUser },
+  // ---- cron
+  { method: 'GET', path: '/api/elvar/cron/daily', auth: 'cron', handler: dailyCron },
+  { method: 'POST', path: '/api/elvar/cron/daily', auth: 'cron', handler: dailyCron },
+  // ---- not on the platform yet (P3 to P5): one clear answer, no data
+  { method: 'GET', path: '/api/elvar/connect/google/status', auth: 'user', handler: comingSoonStatus('google', { state: 'coming_soon' }) },
+  { method: 'POST', path: '/api/elvar/connect/google/start', auth: 'user', handler: comingSoon('google') },
+  { method: 'POST', path: '/api/elvar/connect/google/claim', auth: 'user', handler: comingSoon('google') },
+  { method: 'POST', path: '/api/elvar/connect/google/disconnect', auth: 'user', handler: comingSoon('google') },
+  { method: 'GET', path: '/api/elvar/connect/google/callback', auth: 'state', handler: comingSoonPage('google') },
+  { method: 'GET', path: '/api/elvar/connectors', auth: 'user', handler: comingSoonStatus('connectors', { connectors: [], maxConnectors: 0 }) },
+  { method: 'POST', path: '/api/elvar/connectors', auth: 'user', handler: comingSoon('connectors') },
+  { method: 'GET', path: '/api/elvar/connectors/export', auth: 'user', handler: comingSoon('connectors') },
+  { method: 'POST', path: '/api/elvar/connectors/delete-all', auth: 'user', handler: comingSoon('connectors') },
+  { method: 'GET', path: '/api/elvar/connectors/:id', auth: 'user', handler: comingSoon('connectors') },
+  { method: 'PATCH', path: '/api/elvar/connectors/:id', auth: 'user', handler: comingSoon('connectors') },
+  { method: 'DELETE', path: '/api/elvar/connectors/:id', auth: 'user', handler: comingSoon('connectors') },
+  { method: 'POST', path: '/api/elvar/connectors/:id/sync', auth: 'user', handler: comingSoon('connectors') },
+  { method: 'POST', path: '/api/elvar/connectors/:id/oauth/start', auth: 'user', handler: comingSoon('connectors') },
+  { method: 'POST', path: '/api/elvar/connectors/:id/oauth/claim', auth: 'user', handler: comingSoon('connectors') },
+  { method: 'GET', path: '/api/elvar/oauth/callback', auth: 'state', handler: comingSoonPage('connectors') },
 ];
 
-// Paths that existed before the router (the callback URL is what the owner registers at Google, so it must not change). Vercel rewrites them
+// Paths that existed before the router (the Google callback URL is what a user registered at Google, so it must not change). Vercel rewrites them
 // into this router (vercel.json); the local server hands them over here too.
 export const ALIASES = {
   '/api/google/callback': '/api/elvar/connect/google/callback',
@@ -92,23 +108,20 @@ async function dispatch(compiled, req, { pathname, query = {}, body = {} }) {
   // Writes must be JSON: a cross-site <form> or a text/plain fetch cannot send that without a CORS preflight (which we never answer).
   if (['POST', 'PUT', 'PATCH'].includes(req.method) && !/^application\/json\b/i.test(String(req.headers['content-type'] || ''))) return bad(415, 'json_required');
   try {
-    if (hit.r.auth === 'owner') {
-      const g = await getConfig(req);
-      if (!g.ok) return bad(g.status, g.error);
-      return await runWithConfig(g.cfg, () => hit.r.handler({ req, body, query, params: hit.params, cfg: g.cfg, auth: g.auth }));
-    }
     if (isUserAuth(hit.r.auth)) {
       const a = await authenticate(hit.r.auth, req, hit.r.authOpts);
       if (!a.ok) return bad(a.status, a.error);
-      const cfg = a.ctx.cfg;   // strict: a user's (or cron's) request never reads the owner-mode environment
+      if (a.ctx.loadConfig) await a.ctx.loadConfig();   // the user's own settings, secrets and profile
+      const cfg = a.ctx.cfg;                            // strict: a user's (or cron's) request never reads the owner-mode environment
       return await runWithConfig(cfg, () => hit.r.handler({ req, body, query, params: hit.params, cfg, auth: { mode: a.ctx.kind }, user: a.ctx }));
     }
     if (hit.r.auth !== 'none' && hit.r.auth !== 'state') return bad(500, 'bad_auth_kind');   // a typo in a route's auth must never make it public
-    const cfg = envConfig({ mode: 'none' });
+    const cfg = strictConfig({ mode: 'none' });
     return await runWithConfig(cfg, () => hit.r.handler({ req, body, query, params: hit.params, cfg, auth: { mode: 'none' } }));
   } catch (e) {
+    if (e?.code === 'kek_missing' || e?.code === 'auth_unconfigured') { console.error('[elvar] platform is not configured:', e.code); return bad(503, 'platform_unconfigured'); }
     console.error('[elvar]', e?.code || e?.message || e);
-    if (e?.status === 502 || e?.status === 503) return bad(e.status, 'store_unavailable');
+    if (e?.status === 502 || e?.status === 503) return bad(e.status, e.code === 'db_unavailable' ? 'db_unavailable' : 'store_unavailable');
     return bad(e?.status && e.status < 500 ? e.status : 500, e?.status && e.status < 500 ? (e.code || 'error') : 'internal_error');
   }
 }

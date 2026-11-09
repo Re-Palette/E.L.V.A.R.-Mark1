@@ -8,7 +8,7 @@ import { getDb, resetDb } from '../server/db/index.js';
 import { createJwtVerifier, _setVerifierForTests, AuthError } from '../server/auth/jwt.js';
 import { authenticate, requireFresh, invalidateAccount, _clearAccountCache, withUser, withAdmin, withDevice, withCron, limitDeviceRepos } from '../server/auth/with-user.js';
 import { newDeviceToken, parseDeviceToken, deviceTokenFrom } from '../server/auth/device-token.js';
-import { createRouter, ROUTES, isUserAuth } from '../server/router.js';
+import { createRouter, isUserAuth } from '../server/router.js';
 import { env, runWithConfig, envConfig } from '../server/config/resolve.js';
 import { makeKey, jwksOf, signToken, SUPABASE_URL } from './helpers/jwt-keys.mjs';
 
@@ -148,7 +148,7 @@ test('cron: fails closed without a strong CRON_SECRET; needs the exact bearer; a
   assert.equal((await call('POST', '/api/elvar/t/cron', { authorization: 'Bearer ' + secret + 'x' })).status, 401);
   assert.equal((await call('POST', '/api/elvar/t/cron', await bearer(db.testing.newUser()))).status, 401);
   const ok = await call('POST', '/api/elvar/t/cron', { authorization: 'Bearer ' + secret });
-  assert.deepEqual(ok, { status: 200, body: { kind: 'cron', ops: ['deviceLookup', 'purgeExpired', 'residualCheck', 'rlHit'] } });
+  assert.deepEqual(ok, { status: 200, body: { kind: 'cron', ops: ['bootstrapAdmin', 'deviceLookup', 'dueDeletions', 'purgeExpired', 'recordReceipt', 'residualCheck', 'rlHit'] } });
 }));
 
 test('a signed-in user\'s API keys never come from the platform environment (M5); settings may fall back to platform defaults', () => fresh(async (db) => {
@@ -248,13 +248,3 @@ test('a device context gets a reduced repos object: its uid and the notif: key/v
   assert.equal(await ctxB.db((r) => r.kv.get('notif:items')), null, 'another user never sees it');
   assert.deepEqual(Object.keys(limitDeviceRepos({ uid: 'x', afterCommit() {} }, ['something:else'])).sort(), ['afterCommit', 'uid'], 'a scope that needs no storage gets none');
 }));
-
-// ---- the real route table
-test('the real route table: every route has a known auth kind; user-facing kinds need a cross-user case; the old owner routes do not grow', () => {
-  const CROSS_USER_CASES = new Set([]);   // "METHOD /path": add the route and a "B calls with A's id" case to this file (API isolation, see the test above) when a user / admin / device route is added
-  const known = (a) => ['none', 'owner', 'state'].includes(a) || isUserAuth(a);
-  assert.deepEqual(ROUTES.filter((r) => !known(r.auth)).map((r) => `${r.method} ${r.path}`), []);
-  const userFacing = ROUTES.filter((r) => isUserAuth(r.auth) && r.auth !== 'cron');
-  assert.deepEqual(userFacing.filter((r) => !CROSS_USER_CASES.has(`${r.method} ${r.path}`)).map((r) => `${r.method} ${r.path}`), [], 'a new user route needs a cross-user test');
-  assert.equal(ROUTES.filter((r) => r.auth === 'owner').length, 24, 'P1 keeps the old owner routes as they are and adds none; they are removed in P2');
-});

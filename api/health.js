@@ -1,8 +1,5 @@
-// Vercel Function: GET /api/health
+// Vercel Function: GET /api/health. Public: platform liveness only (nothing about any user).
 import { sendJson } from '../server/http.js';
-import { withConfig } from '../server/config/with-owner.js';
-import { readConfig, handleHealth } from '../server/live-token-core.js';
+import { handleHealth } from '../server/live-token-core.js';
 
-export default withConfig((req, res) => {
-  sendJson(res, handleHealth(readConfig()));
-});
+export default function handler(req, res) { sendJson(res, handleHealth()); }

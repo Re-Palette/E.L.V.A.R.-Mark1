@@ -85,35 +85,6 @@ test('notification crypto: round trip; wrong key or tampering gives null; the Ko
   assert.match(kt, /startsWith\("https:\/\/"\)/, 'never uploads over plain http');
 });
 
-test('notification relay (server): validates items, stores ciphertext only, trims to 3 days, pulls, clears; needs Redis config', async () => {
-  const { handleNotif, pushItems, pullSince, validItem, syncConfigured } = await import('../server/notif-sync.js');
-  const keep = { s: process.env.ELVAR_STORE, v: process.env.VERCEL, u: process.env.UPSTASH_REDIS_REST_URL, t: process.env.UPSTASH_REDIS_REST_TOKEN, a: process.env.KV_REST_API_URL, b: process.env.KV_REST_API_TOKEN }, real = globalThis.fetch;
-  try {
-    // The test store is the memory store; here we exercise the Vercel case (no storage at all), then Upstash.
-    for (const k of ['ELVAR_STORE', 'UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN', 'KV_REST_API_URL', 'KV_REST_API_TOKEN']) delete process.env[k];
-    process.env.VERCEL = '1';
-    assert.equal(syncConfigured(), false); assert.equal((await handleNotif({ method: 'GET', query: {} })).status, 503); assert.deepEqual((await handleNotif({ method: 'GET', query: { status: 1 } })).body, { configured: false });
-    process.env.UPSTASH_REDIS_REST_URL = 'https://x.upstash.io/'; process.env.UPSTASH_REDIS_REST_TOKEN = 'rt';
-    const sent = []; let stored = [];
-    globalThis.fetch = async (u, o) => { const cmds = JSON.parse(o.body); sent.push({ u: String(u), auth: o.headers.authorization, cmds }); return { ok: true, status: 200, json: async () => cmds.map((c) => ({ result: c[0] === 'ZRANGEBYSCORE' ? stored : c[0] === 'ZCARD' ? 3 : 1 })) }; };
-    const good = { id: 'n1-abcd1234', at: 1_700_000_000_000, iv: 'AAAAAAAAAAAAAAAA', ct: 'QUJDREVGR0hJSktMTU5PUA==' };
-    assert.ok(validItem(good)); for (const bad of [{ ...good, id: 'a b' }, { ...good, at: 'x' }, { ...good, iv: 'short' }, { ...good, ct: '<script>' }, { ...good, ct: 'A'.repeat(7000) }, null]) assert.equal(!!validItem(bad), false);
-    const r = await pushItems([good, { ...good, id: 'bad id' }], 1_700_000_100_000);
-    assert.equal(r.stored, 1); const c = sent[0].cmds;
-    assert.equal(sent[0].u, 'https://x.upstash.io/pipeline'); assert.equal(sent[0].auth, 'Bearer rt');
-    assert.deepEqual(c[0].slice(0, 3), ['ZREMRANGEBYSCORE', 'elvar:notif:v1', '-inf']); assert.equal(Number(c[0][3]), 1_700_000_100_000 - 3 * 864e5, 'older than 3 days is dropped on every push');
-    assert.equal(c[1][0], 'ZADD'); assert.ok(c.some((x) => x[0] === 'EXPIRE' && Number(x[2]) > 3 * 86400)); assert.ok(c.some((x) => x[0] === 'ZREMRANGEBYRANK'));
-    assert.ok(!JSON.stringify(c).includes('田中'), 'only ciphertext and a timestamp are stored');
-    stored = [JSON.stringify(good), '{broken', JSON.stringify({ ...good, id: 'bad id' })];
-    assert.deepEqual((await pullSince(1_700_000_000_000)).items.map((x) => x.id), ['n1-abcd1234'], 'broken / invalid members are skipped');
-    assert.equal(sent[1].cmds[1][0], 'ZRANGEBYSCORE'); assert.equal((await handleNotif({ method: 'POST', body: { action: 'clear' } })).body.cleared, true); assert.equal(sent.at(-1).cmds[0][0], 'DEL');
-    assert.deepEqual((await handleNotif({ method: 'GET', query: { status: 1 } })).body, { configured: true, reachable: true, stored: 3, keepDays: 3 });
-    assert.equal((await handleNotif({ method: 'PUT' })).status, 405);
-    globalThis.fetch = async () => { throw new TypeError('fetch failed', { cause: { code: 'ENOTFOUND' } }); };
-    const down = await handleNotif({ method: 'GET', query: {} }); assert.equal(down.status, 502); assert.match(down.body.error, /ENOTFOUND/);
-  } finally { globalThis.fetch = real; for (const [k, v] of [['ELVAR_STORE', keep.s], ['VERCEL', keep.v], ['UPSTASH_REDIS_REST_URL', keep.u], ['UPSTASH_REDIS_REST_TOKEN', keep.t], ['KV_REST_API_URL', keep.a], ['KV_REST_API_TOKEN', keep.b]]) v === undefined ? delete process.env[k] : (process.env[k] = v); }
-});
-
 test('notifications: the tool is offered to the voice model; the Android parts exist (listener, bridge, manifest entry)', async () => {
   assert.ok(declarations().some((d) => d.name === 'notifications_read'));
   const fs = await import('node:fs');

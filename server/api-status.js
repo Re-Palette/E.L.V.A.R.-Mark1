@@ -3,7 +3,6 @@
 import { readConfig } from './live-token-core.js';
 import { googleStatus } from './google/index.js';
 import { brainStatus, brainConfigured } from './brain.js';
-import { syncStatus } from './notif-sync.js';
 import { buildConfigured } from './build.js';
 import { sarashinaConfigured, sarashinaEnabled, sarashinaChat, sarashinaKeyInfo, sarashinaBaseUrl } from './sarashina.js';
 import { env } from './config/resolve.js';
@@ -88,13 +87,6 @@ export async function apiConnections({ deep = false } = {}) {
       add('github', 'GitHub（第二の脳）', b.canPush === false ? 'warn' : 'ok', b.canPush === false ? '読めますが、書き込み権限がありません（記録できません）' : `接続できています（ノート ${b.notes} 件）`, { fix: b.canPush === false ? 'トークンの Contents を Read and write に' : undefined });
     } catch (e) { add('github', 'GitHub（第二の脳）', 'fail', `接続できません: ${why(e)}`, { fix: 'トークンとリポジトリ名を確認' }); }
   })());
-  jobs.push((async () => {
-    try {
-      const s = await withTimeout(syncStatus(), 7000);
-      if (!s.configured) return add('upstash', 'Upstash Redis（通知の同期）', 'off', '未設定です（任意）');
-      add('upstash', 'Upstash Redis（通知の同期）', s.reachable ? 'ok' : 'fail', s.reachable ? `接続できています（保存中 ${s.stored} 件）` : `接続できません: ${s.error || ''}`);
-    } catch (e) { add('upstash', 'Upstash Redis（通知の同期）', 'warn', `確認できませんでした: ${why(e)}`, { verified: false }); }
-  })());
   jobs.push((async () => {   // build requests: repo reachable + a Claude Code workflow present?
     const label = 'GitHub（Claude Codeへの製作依頼）';
     if (!buildConfigured()) return add('build', label, 'off', '未設定です（任意）', { fix: 'BUILD_REPO と BUILD_GITHUB_TOKEN を設定（docs/BUILD_REQUESTS.md）' });
@@ -110,10 +102,11 @@ export async function apiConnections({ deep = false } = {}) {
     } catch (e) { add('build', label, 'fail', `接続できません: ${why(e)}`); }
   })());
   await Promise.all(jobs);
+  add('notifsync', '通知の同期（クラウド）', 'off', '準備中です（まもなく使えるようになります）', { verified: true });
   // The text AIs cover for each other: say who takes over when one is rejected / limited.
   const AI = { 'api-gemini': 'Gemini', 'api-groq': 'Groq', 'api-sarashina': 'Sarashina' };
   const working = items.filter((i) => AI[i.id] && i.status === 'ok').map((i) => AI[i.id]);
   for (const i of items) if (AI[i.id] && (i.status === 'fail' || i.status === 'warn')) i.detail += working.length ? `。→ 文章の処理は、${working.join('・')}が代わりに行います（自動）` : '。→ 代わりに使えるAPIがありません';
-  const order = ['gemini', 'groq', 'sarashina', 'exa', 'newsdata', 'weather', 'google', 'github', 'build', 'upstash'];
+  const order = ['gemini', 'groq', 'sarashina', 'exa', 'newsdata', 'weather', 'google', 'github', 'build', 'notifsync'];
   return items.sort((a, b) => order.indexOf(a.id.slice(4)) - order.indexOf(b.id.slice(4)));
 }

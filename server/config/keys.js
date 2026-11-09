@@ -18,7 +18,7 @@ export const KEYS = [
   secret('BRAIN_GITHUB_TOKEN', 'brain', 'Second-brain GitHub token'),
   secret('BUILD_GITHUB_TOKEN', 'build', 'Build GitHub token'),
   secret('GOOGLE_CLIENT_SECRET', 'google', 'Google OAuth client secret'),
-  secret('GOOGLE_REFRESH_TOKEN', 'google', 'Google refresh token (env mode only; the app keeps its own in the vault)'),
+  secret('GOOGLE_REFRESH_TOKEN', 'google', 'Google refresh token (self-hosted scripts only; never set from the app)'),
 
   setting('GEMINI_LIVE_MODEL', 'gemini', 'Live model', 'gemini-3.8-live', { platform: true }),
   setting('GEMINI_LIVE_MODEL_FALLBACK', 'gemini', 'Live fallback model', '', { platform: true }),
@@ -58,14 +58,8 @@ export const KEYS = [
   setting('SARASHINA_FAST_MODEL', 'sarashina', 'Sarashina fast model', 'sarashina3-nano', { platform: true }),
   setting('SARASHINA_AGENT_MODEL', 'sarashina', 'Sarashina sub-agent model', 'sarashina3-nano', { platform: true }),
 
-  infra('UPSTASH_REDIS_REST_URL', 'store', 'Upstash REST URL'),
-  infra('UPSTASH_REDIS_REST_TOKEN', 'store', 'Upstash REST token'),
-  infra('KV_REST_API_URL', 'store', 'Vercel KV REST URL'),
-  infra('KV_REST_API_TOKEN', 'store', 'Vercel KV REST token'),
   infra('PORT', 'server', 'Local server port'),
-  infra('ELVAR_DATA_DIR', 'store', 'Folder of the local store file (default ~/.elvar)'),
-  infra('ELVAR_STORE', 'store', 'Force a store: memory (tests)'),
-  infra('ELVAR_SETUP_CODE', 'auth', 'Fixed first-run setup code (advanced)'),
+  infra('ELVAR_STORE', 'store', 'Force the (test) key/value store: memory'),
   infra('ELVAR_TRUST_PROXY', 'auth', 'Header your reverse proxy sets with the client address (off Vercel), e.g. x-forwarded-for'),
   infra('ELVAR_DEV_URL', 'server', 'Set by npm run dev: the Vite URL for the setup link'),
   infra('HOST', 'server', 'Address the local server listens on (default 127.0.0.1; 0.0.0.0 for the LAN)'),
@@ -73,8 +67,6 @@ export const KEYS = [
   infra('SARASHINA_BASE_URL', 'sarashina', 'Sarashina base URL (env only; default https://api.sarashina.ai/v1)', { platform: true }),
   infra('VERCEL', 'server', 'Set by Vercel', { platform: true }),
   infra('ELVAR_PUBLIC_ORIGIN', 'server', 'The app\'s public address (https://...): the base of the Google redirect URI. Needed off Vercel when the app is not opened as localhost', { platform: true }),
-  infra('ELVAR_ACCESS_TOKEN', 'auth', 'Shared access token (env mode)'),
-  infra('ELVAR_PROFILE', 'profile', 'Profile JSON (env mode)'),
   infra('GOOGLE_API_MOCK_ORIGIN', 'test', 'Test only: mock Google origin'),
   // Multi-user platform (docs/ELVAR_MULTIUSER.md). Platform-level values only: every user's own keys live encrypted in the database.
   infra('ELVAR_DB', 'platform', 'Force the database layer: memory (tests)'),
@@ -86,6 +78,12 @@ export const KEYS = [
   infra('SUPABASE_SECRET_KEY', 'platform', 'Supabase service-role key (read only by server/db/service.js)'),
   infra('CRON_SECRET', 'platform', 'Bearer secret Vercel Cron sends to /api/elvar/cron/*'),
   infra('ELVAR_TEST_MODE', 'test', 'Test only: allows test-minted user identities'),
+  infra('ELVAR_SIGNUP', 'platform', 'Sign-up policy shown to the app: open | invite | closed (enforced by the Auth hook, see supabase/migrations/..._signup_admin.sql)'),
+  infra('ELVAR_TURNSTILE_SITE_KEY', 'platform', 'Cloudflare Turnstile site key (public). Set the matching secret in the Supabase Auth CAPTCHA settings'),
+  infra('ELVAR_BOOTSTRAP_ADMIN_EMAIL', 'platform', 'The e-mail whose confirmed account becomes the first admin (granted by cron/daily)'),
+  infra('NODE_ENV', 'server', 'Set to production by the host: the dev login is refused then'),
+  infra('ELVAR_DEV_CAPTCHA', 'test', 'Local development only: make the fake Auth issuer require the (fake) captcha'),
+  infra('ELVAR_DEV_AUTH', 'test', 'Local development only: serve the fake Auth issuer (needs ELVAR_DB=memory; refused on Vercel / in production)'),
 ];
 
 // Families of keys with a variable part (AGENT_LLM_<AGENT>, ROUTE_<CAP>, STD_*_MODEL ...) are settings too.

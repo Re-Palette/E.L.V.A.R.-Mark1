@@ -4,6 +4,8 @@ import { buildRequest, buildStatus, issueBody, REQUEST_HEAD, buildConfigured } f
 import { diffBuilds, noteForBuild } from '../web/src/builds.js';
 import { declarations, TOOL_MAP } from '../server/google/tools.js';
 import { executeGoogle } from '../server/google/index.js';
+import { enterTestUser } from './helpers/user-ctx.mjs';
+enterTestUser();   // a signed-in test user: approval tickets are keyed to the user and consumed in their own database
 
 const BRIEF = '# 翻訳アプリ 企画書\n## 目的\n海外の人との会話をその場で翻訳する。'.padEnd(200, '。');
 const withEnv = async (fn) => { const keep = { ...process.env }; Object.assign(process.env, { BUILD_REPO: 'me/build', BUILD_GITHUB_TOKEN: 'ghp_b', BRAIN_GITHUB_TOKEN: 'ghp_x', BRAIN_REPO: 'me/vault' }); delete process.env.BRAIN_DIR; delete process.env.SARASHINA_API_KEY; delete process.env.GEMINI_API_KEY; const real = globalThis.fetch; try { return await fn(); } finally { globalThis.fetch = real; for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]; Object.assign(process.env, keep); } };

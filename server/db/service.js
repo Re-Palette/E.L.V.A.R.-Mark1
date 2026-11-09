@@ -17,7 +17,11 @@ export function serviceConfig(env = process.env) {
   return { url, key };
 }
 
-async function authAdmin(method, path, body, { env = process.env, fetchImpl = globalThis.fetch } = {}) {
+let fetchOverride = null;
+/** Tests: the fetch every service call uses (null restores the global one). */
+export const _setServiceFetch = (f) => { fetchOverride = f; };
+
+async function authAdmin(method, path, body, { env = process.env, fetchImpl = fetchOverride || globalThis.fetch } = {}) {
   const { url, key } = serviceConfig(env);
   let res;
   try {

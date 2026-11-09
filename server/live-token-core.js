@@ -7,8 +7,9 @@ import { promptVars } from './profile/vars.js';
 import { currentVars, currentProfile } from './profile/index.js';
 import { cfgEnv, currentConfig } from './config/resolve.js';
 import { listConnectorDeclarations } from './connectors/index.js';
-import { getStore } from './store/index.js';
+import { recordUsage } from './usage.js';
 export { sendHtml, sendJson } from './http.js';
+import { VERSION } from './version.js';
 import { brainProfileSummary, profileBlock, brainCatalog, catalogBlock } from './brain.js';
 
 // Changes only when the voice or the greeting wording changes (NOT with every persona / model edit: the saved greeting must survive redeploys) -> clients drop their cached greeting audio.
@@ -39,20 +40,17 @@ export function readConfig(env = cfgEnv) {
     startSens: ['high', 'low'].includes(String(env.GEMINI_LIVE_START_SENSITIVITY || '').toLowerCase()) ? String(env.GEMINI_LIVE_START_SENSITIVITY).toUpperCase() : '',   // default: the server's own setting (LOW made it miss the owner's quiet speech)
     // Languages the speech recogniser may choose from (BCP-47). Default Japanese + English only: stops it guessing Korean / Chinese / etc. for unclear audio. '' = automatic.
     inputLangs: (env.GEMINI_LIVE_INPUT_LANGS === undefined ? currentProfile().locale.inputLangs.join(',') : env.GEMINI_LIVE_INPUT_LANGS).split(',').map((x) => x.trim()).filter(Boolean),
-    accessToken: env.ELVAR_ACCESS_TOKEN || '',
     onVercel: Boolean(env.VERCEL),
   };
 }
 
-// Free-tier protection: at most 30 tokens an hour. Counted in the store (the same on every serverless instance); per process when there is no store.
+// Abuse protection: at most 30 session tokens an hour PER USER (counted in the database, the same on every serverless instance). Outside a request
+// (scripts) there is no user and a per-process counter is used.
 const MAX_TOKENS_PER_HOUR = 30;
 const mintLog = [];
 async function mintAllowed(now) {
-  let store = null; try { store = getStore(); } catch { /* fall back to the process counter */ }
-  if (store) {
-    const hour = new Date(now).toISOString().slice(0, 13).replace(/\D/g, '');
-    try { return (await store.incr(`elvar:v1:rl:mint:${hour}`, 3700)) <= MAX_TOKENS_PER_HOUR; } catch { /* store trouble: fall back */ }
-  }
+  const c = currentConfig();
+  if (typeof c.hit === 'function') return c.hit('mint', 3600, MAX_TOKENS_PER_HOUR);
   while (mintLog.length && now - mintLog[0] > 3600_000) mintLog.shift();
   if (mintLog.length >= MAX_TOKENS_PER_HOUR) return false;
   mintLog.push(now); return true;
@@ -89,6 +87,7 @@ export async function mintLiveToken(cfg, { useFallback = false, plain = false } 
   if (useFallback) {   // the client hit the daily Live limit on the main model: use the other model (its own limit, if the limit is per model)
     if (!cfg.fallbackModel || cfg.fallbackModel === cfg.model) throw Object.assign(new Error('no_fallback'), { status: 404 });
     token = await create(cfg.fallbackModel);
+    await recordUsage('gemini', 'live_sessions', 1);
     return { token: token.name, model: cfg.fallbackModel, cacheKey: cacheKeyFor({ ...cfg, model: cfg.fallbackModel }), fallback: true };
   }
   try { token = await create(model); }
@@ -98,6 +97,7 @@ export async function mintLiveToken(cfg, { useFallback = false, plain = false } 
     console.warn('[live-token] main model failed, trying the fallback model:', e?.message || e);
     token = await create(cfg.fallbackModel); model = cfg.fallbackModel; fellBack = true;
   }
+  await recordUsage('gemini', 'live_sessions', 1);
   return { token: token.name, model, cacheKey: cacheKeyFor({ ...cfg, model }), ...(fellBack ? { fallback: true } : {}) };
 }
 
@@ -105,6 +105,7 @@ export async function mintLiveToken(cfg, { useFallback = false, plain = false } 
 // The caller has already been authenticated (withOwner / the router): this only checks the method and the key.
 export async function handleLiveToken(req, cfg) {
   if (req.method !== 'POST') return { status: 405, body: { error: 'method_not_allowed' } };
+  // the session token is minted with the USER'S OWN Gemini key (cfg.apiKey comes from their app.user_secrets); the platform has no key to fall back to
   if (!cfg.apiKey) return { status: 503, body: { error: 'setup_required', missing: ['GEMINI_API_KEY'] } };
   const useFallback = /[?&]fallback=1\b/.test(String(req.url || '')), plain = /[?&]plain=1\b/.test(String(req.url || ''));
   try {
@@ -116,6 +117,7 @@ export async function handleLiveToken(req, cfg) {
   }
 }
 
-export function handleHealth(cfg) {
-  return { status: 200, body: { ok: true, geminiConfigured: Boolean(cfg.apiKey), accessTokenConfigured: Boolean(cfg.accessToken), model: cfg.model, fallbackModel: Boolean(cfg.fallbackModel) } };
+/** Platform health: nothing about any user, nothing about any key (the platform has none to give). */
+export function handleHealth() {
+  return { status: 200, body: { ok: true, version: VERSION } };
 }

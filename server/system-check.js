@@ -5,7 +5,6 @@ import { googleStatus } from './google/index.js';
 import { brainConfigured, brainStatus, brainProfileSummary } from './brain.js';
 import { pickProvider, routeFor } from './agents/provider.js';
 import { AGENTS } from './agents/registry.js';
-import { syncStatus } from './notif-sync.js';
 import { CAPABILITIES, routeOrder } from './routing.js';
 import { chat as stdChat, tts as stdTts } from './chat-api.js';
 import { sarashinaConfigured, sarashinaChat } from './sarashina.js';
@@ -20,10 +19,8 @@ export async function runServerChecks({ deep = false } = {}) {
   const cfg = readConfig(), items = [], t0 = Date.now();
   const add = (id, label, status, detail, fix) => items.push({ id, group: 'server', label, status, detail, ...(fix ? { fix } : {}) });
 
-  const cc = currentConfig(), mode = cc.auth?.mode === 'vault' ? 'vault' : cfg.accessToken ? 'env' : 'local';
-  add('access', 'オーナー認証', mode === 'vault' ? 'ok' : mode === 'env' ? 'ok' : 'warn',
-    mode === 'vault' ? 'オーナーのパスワードと端末トークンで保護されています' : mode === 'env' ? '環境変数のアクセストークンで保護されています（設定はアプリから変更できません）' : 'まだセットアップされていません。この端末からだけ使える状態です',
-    mode === 'vault' || mode === 'env' ? undefined : 'アプリを開いてセットアップを完了する');
+  const cc = currentConfig(), signedIn = cc.auth?.mode === 'user';
+  add('access', 'ログイン', signedIn ? 'ok' : 'warn', signedIn ? 'あなたのアカウントで保護されています（キー・設定・記憶はあなただけのものです）' : 'ログインしていません', signedIn ? undefined : 'ログインする');
   // Where each configured value comes from (app = saved in the app, env = environment variable), and what is still missing.
   { const st = cc.secretStatus(), set = Object.entries(st).filter(([, v]) => v.set);
     const label = (n) => (keyInfo(n)?.label || n);
@@ -105,14 +102,7 @@ export async function runServerChecks({ deep = false } = {}) {
     } catch (e) { add('brain', '第二の脳（GitHub）', e.status === 401 || e.status === 403 || e.status === 404 ? 'fail' : 'warn', `${e.message || why(e)}`, e.status === 404 ? 'BRAIN_REPO の綴りと、トークンの対象リポジトリを確認' : e.status === 401 ? 'BRAIN_GITHUB_TOKEN を作り直して設定' : ''); }
   })());
   // Sub-agents
-  jobs.push((async () => {   // relay for phone notifications -> PC
-    if (!cfg.accessToken) return add('notifsync', '通知の同期（スマホ→PC）', 'off', 'アクセストークンが未設定のため使えません（暗号化の鍵に使います）', 'ELVAR_ACCESS_TOKEN を設定');
-    try {
-      const st = await withTimeout(syncStatus(), 8000);
-      if (!st.configured) return add('notifsync', '通知の同期（スマホ→PC）', 'off', 'Redis（Upstash）が未設定です。スマホの通知をPCで聞きたい場合に必要です', 'UPSTASH_REDIS_REST_URL と UPSTASH_REDIS_REST_TOKEN を設定');
-      add('notifsync', '通知の同期（スマホ→PC）', st.reachable ? 'ok' : 'warn', st.reachable ? `Redisに接続できました（暗号文を ${st.stored} 件保管中・3日で自動削除）` : `Redisに接続できません: ${st.error || ''}`);
-    } catch (e) { add('notifsync', '通知の同期（スマホ→PC）', 'warn', `確認できませんでした: ${why(e)}`); }
-  })());
+  add('notifsync', '通知の同期（スマホ→PC）', 'off', '準備中です（まもなく使えるようになります）');   // the relay moves to the platform database in P4
   { const prov = pickProvider(), ready = Object.values(AGENTS).filter((a) => !a.available || a.available()).map((a) => a.label), notReady = Object.values(AGENTS).filter((a) => a.available && !a.available()).map((a) => a.label);
     const routes = Object.entries(AGENTS).filter(([, a]) => !a.available || a.available()).map(([id, a]) => `${a.label}=${routeFor(id).join('→')}`).join('、');
     add('agents', 'サブエージェント', prov && ready.length ? 'ok' : 'off', prov ? `担当ごとのAI（失敗時は右へ切り替え）: ${routes || 'なし'}。使える担当: ${ready.join('、') || 'なし'}${notReady.length ? `（連携が未設定で使えない担当: ${notReady.join('、')}）` : ''}` : 'AIのキーがありません（GROQ_API_KEY か GEMINI_API_KEY）', prov ? '' : 'どちらかのキーを設定'); }

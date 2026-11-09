@@ -1,11 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { MemoryStore } from '../server/store/memory.js';
-import { FileStore } from '../server/store/file.js';
-import { UpstashStore } from '../server/store/upstash.js';
 import { getStore, storeKind, resetStore } from '../server/store/index.js';
 
 async function contract(s) {
@@ -32,83 +28,20 @@ async function contract(s) {
 
 test('MemoryStore satisfies the store contract', async () => { await contract(new MemoryStore()); });
 
-test('TTL: an expired key reads as absent (memory and file), and incr keeps the first TTL', async () => {
+test('TTL: an expired key reads as absent, and incr keeps the first TTL', async () => {
   const s = new MemoryStore();
   await s.set('t', 1, { ttlSec: 1 }); s.data.t.x = Date.now() - 1; assert.equal(await s.get('t'), null);
   await s.incr('c', 1); s.data.c.x = Date.now() - 1; assert.equal(await s.incr('c', 1), 1, 'window restarts after expiry');
 });
 
-test('FileStore: contract, 0600 file, survives a restart, no temp files left, expired keys are dropped', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'elvar-store-'));
-  try {
-    const s = new FileStore(dir); await contract(s);
-    await s.set('keep', { v: 1 }); await s.set('gone', 1, { ttlSec: 1 });
-    const mode = fs.statSync(path.join(dir, 'store.json')).mode & 0o777;
-    if (process.platform !== 'win32') assert.equal(mode, 0o600);
-    assert.deepEqual(fs.readdirSync(dir), ['store.json']);
-    const s2 = new FileStore(dir); assert.deepEqual(await s2.get('keep'), { v: 1 });
-    s2.data.gone.x = Date.now() - 1; assert.equal(await s2.get('gone'), null);
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
-});
-
-test('FileStore tolerates a corrupt file (starts empty)', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'elvar-store-'));
-  try { fs.writeFileSync(path.join(dir, 'store.json'), '{not json'); assert.equal(await new FileStore(dir).get('x'), null); }
-  finally { fs.rmSync(dir, { recursive: true, force: true }); }
-});
-
-test('UpstashStore: sends the right REST commands (auth header, SET EX NX, Lua for incr/cas) and surfaces errors', async () => {
-  const real = globalThis.fetch, sent = [], kv = new Map();
-  globalThis.fetch = async (u, o) => {
-    const cmds = JSON.parse(o.body); sent.push({ u: String(u), auth: o.headers.authorization, cmds });
-    return { ok: true, status: 200, json: async () => cmds.map((c) => {
-      const [op, key, ...a] = c;
-      if (op === 'GET') return { result: kv.get(key) ?? null };
-      if (op === 'SET') { if (a.includes('NX') && kv.has(key)) return { result: null }; kv.set(key, a[0]); return { result: 'OK' }; }
-      if (op === 'DEL') return { result: kv.delete(c[1]) ? 1 : 0 };
-      if (op === 'EVAL') { const [, k, ...r] = c; if (String(c[1]).includes('cjson')) { const cur = kv.get(c[3]); const v = cur ? JSON.parse(cur).ver || 0 : 0; if (v === Number(c[4])) { kv.set(c[3], c[5]); return { result: 1 }; } return { result: 0 }; } void k; void r; const n = (Number(kv.get(c[3])) || 0) + Number(c[5] ?? 1); kv.set(c[3], String(n)); return { result: n }; }
-      return { result: null };
-    }) };
-  };
-  try {
-    const s = new UpstashStore('https://x.upstash.io/', 'tok');
-    assert.equal(await s.set('k', { a: 1 }, { ttlSec: 30, nx: true }), true);
-    assert.deepEqual(sent[0].cmds[0], ['SET', 'k', '{"a":1}', 'EX', '30', 'NX']); assert.equal(sent[0].u, 'https://x.upstash.io/pipeline'); assert.equal(sent[0].auth, 'Bearer tok');
-    assert.equal(await s.set('k', { a: 2 }, { nx: true }), false);
-    assert.deepEqual(await s.get('k'), { a: 1 });
-    assert.equal(await s.incr('n', 60), 1); assert.equal(await s.incr('n', 60), 2);
-    assert.equal(await s.cas('r', 0, { ver: 1 }), true); assert.equal(await s.cas('r', 0, { ver: 1 }), false);
-    globalThis.fetch = async () => { throw new TypeError('fetch failed', { cause: { code: 'ENOTFOUND' } }); };
-    await assert.rejects(() => s.get('k'), (e) => e.status === 502 && /ENOTFOUND/.test(e.message));
-  } finally { globalThis.fetch = real; }
-});
-
-test('store selection: memory > upstash > file > none', () => {
-  assert.equal(storeKind({ ELVAR_STORE: 'memory', UPSTASH_REDIS_REST_URL: 'u', UPSTASH_REDIS_REST_TOKEN: 't' }), 'memory');
-  assert.equal(storeKind({ UPSTASH_REDIS_REST_URL: 'u', UPSTASH_REDIS_REST_TOKEN: 't' }), 'upstash');
-  assert.equal(storeKind({ KV_REST_API_URL: 'u', KV_REST_API_TOKEN: 't' }), 'upstash');
-  assert.equal(storeKind({}), 'file');
-  assert.equal(storeKind({ VERCEL: '1' }), 'none');
-  assert.equal(getStore({ VERCEL: '1' }), null);
-  resetStore();
-});
-
-test('FileStore hardening: a corrupt file is moved aside (not silently overwritten), a symlink is refused, only ENOENT means first run', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'elvar-store-'));
-  try {
-    fs.writeFileSync(path.join(dir, 'store.json'), '{corrupt');
-    const s = new FileStore(dir); await s.set('a', 1);
-    const files = fs.readdirSync(dir).sort();
-    assert.ok(files.some((f) => /^store\.json\.corrupt-\d+$/.test(f)), 'kept for inspection'); assert.ok(files.includes('store.json'));
-    assert.ok(!files.some((f) => f.endsWith('.tmp')), 'no temp file left');
-    const target = path.join(dir, 'elsewhere.json'); fs.writeFileSync(target, '{}');
-    const d2 = path.join(dir, 'd2'); fs.mkdirSync(d2); fs.symlinkSync(target, path.join(d2, 'store.json'));
-    assert.throws(() => new FileStore(d2), /not a regular file/);
-    const d3 = path.join(dir, 'd3'); fs.mkdirSync(path.join(d3, 'store.json'), { recursive: true });
-    assert.throws(() => new FileStore(d3), 'a directory in its place is an error, not an empty store');
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
-});
-
 test('incr accepts a negative step (a successful login gives its attempt back)', async () => {
   const s = new MemoryStore(); await s.incr('n', 60); await s.incr('n', 60); assert.equal(await s.incr('n', 60, -1), 1);
+});
+
+test('store selection: the in-memory store exists only for tests (ELVAR_STORE=memory); otherwise there is none, and Upstash / the local file store are gone', () => {
+  assert.equal(storeKind({ ELVAR_STORE: 'memory' }), 'memory');
+  for (const e of [{}, { VERCEL: '1' }, { UPSTASH_REDIS_REST_URL: 'u', UPSTASH_REDIS_REST_TOKEN: 't' }, { KV_REST_API_URL: 'u', KV_REST_API_TOKEN: 't' }]) { assert.equal(storeKind(e), 'none'); assert.equal(getStore(e), null); }
+  assert.ok(getStore({ ELVAR_STORE: 'memory' }) instanceof MemoryStore);
+  resetStore();
+  for (const f of ['file.js', 'upstash.js']) assert.equal(fs.existsSync(new URL('../server/store/' + f, import.meta.url)), false, f + ' is removed');
 });

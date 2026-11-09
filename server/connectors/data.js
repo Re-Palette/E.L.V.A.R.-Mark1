@@ -4,7 +4,7 @@
 // Today there is one owner, so the prefix is the existing `elvar:v1:` (keys are unchanged). ELVAR is to become a shared platform where every user has
 // their own connections: then `currentScope()` is the single function that has to return the signed-in user's scope (prefix `elvar:v1:u:<userId>:` and
 // that user's vault doc). Nothing outside this file builds a connector key by hand.
-import * as V from '../config/vault.js';
+import { currentConfig } from '../config/resolve.js';
 
 export const OWNER_ID = 'owner';
 const USER_RE = /^[a-z0-9_-]{1,64}$/;
@@ -32,7 +32,7 @@ export function scope(userId = OWNER_ID) {
   };
 }
 /** The scope of the current request. The single switch point for per-user data. */
-export const currentScope = () => scope(OWNER_ID);
+export const currentScope = () => scope(currentConfig().auth?.userId || OWNER_ID);   // a signed-in user's request is scoped to that user, never to the owner
 
 /** Everything the owner may take with them: no secret, no token, no vault key. */
 export function exportConnectors(doc, s = currentScope()) {
@@ -47,12 +47,4 @@ export function exportConnectors(doc, s = currentScope()) {
     })),
     note: '認証の値（トークン・シークレット）と OAuth のトークンは含まれません。取り込むときは、認証をもう一度設定してください',
   };
-}
-
-/** Delete every connector of this user: manifests, secrets, OAuth tokens, sessions, locks. @returns {Promise<{connectors:number}>} */
-export async function deleteAllConnectors(store, dek, s = currentScope()) {
-  let ids = [];
-  await V.updateDoc(store, dek, (d) => { ids = s.connectorsOf(d).map((c) => c.id); d.connectors = []; for (const id of ids) s.purgeSecrets(d, id); return d; });
-  for (const id of ids) { await store.del(s.tokKey(id)); await store.del(s.sessKey(id)); await store.del(s.refreshLockKey(id)); }
-  return { connectors: ids.length };
 }

@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import * as E from '../server/crypto/envelope.js';
-import * as V from '../server/config/vault.js';
+import * as R from '../server/crypto/records.js';
 import { createMemoryDb } from '../server/db/memory.js';
 import { mintVerifiedUid } from '../server/db/verified-uid.js';
 
@@ -13,8 +13,11 @@ const U1 = '11111111-1111-4111-8111-111111111111', U2 = '22222222-2222-4222-8222
 const kekSpec = (id = 'k1') => `${id}:${rnd(32).toString('base64')}`;
 const code = (c) => (e) => { assert.equal(e?.code, c, String(e?.code || e)); return true; };
 
-test('the primitives moved out of the old vault are the same functions (one implementation)', () => {
-  assert.equal(V.seal, E.seal); assert.equal(V.open, E.open); assert.equal(V.hkdf, E.hkdf); assert.equal(V.safeEqual, E.safeEqual);
+test('sealed records (the store-backed modules) use the envelope primitives and bind a record to its key and version', () => {
+  const key = rnd(32), rec = R.sealRecord(key, 'elvar:v1:tok:x', 3, { a: 1 });
+  assert.deepEqual(R.openRecord(key, 'elvar:v1:tok:x', rec), { a: 1 });
+  assert.throws(() => R.openRecord(key, 'elvar:v1:tok:y', rec), 'moved to another key');
+  assert.throws(() => R.openRecord(key, 'elvar:v1:tok:x', { ...rec, ver: 2 }), 'rolled back');
 });
 
 test('sealBytes / openBytes: round trip, fresh IV each time, tamper / wrong key / wrong AAD / short input all fail', () => {

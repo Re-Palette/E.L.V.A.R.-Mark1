@@ -5,7 +5,7 @@
 import crypto from 'node:crypto';
 import { safeFetch, hatchUrlOk } from '../net/safe-fetch.js';
 import { startFlow, claimFlow, discardPending, STATE_RE } from '../oauth/flow.js';
-import * as V from '../config/vault.js';
+import * as V from '../crypto/records.js';
 import { ConnectorError, toConnectorError } from './errors.js';
 import { cleanText } from './manifest.js';
 import { currentScope } from './data.js';

@@ -14,6 +14,8 @@ export function mapPgError(e) {
   if (c === '23502') return dbError('invalid_value', 400, e);                         // not_null_violation
   if (c === '23503') return dbError('invalid_reference', 409, e);                     // foreign_key_violation
   if (c === '42501') return dbError('forbidden', 403, e);                             // insufficient_privilege, also "violates row-level security policy"
+  if (c === '55000') return dbError('conflict', 409, e);                            // object_not_in_prerequisite_state (e.g. the account is being deleted)
+  if (c === 'P0002') return dbError('not_found', 404, e);                            // no_data_found raised by our definer functions
   if (c === '57014') return dbError('db_timeout', 503, e);                            // statement_timeout
   if (c.startsWith('08') || c === '53300' || c === '57P01' || c === '57P03' || /^(ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN)/.test(c) || /^(CONNECT|CONNECTION)_/.test(c)) return dbError('db_unavailable', 503, e);
   return dbError('db_error', 500, e);

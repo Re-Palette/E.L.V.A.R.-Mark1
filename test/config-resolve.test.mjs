@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { env, cfgEnv, getConfig, runWithConfig, currentConfig, envConfig } from '../server/config/resolve.js';
+import { env, cfgEnv, runWithConfig, currentConfig, envConfig } from '../server/config/resolve.js';
 import { KEYS, keyInfo, isSecret } from '../server/config/keys.js';
 import { promptVars, fill } from '../server/profile/vars.js';
 import { DEFAULT_PROFILE, mergeProfile } from '../server/profile/defaults.js';
@@ -39,12 +39,11 @@ test('cfgEnv is an env-shaped view: property read, "in", and a live view of chan
   assert.ok(!('SUBAGENT_PROVIDER' in cfgEnv));
 });
 
-test('getConfig(req): before the vault exists, a local loopback caller gets the env-only config (shape: get/source/profile/features)', async () => {
-  await withEnv({ BRAIN_BRANCH: 'dev', BRAIN_DIR: undefined }, async () => {
-    const r = await getConfig({ headers: { host: 'localhost:8787' }, socket: { remoteAddress: '127.0.0.1' } });
-    assert.equal(r.ok, true); assert.equal(r.auth.mode, 'local'); assert.equal(r.status, 200);
-    assert.equal(r.cfg.get('BRAIN_BRANCH'), 'dev'); assert.equal(r.cfg.source('BRAIN_BRANCH'), 'env'); assert.equal(r.cfg.source('BRAIN_DIR'), 'default');
-    assert.deepEqual(r.cfg.profile, DEFAULT_PROFILE); assert.equal(typeof r.cfg.features, 'object');
+test('outside a request: the environment is the configuration, ELVAR_PROFILE (scripts and tests) is merged over the neutral defaults', async () => {
+  await withEnv({ BRAIN_BRANCH: 'dev', BRAIN_DIR: undefined, ELVAR_PROFILE: undefined }, async () => {
+    const cfg = envConfig();
+    assert.equal(cfg.get('BRAIN_BRANCH'), 'dev'); assert.equal(cfg.source('BRAIN_BRANCH'), 'env'); assert.equal(cfg.source('BRAIN_DIR'), 'default');
+    assert.deepEqual(cfg.profile, DEFAULT_PROFILE); assert.equal(typeof cfg.features, 'object');
   });
   await withEnv({ ELVAR_PROFILE: JSON.stringify({ owner: { address: 'テスト様' } }) }, async () => {
     assert.equal(currentConfig().profile.owner.address, 'テスト様');

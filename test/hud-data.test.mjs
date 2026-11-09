@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildHudData } from '../server/hud-data.js';
 import { agoText, todayParts, neutralData, ringArcs } from '../web/src/hud-live.js';
+import { enterTestUser } from './helpers/user-ctx.mjs';
+enterTestUser();   // a signed-in test user: approval tickets are keyed to the user and consumed in their own database
 
 const KEYS = ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REFRESH_TOKEN', 'GOOGLE_API_MOCK_ORIGIN', 'EXA_API_KEY', 'GEMINI_API_KEY', 'GROQ_API_KEY', 'WEATHER_PLACE', 'ELVAR_PROFILE'];
 async function withEnv(env, fn) { const old = Object.fromEntries(KEYS.map((k) => [k, process.env[k]])); for (const k of KEYS) delete process.env[k]; Object.assign(process.env, env); const real = globalThis.fetch; try { return await fn(); } finally { globalThis.fetch = real; for (const k of KEYS) old[k] === undefined ? delete process.env[k] : (process.env[k] = old[k]); } }

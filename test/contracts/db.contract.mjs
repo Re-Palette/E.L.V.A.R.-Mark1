@@ -191,7 +191,19 @@ export function runDbContract(label, setup) {
     assert.equal(await db.asUser(A, (r) => r.usageLimits.del({ provider: 'gemini', metric: 'live_seconds', period: 'day' })), true);
     assert.deepEqual(await db.asUser(A, (r) => r.usage.daily({ from: '2000-01-01', to: '2999-12-31' })), []);
     assert.deepEqual(await db.asUser(A, (r) => r.usage.storage()), { filesBytes: 0, textBytes: 0, notesBytes: 0, messagesBytes: 0, reservedBytes: 0 });
-    assert.deepEqual(await db.asUser(A, async (r) => Object.keys(r.usage).sort()), ['daily', 'storage'], 'no write method exists for usage numbers');
+    assert.deepEqual(await db.asUser(A, async (r) => Object.keys(r.usage).sort()), ['daily', 'record', 'storage'], 'the only write is record(): the caller\'s own numbers, bounded');
+    for (const bad of [{ provider: '', metric: 'm' }, { provider: 'p', metric: '' }, { provider: 'p', metric: 'm', amount: -1 }, { provider: 'p', metric: 'm', amount: 1e12 }, { provider: 'p', metric: 'm', source: 'x' }]) {
+      await assert.rejects(db.asUser(A, (r) => r.usage.record(bad)), (e) => ['invalid_value'].includes(e.code), JSON.stringify(bad));
+    }
+  });
+
+  T('usage: record() adds to the caller\'s own day totals only', async ({ db, newUser }) => {
+    const { A, B } = await two({ newUser });
+    await db.asUser(A, async (r) => { await r.usage.record({ provider: 'gemini', metric: 'calls' }); await r.usage.record({ provider: 'gemini', metric: 'calls', amount: 2 }); await r.usage.record({ provider: 'gemini', metric: 'live_seconds', amount: 30, source: 'client' }); });
+    const today = new Date().toISOString().slice(0, 10);
+    const rows = await db.asUser(A, (r) => r.usage.daily({ from: today, to: today }));
+    assert.deepEqual(rows.map((x) => [x.provider, x.metric, x.amount]).sort(), [['gemini', 'calls', 3], ['gemini', 'live_seconds', 30]]);
+    assert.deepEqual(await db.asUser(B, (r) => r.usage.daily({ from: today, to: today })), []);
   });
 
   T('a failing request rolls back everything it wrote', async ({ db, newUser }) => {
@@ -387,5 +399,68 @@ export function runDbContract(label, setup) {
     await assert.rejects(db.asUser(A, (r) => r.audit.append({ actor: 'system', action: 'x', actorId: a })), code('invalid_value'));
     await assert.rejects(db.asUser(A, (r) => r.audit.append({ actor: 'admin', action: 'x' })), code('invalid_value'));
     assert.equal((await db.asUser(A, (r) => r.audit.list())).length, 3);
+  });
+
+  // ---- P2: account deletion, admin (metadata only), cron helpers
+  T('account deletion (O3): immediate or 7 days; the first decision stays; cancel works only during a grace period, only for oneself', async ({ db, newUser }) => {
+    const { A, B } = await two({ newUser });
+    await db.asUser(A, (r) => r.accounts.ensure()); await db.asUser(B, (r) => r.accounts.ensure());
+    await assert.rejects(db.asUser(A, (r) => r.accounts.requestDeletion(3)), code('invalid_value'));
+    await assert.rejects(db.asUser(A, (r) => r.accounts.requestDeletion(-1)), code('invalid_value'));
+    assert.equal(await db.asUser(A, (r) => r.accounts.deletion()), null);
+    const due7 = await db.asUser(A, (r) => r.accounts.requestDeletion(7, 'a@example.test'));
+    assert.ok(Math.abs(new Date(due7).getTime() - (Date.now() + 7 * 86400_000)) < 60_000);
+    assert.equal(await db.asUser(A, (r) => r.accounts.requestDeletion(0)), due7, 'a second request keeps the first decision');
+    assert.equal((await db.asUser(A, (r) => r.accounts.get())).status, 'pending_deletion');
+    assert.deepEqual({ ...(await db.asUser(A, (r) => r.accounts.deletion())), requestedAt: 'x', purgeAfter: 'x' }, { graceDays: 7, requestedAt: 'x', purgeAfter: 'x' });
+    assert.equal((await db.asUser(B, (r) => r.accounts.get())).status, 'active', 'the other user is untouched');
+    assert.equal(await db.asUser(B, (r) => r.accounts.cancelDeletion()), false, 'B has nothing to cancel, and cannot cancel A\'s');
+    assert.equal((await db.asUser(A, (r) => r.accounts.get())).status, 'pending_deletion');
+    assert.equal(await db.asUser(A, (r) => r.accounts.cancelDeletion()), true);
+    assert.equal((await db.asUser(A, (r) => r.accounts.get())).status, 'active'); assert.equal(await db.asUser(A, (r) => r.accounts.deletion()), null);
+    assert.ok((await db.asUser(A, (r) => r.audit.list())).some((x) => x.action === 'account.delete_cancelled'));
+    await db.asUser(A, (r) => r.accounts.requestDeletion(0));
+    assert.equal(await db.asUser(A, (r) => r.accounts.cancelDeletion()), false, 'an immediate deletion cannot be undone');
+    assert.deepEqual((await db.system.dueDeletions(50)).filter((x) => x.userId === A.uid), [{ userId: A.uid, graceDays: 0 }]);
+    assert.equal((await db.system.dueDeletions(50)).some((x) => x.userId === B.uid), false);
+  });
+
+  T('a deletion with a grace period is not due before the grace is over', async ({ db, newUser, passTime }) => {
+    const { A } = await two({ newUser });
+    await db.asUser(A, (r) => r.accounts.ensure()); await db.asUser(A, (r) => r.accounts.requestDeletion(7));
+    assert.equal((await db.system.dueDeletions(50)).some((x) => x.userId === A.uid), false);
+    if (label === 'memory') { await passTime(7 * 86400_000 + 1000); assert.equal((await db.system.dueDeletions(50)).some((x) => x.userId === A.uid), true); }
+  });
+
+  T('admin repos: only an admin, only metadata; suspend / lift is recorded in the target\'s audit log; never an admin, never somebody pending deletion', async ({ db, newUser, makeAdmin }) => {
+    const { a, b, A, B } = await two({ newUser });
+    const c = await newUser(), C = mint(c);
+    await db.asUser(A, (r) => r.accounts.ensure()); await db.asUser(B, (r) => r.accounts.ensure()); await db.asUser(C, (r) => r.accounts.ensure()); await makeAdmin(a);
+    await assert.rejects(db.asUser(B, (r) => r.admin.listUsers()), code('forbidden'));
+    await assert.rejects(db.asUser(B, (r) => r.admin.setStatus(c, 'suspended')), code('forbidden'));
+    const list = await db.asUser(A, (r) => r.admin.listUsers({ limit: 500 }));
+    for (const u of list) assert.deepEqual(Object.keys(u).sort(), ['calls30d', 'callsToday', 'createdAt', 'email', 'isAdmin', 'lastSignInAt', 'liveSecondsToday', 'status', 'storageQuotaBytes', 'storageUsedBytes', 'userId'], 'metadata columns only');
+    assert.ok(list.some((u) => u.userId === a && u.isAdmin) && list.some((u) => u.userId === b && !u.isAdmin));
+    assert.equal(await db.asUser(A, (r) => r.admin.setStatus(b, 'suspended', 'spam')), 'suspended');
+    assert.equal((await db.asUser(B, (r) => r.accounts.get())).status, 'suspended');
+    assert.equal((await db.asUser(B, (r) => r.accounts.get())).suspendedReason, 'spam');
+    const entry = (await db.asUser(B, (r) => r.audit.list())).find((x) => x.action === 'account.suspended');
+    assert.deepEqual({ actor: entry.actor, actorId: entry.actorId }, { actor: 'admin', actorId: a }, 'B can see that an admin did it');
+    assert.equal(await db.asUser(A, (r) => r.admin.setStatus(b, 'active')), 'active');
+    assert.equal((await db.asUser(B, (r) => r.accounts.get())).suspendedReason, null);
+    await assert.rejects(db.asUser(A, (r) => r.admin.setStatus(a, 'suspended')), code('forbidden'), 'not oneself');
+    await assert.rejects(db.asUser(A, (r) => r.admin.setStatus(b, 'banned')), code('invalid_value'));
+    await assert.rejects(db.asUser(A, (r) => r.admin.setStatus('not-a-uuid', 'suspended')), code('invalid_value'));
+    await db.asUser(C, (r) => r.accounts.requestDeletion(7));
+    await assert.rejects(db.asUser(A, (r) => r.admin.setStatus(c, 'suspended')), code('conflict'), 'not while the user is deleting the account');
+    // an admin does not get a way to read anything else through the repos: no method of `admin` returns content
+    assert.deepEqual(await db.asUser(A, async (r) => Object.keys(r.admin).sort()), ['listUsers', 'setStatus']);
+    assert.deepEqual(await db.asUser(A, (r) => r.profile.get()), null, 'an admin\'s repos are still only their own');
+  });
+
+  T('cron helpers: bootstrap admin needs a CONFIRMED account with that e-mail; receipts carry no user id', async ({ db, newUser }) => {
+    assert.equal(await db.system.bootstrapAdmin('nobody-' + rnd(4).toString('hex') + '@example.test'), null);
+    await db.system.recordReceipt(18);
+    await assert.rejects(db.system.recordReceipt(-1));
   });
 }

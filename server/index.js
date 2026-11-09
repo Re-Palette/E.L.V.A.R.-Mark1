@@ -1,28 +1,28 @@
-// E.L.V.A.R. Mark1 — personal server for LOCAL use.
-// On Vercel the same logic runs as Functions in /api (see api/*.js); this file is not used there.
+// E.L.V.A.R. Mark1: the LOCAL server. On Vercel the same logic runs as Functions in /api (see api/*.js); this file is not used there.
+// It serves the built web app (web/dist) and the same handlers as Vercel (the api/*.js files are imported, not copied), so a local run and a deployment behave
+// alike: every request is authenticated as a Supabase user (Authorization: Bearer <access token>); there is no owner mode and no loopback shortcut.
+//
+// Local development without a Supabase project: ELVAR_DB=memory ELVAR_DEV_AUTH=1 npm run dev:server  starts a FAKE Auth issuer under /dev-supabase
+// (server/dev/fake-auth.js), an in-memory database and throw-away keys, so sign-up -> wizard -> HUD -> settings can be tried. Data is lost on restart.
+// That mode is refused unless the server listens on this computer only.
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { readConfig, handleLiveToken, handleHealth, sendJson } from './live-token-core.js';
-import { executeTool } from './tools/execute.js';
-import { runAgent } from './agents/runner.js';
-import { runServerChecks } from './system-check.js';
-import { buildHudData } from './hud-data.js';
-import { handleNotif } from './notif-sync.js';
-import { handleChat } from './chat-api.js';
-import { getConfig, runWithConfig } from './config/resolve.js';
+import { sendJson } from './http.js';
 import { routeElvar, isRouterPath } from './router.js';
-import { getStore, storeKind } from './store/index.js';
-import { loadMeta } from './config/vault.js';
-import { ensureSetupCode } from './config/auth.js';
 import { PAGE_HEADERS, API_HEADERS } from './security-headers.js';
+import { devAuthEnabled, isLoopbackHost } from './dev/dev-auth-guard.js';
+import { getDb } from './db/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.resolve(__dirname, '../web/dist');
 const PORT = Number(process.env.PORT || 8787);
-// Only this computer by default. HOST=0.0.0.0 opts into the LAN (then put HTTPS in front of it).
+// Only this computer by default. HOST=0.0.0.0 opts into the LAN (then put HTTPS in front of it). Never with the dev login.
 const HOST = process.env.HOST || '127.0.0.1';
+const DEV_AUTH = devAuthEnabled();
+if (DEV_AUTH && !isLoopbackHost(HOST)) { console.error('[elvar] ELVAR_DEV_AUTH is for this computer only: set HOST=127.0.0.1 (or unset ELVAR_DEV_AUTH)'); process.exit(1); }
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.wasm': 'application/wasm',
@@ -50,26 +50,32 @@ function serveStatic(req, res) {
   });
 }
 
-// The configuration is resolved per request (never frozen at start-up): a changed setting applies to the next request.
+// The same functions Vercel runs (api/*.js), loaded on first use. A Vercel function is handler(req, res) with req.body already parsed.
+const FUNCTIONS = {
+  '/api/health': () => import('../api/health.js'), '/api/live-token': () => import('../api/live-token.js'), '/api/chat': () => import('../api/chat.js'),
+  '/api/google/execute': () => import('../api/google-execute.js'), '/api/system/check': () => import('../api/system-check.js'), '/api/notif': () => import('../api/notif.js'),
+  '/api/hud/data': () => import('../api/hud-data.js'), '/api/agent/run': () => import('../api/agent-run.js'),
+};
+const BODY_METHODS = new Set(['POST', 'PUT', 'PATCH']);
+let fakeAuth = null;
+
 const server = http.createServer((req, res) => {
   if (String(req.url || '').startsWith('/api/')) for (const [k, v] of Object.entries(API_HEADERS)) res.setHeader(k, v);
   handle(req, res);
 });
 
-const OWNER_API = new Set(['/api/live-token', '/api/google/execute', '/api/system/check', '/api/chat', '/api/notif', '/api/hud/data', '/api/agent/run']);
-const BODY_METHODS = new Set(['POST', 'PUT', 'PATCH']);
-
 async function handle(req, res) {
   try {
     const { pathname, searchParams } = new URL(req.url, 'http://x');
+    if (fakeAuth && pathname.startsWith('/dev-supabase/') && (await fakeAuth.handle(req, res, pathname, Object.fromEntries(searchParams)))) return;
     if (isRouterPath(pathname)) {
       return sendJson(res, await routeElvar(req, { pathname, query: Object.fromEntries(searchParams), body: BODY_METHODS.has(req.method) ? await readJson(req) : {} }));
     }
     if (!pathname.startsWith('/api/')) return serveStatic(req, res);
-    // Resolve who is calling and with which configuration (vault > env > default), then run the endpoint inside that configuration.
-    const g = await getConfig(req);
-    if (OWNER_API.has(pathname) && !g.ok) return sendJson(res, { status: g.status, body: { error: g.error } });
-    return await runWithConfig(g.cfg, () => api(req, res, pathname, searchParams, g));
+    const load = FUNCTIONS[pathname];
+    if (!load) return sendJson(res, { status: 404, body: { error: 'not_found' } });
+    if (BODY_METHODS.has(req.method)) req.body = await readJson(req);
+    return await (await load()).default(req, res);
   } catch (e) {
     console.error('[server]', e?.message || e);
     if (!res.headersSent) return sendJson(res, { status: 500, body: { error: 'internal_error' } });
@@ -77,39 +83,22 @@ async function handle(req, res) {
   }
 }
 
-async function api(req, res, pathname, q, g) {
-  if (pathname === '/api/health') return sendJson(res, handleHealth(readConfig()));
-  if (pathname === '/api/live-token') return sendJson(res, await handleLiveToken(req, readConfig()));
-  if (pathname === '/api/google/execute') {
-    if (req.method !== 'POST') return sendJson(res, { status: 405, body: { error: 'method_not_allowed' } });
-    return sendJson(res, await executeTool(await readJson(req)));
-  }
-  if (pathname === '/api/system/check') return sendJson(res, { status: 200, body: await runServerChecks({ deep: q.get('deep') === '1' }) });
-  if (pathname === '/api/chat') return sendJson(res, await handleChat({ method: req.method, body: req.method === 'POST' ? await readJson(req) : {} }));
-  if (pathname === '/api/notif') {
-    if (g.auth.mode === 'local') return sendJson(res, { status: 403, body: { error: '通知の同期には、先にセットアップ（オーナーパスワードの設定）が必要です（暗号化の鍵に使います）' } });
-    return sendJson(res, await handleNotif({ method: req.method, query: Object.fromEntries(q), body: req.method === 'POST' ? await readJson(req) : {} }));
-  }
-  if (pathname === '/api/hud/data') return sendJson(res, { status: 200, body: await buildHudData() });
-  if (pathname === '/api/agent/run') {
-    if (req.method !== 'POST') return sendJson(res, { status: 405, body: { error: 'method_not_allowed' } });
-    const b = await readJson(req);
-    return sendJson(res, { status: 200, body: await runAgent({ agent: String(b.agent || ''), task: String(b.task || '') }) });
-  }
-  return sendJson(res, { status: 404, body: { error: 'not_found' } });
-}
-
 server.listen(PORT, HOST, async () => {
-  const kind = storeKind();
   const port = server.address()?.port || PORT;
-  console.log(`[elvar] server on ${HOST}:${port} (store: ${kind})`);
+  console.log(`[elvar] server on ${HOST}:${port}`);
   try {
-    const store = getStore();
-    if (!store) return console.log('[elvar] no storage configured: add Upstash Redis (UPSTASH_REDIS_REST_URL / _TOKEN) to enable app-side setup');
-    if (await loadMeta(store)) return console.log('[elvar] owner account exists: sign in from the app');
-    if (process.env.ELVAR_ACCESS_TOKEN) console.log('[elvar] ELVAR_ACCESS_TOKEN is set: env mode until the owner account is created in the app');
-    // prints "ELVAR SETUP CODE: ..." and a one-time setup link (shown here only, never over the network)
-    const code = await ensureSetupCode(store, { rotate: true, port });
-    if (code && process.env.ELVAR_DEV_URL) console.log(`[elvar] (dev) or: ${process.env.ELVAR_DEV_URL.replace(/\/+$/, '')}/?setup=${code}`);
+    if (DEV_AUTH) {
+      // everything the platform normally gets from Supabase and the environment, made up for this process only
+      process.env.SUPABASE_URL = `http://127.0.0.1:${port}/dev-supabase`;
+      process.env.SUPABASE_PUBLISHABLE_KEY = 'dev-publishable-key';
+      process.env.SUPABASE_SECRET_KEY = 'dev-service-key';
+      process.env.ELVAR_KEK ||= `dev:${crypto.randomBytes(32).toString('base64')}`;
+      process.env.CRON_SECRET ||= crypto.randomBytes(24).toString('hex');
+      const { createFakeAuth } = await import('./dev/fake-auth.js');
+      fakeAuth = await createFakeAuth({ db: await getDb(), issuerBase: `http://127.0.0.1:${port}` });
+      console.log(`[elvar] DEV LOGIN is on (fake Auth, in-memory database; data is lost on restart). Confirmation mails: http://127.0.0.1:${port}/dev-supabase/dev/mailbox`);
+    } else if (!process.env.SUPABASE_URL || !process.env.SUPABASE_PUBLISHABLE_KEY) {
+      console.log('[elvar] Supabase is not configured (see .env.example: the Supabase URL and publishable key, the database URL, the key-encryption key): see docs/ELVAR_MULTIUSER.md section 9, or try ELVAR_DB=memory ELVAR_DEV_AUTH=1');
+    }
   } catch (e) { console.error('[elvar] start-up check failed:', e?.message || e); }
 });

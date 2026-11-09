@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { enterTestUser } from './helpers/user-ctx.mjs';
+enterTestUser();   // a signed-in test user: approval tickets are keyed to the user and consumed in their own database
 
 // ---------- mock Google ----------
 const calls = [];                 // every request the code under test makes
@@ -178,22 +180,6 @@ test('Google login problems give a clear message (invalid_grant)', async () => {
   const r = await run('calendar_list_events', {});
   assert.equal(r.status, 401); assert.match(r.body.error, /Googleと連携/);
   oauthMode = 'ok'; resetTokenCache();
-});
-
-test('HTTP: endpoints require the access token; unconfigured Google reports 503', async () => {
-  const port = 18000 + Math.floor(Math.random() * 1000);
-  const srv = spawn(process.execPath, ['server/index.js'], { env: { ...process.env, PORT: String(port), GEMINI_API_KEY: 'x' }, stdio: 'ignore' });
-  try {
-    for (let i = 0; i < 40; i++) { try { await fetch(`http://127.0.0.1:${port}/api/health`); break; } catch { await new Promise((r) => setTimeout(r, 100)); } }
-    const post = (hdr) => fetch(`http://127.0.0.1:${port}/api/google/execute`, { method: 'POST', headers: { 'content-type': 'application/json', ...hdr }, body: JSON.stringify({ tool: 'current_datetime', args: {} }) });
-    assert.equal((await post({})).status, 401);
-    assert.equal((await post({ 'x-elvar-token': 'wrong' })).status, 401);
-    const ok = await post({ 'x-elvar-token': 'unit-test-secret' }); assert.equal(ok.status, 200); assert.equal((await ok.json()).ok, true);
-    assert.equal((await fetch(`http://127.0.0.1:${port}/api/google/status`)).status, 401);
-    const st = await (await fetch(`http://127.0.0.1:${port}/api/google/status`, { headers: { 'x-elvar-token': 'unit-test-secret' } })).json();
-    assert.equal(st.configured, true); assert.equal(st.write, 40);
-    assert.ok(!JSON.stringify(st).includes('rt'), 'status must not leak secrets');
-  } finally { srv.kill(); }
 });
 
 test.after(() => mock.close());

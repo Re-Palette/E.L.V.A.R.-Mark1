@@ -8,6 +8,7 @@ import { dbError } from '../errors.js';
 import * as V from '../validate.js';
 import { requireVerifiedUid } from '../verified-uid.js';
 
+const requireUuid = (u) => typeof u === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(u);
 const iso = (d) => (d ? new Date(d).toISOString() : null);
 const num = (x) => (x === null || x === undefined ? x : Number(x));
 
@@ -30,6 +31,31 @@ export function pgRepos(tx, uid, afterCommit = () => {}) {
       async ensure() { await tx`select app.ensure_account()`; return this.get(); },
       async get() { const [r] = await tx`select user_id, status, storage_quota_bytes, hard_limits, suspended_reason, created_at from app.accounts where user_id = ${uid}`; return accountRow(r); },
       async isAdmin() { const [r] = await tx`select app.is_admin() as a`; return r.a === true; },
+      /** O3: graceDays 0 (purge now) or 7. Records the request and marks the account pending_deletion. @returns {Promise<string>} when it will be purged (ISO) */
+      async requestDeletion(graceDays, email = null) {
+        V.need(graceDays === 0 || graceDays === 7); V.need(email === null || (typeof email === 'string' && email.length <= 320));
+        const [r] = await tx`select app.request_deletion(${graceDays}::smallint, ${email}) as due`; return iso(r.due);
+      },
+      /** @returns {Promise<boolean>} false when there is nothing to cancel (no request, or an immediate one) */
+      async cancelDeletion() { const [r] = await tx`select app.cancel_deletion() as ok`; return r.ok === true; },
+      async deletion() {
+        const [r] = await tx`select grace_days, requested_at, purge_after from app.deletion_requests where user_id = ${uid}`;
+        return r ? { graceDays: r.grace_days, requestedAt: iso(r.requested_at), purgeAfter: iso(r.purge_after) } : null;
+      },
+    },
+
+    /** Admin (M11): metadata only, through definer functions that check is_admin() themselves. Nothing here can read content or secrets. */
+    admin: {
+      async listUsers({ limit = 100, offset = 0 } = {}) {
+        V.need(Number.isInteger(limit) && limit >= 1 && limit <= 500 && Number.isInteger(offset) && offset >= 0);
+        return (await tx`select * from app.admin_users(${limit}, ${offset})`).map((r) => ({
+          userId: r.user_id, email: r.email, createdAt: iso(r.created_at), lastSignInAt: iso(r.last_sign_in_at), status: r.status, isAdmin: r.is_admin,
+          storageQuotaBytes: num(r.storage_quota_bytes), storageUsedBytes: num(r.storage_used_bytes), callsToday: num(r.calls_today), liveSecondsToday: num(r.live_seconds_today), calls30d: num(r.calls_30d) }));
+      },
+      async setStatus(userId, status, reason = null) {
+        V.need(requireUuid(userId) && ['active', 'suspended'].includes(status) && (reason === null || (typeof reason === 'string' && reason.length <= 500)));
+        const [r] = await tx`select app.admin_set_status(${userId}::uuid, ${status}, ${reason}) as s`; return r.s;
+      },
     },
 
     profile: {
@@ -90,6 +116,7 @@ export function pgRepos(tx, uid, afterCommit = () => {}) {
       async list() { return (await tx`select id, name, scopes, created_at, last_seen_at from app.devices where user_id = ${uid} order by created_at, id`).map(deviceRow); },
       async rename(id, name) { V.need(V.DEVICE_ID_RE.test(id) && typeof name === 'string' && name.length >= 1 && name.length <= 40); return (await tx`update app.devices set name = ${name} where user_id = ${uid} and id = ${id}`).count > 0; },
       async revoke(id) { V.need(V.DEVICE_ID_RE.test(id)); return (await tx`delete from app.devices where user_id = ${uid} and id = ${id}`).count > 0; },
+      async revokeAll() { return (await tx`delete from app.devices where user_id = ${uid}`).count; },
       async touch(id) { V.need(V.DEVICE_ID_RE.test(id)); await tx`update app.devices set last_seen_at = now() where user_id = ${uid} and id = ${id}`; },
     },
 
@@ -149,8 +176,13 @@ export function pgRepos(tx, uid, afterCommit = () => {}) {
       async del({ provider, metric, period }) { return (await tx`delete from app.usage_limits where user_id = ${uid} and provider = ${provider} and metric = ${metric} and period = ${period}`).count > 0; },
     },
 
-    /** Read-only: the numbers are written by the server's metering (P6) through definer functions. */
+    /** The numbers are written only through app.record_usage (the caller's own account). */
     usage: {
+      async record({ provider, metric, amount = 1, source = 'server' }) {
+        V.need(typeof provider === 'string' && provider.length >= 1 && provider.length <= 40 && typeof metric === 'string' && metric.length >= 1 && metric.length <= 40
+          && Number.isFinite(amount) && amount >= 0 && amount <= 1e9 && ['server', 'client'].includes(source));
+        await tx`select app.record_usage(${provider}, ${metric}, ${amount}, ${source})`;
+      },
       async daily({ from, to }) {
         return (await tx`select day::text as day, provider, metric, amount from app.usage_daily where user_id = ${uid} and day >= ${from}::date and day <= ${to}::date order by day, provider, metric`)
           .map((r) => ({ day: r.day, provider: r.provider, metric: r.metric, amount: num(r.amount) }));
@@ -179,6 +211,12 @@ export function pgSystem(sql) {
     async purgeExpired() { return Object.fromEntries((await sql`select table_name, deleted from app.purge_expired()`).map((r) => [r.table_name, Number(r.deleted)])); },
     async residualCheck(vuid) { return (await sql`select table_name, n from app.residual_check(${requireVerifiedUid(vuid)})`).map((r) => ({ table: r.table_name, n: Number(r.n) })); },
     /** Whose device token is this? hash = sha256 of the token's secret part. Returns the raw ids; the caller turns them into a VerifiedUid. */
+    /** Accounts whose deletion is due (grace over, or immediate). */
+    async dueDeletions(limit = 20) { return (await sql`select user_id, grace_days from app.due_deletions(${limit})`).map((r) => ({ userId: r.user_id, graceDays: r.grace_days })); },
+    /** Proof that a deletion happened and how many tables were verified clean. Carries no user id and no e-mail. */
+    async recordReceipt(tablesChecked) { V.need(Number.isInteger(tablesChecked) && tablesChecked >= 0); await sql`select app.record_deletion_receipt(${tablesChecked})`; },
+    /** The confirmed account with this e-mail becomes an admin (the first one). @returns {Promise<string|null>} its id */
+    async bootstrapAdmin(email) { V.need(typeof email === 'string' && email.length >= 3 && email.length <= 320); const [r] = await sql`select app.bootstrap_admin(${email}) as id`; return r.id || null; },
     async deviceLookup(hash) {
       V.need(V.isBytes(hash, 32));
       const [r] = await sql`select user_id, device_id, scopes from app.device_lookup(${V.toBuf(hash)})`;
