@@ -304,3 +304,15 @@ test('the platform never lets a connector reach a private network: no http / loo
     const view = await A.call('GET', C); assert.equal(view.body.vercel, true, 'the screen hides the option');
   } finally { process.env.ELVAR_UNSAFE_TEST_NETWORK = 'loopback'; }
 }));
+
+test('review fix (browser binding, MCP): the connector callback also waits for a click in another browser; dynamic registration names the masked account', () => withWorld(async ({ A, h }) => {
+  const mcp = await startMcp({ oauth: true }); try {
+    const created = await A.call('POST', C, { type: 'mcp', name: 'Cloud', mcp: { url: mcp.url }, auth: { type: 'oauth' } }); const id = created.body.connector.id;
+    const start = await A.call('POST', `${C}/${id}/oauth/start`); assert.equal(start.status, 200);
+    assert.match(String(start.headers['set-cookie']), /^eo_[0-9a-f]{12}=.*HttpOnly; SameSite=Lax/);
+    assert.ok(mcp.st.lastRegistration, 'registered'); assert.match(mcp.st.lastRegistration.client_name, /^E\.L\.V\.A\.R\. \(.\*\*\*@/);
+    const cb = mcp.authorize(start.body.url);
+    const other = await h.call('GET', '/api/elvar/oauth/callback', { cookie: '' }, {}, cb); assert.equal(other.status, 200); assert.match(other.html, /CONFIRM/); assert.ok(!mcp.st.lastTokenRequest, 'no token request in the other browser');
+    const done = await h.call('GET', '/api/elvar/oauth/callback', { cookie: '' }, {}, { ...cb, confirm: '1' }); assert.match(done.html, /CONNECTED/); assert.ok(mcp.st.lastTokenRequest);
+  } finally { await mcp.close(); }
+}));

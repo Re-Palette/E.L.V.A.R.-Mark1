@@ -28,7 +28,7 @@ export async function startMcp(o = {}) {
       if (url.pathname.startsWith('/.well-known/oauth-protected-resource')) return send(200, { resource: origin + '/mcp', authorization_servers: [origin] });
       if (url.pathname.startsWith('/.well-known/oauth-authorization-server')) return send(200, { issuer: origin, authorization_endpoint: origin + '/authorize', token_endpoint: origin + '/token', registration_endpoint: origin + '/register', revocation_endpoint: origin + '/revoke', code_challenge_methods_supported: ['S256'], scopes_supported: ['read'] });
       if (url.pathname === '/revoke' && req.method === 'POST') { const f = new URLSearchParams(raw); st.revoked = [...(st.revoked || []), f.get('token')]; st.refreshTokens.delete(f.get('token')); st.lastRevoke = Object.fromEntries(f); return send(200, {}); }
-      if (url.pathname === '/register' && req.method === 'POST') { st.registrations++; const j = JSON.parse(raw); return send(201, { client_id: 'dyn-client-' + st.registrations, redirect_uris: j.redirect_uris }); }
+      if (url.pathname === '/register' && req.method === 'POST') { st.registrations++; const j = JSON.parse(raw); st.lastRegistration = j; return send(201, { client_id: 'dyn-client-' + st.registrations, redirect_uris: j.redirect_uris }); }
       if (url.pathname === '/token' && req.method === 'POST') {
         const f = new URLSearchParams(raw);
         if (f.get('grant_type') === 'authorization_code') {

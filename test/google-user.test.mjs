@@ -188,3 +188,21 @@ test('the callback and the claim are rate limited; a state of nobody\'s answers 
   for (let i = 0; i < 31; i++) last = await h.call('GET', '/api/google/callback', {}, {}, { state: 'B'.repeat(43), code: 'x' });
   assert.equal(last.status, 429); assert.match(last.html, /多すぎ/);
 }));
+
+test('review fix (browser binding): the callback exchanges the code only in the browser that started the flow; elsewhere it shows the masked account and waits for a click', () => withWorld(async ({ h, g, A }) => {
+  await A.configure('a-client-0001.apps.example', 'a-secret');
+  const start = await h.call('POST', `${G}/start`, A.hd, {}); const st = start.body;
+  assert.match(String(start.headers['set-cookie']), /^eo_[0-9a-f]{12}=[A-Za-z0-9_-]{30,}; HttpOnly; SameSite=Lax; Path=\/api; Max-Age=600/, 'a per-flow nonce in an HttpOnly Lax cookie');
+  assert.ok(!JSON.stringify(start.body).includes(String(start.headers['set-cookie']).split('=')[1].split(';')[0]), 'the nonce is not in the body (nor the URL)');
+  const exchanges = () => g.st.calls.filter((c) => c.form?.grant_type === 'authorization_code').length;
+  // a different browser (the victim's, with no cookie): no exchange, the account is named, the flow is not consumed
+  const other = await h.call('GET', '/api/google/callback', { cookie: '' }, {}, { state: st.state, code: 'victims-code' });
+  assert.equal(other.status, 200); assert.match(other.html, /\w\*\*\*@example\.test/); assert.match(other.html, /これは、あなた自身のアカウントですか/); assert.ok(!other.html.includes('CONNECTED'));
+  assert.equal(exchanges(), 0, 'nothing was exchanged'); assert.ok(!other.html.includes('victims-code') || other.html.includes('confirm=1'), 'the code only travels in the confirm link');
+  // a wrong nonce is the same as none
+  assert.match((await h.call('GET', '/api/google/callback', { cookie: `${String(start.headers['set-cookie']).split('=')[0]}=wrong` }, {}, { state: st.state, code: 'c' })).html, /CONFIRM/); assert.equal(exchanges(), 0);
+  // the click (confirm=1) continues - the Android Custom Tab / desktop browser path
+  const ok = await h.call('GET', '/api/google/callback', { cookie: '' }, {}, { state: st.state, code: 'c', confirm: '1' }); assert.match(ok.html, /CONNECTED/); assert.equal(exchanges(), 1);
+  // the web path: the same browser (the cookie) needs no click
+  const s2 = (await h.call('POST', `${G}/start`, A.hd, {})).body; const ok2 = await h.call('GET', '/api/google/callback', {}, {}, { state: s2.state, code: 'c' }); assert.match(ok2.html, /CONNECTED/);
+}));

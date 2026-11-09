@@ -36,7 +36,14 @@ export async function startHarness() {
     async bearer(uid, claims = {}, opts) { const t = await signToken(key, { sub: uid, ...claims }, opts); owners.set(t, uid); return { authorization: 'Bearer ' + t }; },
     async adminBearer(uid) { db.testing.makeAdmin(uid); return harness.bearer(uid, { app_metadata: { elvar_role: 'admin' } }); },
     /** call(method, path, headers, body, query) -> { status, body, headers?, html? } */
-    call: (method, pathname, headers = {}, body = {}, query = {}) => routeElvar({ method, headers: { 'content-type': 'application/json', ...headers }, socket: { remoteAddress: '203.0.113.7' } }, { pathname, body, query }),
+    /** The harness is ONE browser: cookies the server sets (the OAuth flow's browser binding) are sent back on later calls. Pass headers.cookie (even '') to play a different browser. */
+    jar: new Map(),
+    async call(method, pathname, headers = {}, body = {}, query = {}) {
+      const cookie = [...harness.jar].map(([k, v]) => `${k}=${v}`).join('; ');
+      const r = await routeElvar({ method, headers: { 'content-type': 'application/json', ...(cookie && headers.cookie === undefined ? { cookie } : {}), ...headers }, socket: { remoteAddress: '203.0.113.7' } }, { pathname, body, query });
+      const sc = r?.headers?.['set-cookie']; if (sc) { const [kv] = String(sc).split(';'), i = kv.indexOf('='); harness.jar.set(kv.slice(0, i), kv.slice(i + 1)); }
+      return r;
+    },
     async stop() {
       _setVerifierForTests(null); _setAuthFetch(null); _setServiceFetch(null);
       for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }

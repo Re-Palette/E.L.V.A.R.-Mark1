@@ -9,9 +9,10 @@ import { rateLimit } from '../auth/rate-limit.js';
 import { invalidateUserConfig } from '../auth/load-user-config.js';
 import { handleCallback, STATE_RE } from '../oauth/flow.js';
 import { openPendingByState } from '../oauth/pending.js';
+import { newBind, bindCookie, nonceFromReq } from '../oauth/browser-bind.js';
 import { safeFetchAsFetch, privateAllowed } from '../net/safe-fetch.js';
 import { AGENTS } from '../agents/registry.js';
-import { redirectUriFor } from '../google/connect.js';
+import { redirectUriFor, confirmPage } from '../google/connect.js';
 import { validateManifest, applyToolPrefs, mergeRemoteTools, publicConnector, randomId, cleanText, MAX_CONNECTORS, MAX_PINNED, allocateExposure } from './manifest.js';
 import { probeHttp } from './http.js';
 import { clientFor } from './index.js';
@@ -195,9 +196,10 @@ export async function oauthStart({ req, user, params }) {
   if (!(await cfg.hit('cx-oauth', 600, 20))) return bad(429, 'rate_limited', '試行が多すぎます。少し待ってください');
   const redirectUri = re.origin + CALLBACK_PATH;
   try {
-    const f = await startConnectorOAuth({ cfg, c, redirectUri, clientSecret: cfg.cxSecret(c.id, 'oauthSecret') });
+    const { nonce, bind } = newBind(user.email);
+    const f = await startConnectorOAuth({ cfg, c, redirectUri, clientSecret: cfg.cxSecret(c.id, 'oauthSecret'), bind });
     audit('connector-oauth-started', { uid: user.uid.uid, id: c.id });
-    return { status: 200, body: { ok: true, url: f.url, state: f.state, redirectUri } };
+    return { status: 200, headers: { 'set-cookie': bindCookie(f.state, nonce, { secure: redirectUri.startsWith('https:') }) }, body: { ok: true, url: f.url, state: f.state, redirectUri } };
   } catch (e) { const ce = toConnectorError(e); return bad(ce.status >= 400 && ce.status < 500 ? ce.status : 502, ce.code, ce.message); }
 }
 export async function oauthClaim({ user, body, params }) {
@@ -228,8 +230,9 @@ export async function oauthCallback({ req, query = {} }) {
   if (!(await rateLimit(req, 'cxoauthcb', 30, 600))) return fail('試行が多すぎます。しばらくしてからもう一度お試しください。', 429);
   const state = String(query.state || ''); if (!STATE_RE.test(state)) return fail(FAIL.bad_state, 403);
   let r;
-  try { r = await handleCallback({ openPending: openPendingByState(db, 'mcp'), expectProvider: 'mcp', state, code: typeof query.code === 'string' ? query.code : '', error: typeof query.error === 'string' ? query.error : '', fetchImpl: safeFetchAsFetch() }); }
+  try { r = await handleCallback({ openPending: openPendingByState(db, 'mcp'), expectProvider: 'mcp', cookieNonce: nonceFromReq(req, state), confirmed: query.confirm === '1', state, code: typeof query.code === 'string' ? query.code : '', error: typeof query.error === 'string' ? query.error : '', fetchImpl: safeFetchAsFetch() }); }
   catch (e) { console.error('[elvar] connector oauth callback:', e?.code || e?.message); return fail('サービスに接続できません。', 503); }
+  if (!r.ok && r.reason === 'confirm_required') return { status: 200, headers, html: confirmPage({ who: r.who, what: '連携アプリのログイン', query }) };
   audit('connector-oauth-callback', { ok: r.ok, reason: r.reason });
   if (!r.ok) return fail((FAIL[r.reason] || FAIL.exchange_failed) + (r.error ? `（${cleanText(r.error, 40)}）` : ''), r.reason === 'network' ? 502 : 400);
   return { status: 200, headers, html: page('連携しました', '<h1>CONNECTED</h1><p class="ok">認証を受け取りました。</p><p>E.L.V.A.R. のアプリに戻ってください。アプリが自動で接続を完了します。</p><p><a href="/">アプリを開く</a></p>') };

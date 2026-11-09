@@ -45,12 +45,12 @@ export async function discover(mcpUrl, { wwwAuthenticate = '', fetchImpl = safeF
 }
 
 /** Dynamic client registration (RFC 7591) as a public client. @returns {{clientId:string, clientSecret?:string}} */
-export async function registerClient(meta, redirectUri, { fetchImpl = safeFetch, allowPrivate = false } = {}) {
+export async function registerClient(meta, redirectUri, { fetchImpl = safeFetch, allowPrivate = false, who = '' } = {}) {
   if (!meta.registrationUrl) throw new ConnectorError('registration_unavailable', 'このサーバーは、クライアントの自動登録に対応していません。クライアントIDを入力してください', 400);
   let r;
   try {
     r = await fetchImpl(meta.registrationUrl, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, allowPrivate, timeoutMs: 10000, maxBytes: 65536,
-      body: JSON.stringify({ client_name: 'E.L.V.A.R.', redirect_uris: [redirectUri], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none' }) });
+      body: JSON.stringify({ client_name: who ? `E.L.V.A.R. (${String(who).replace(/[^\w*@.\-]/g, '').slice(0, 80)})` : 'E.L.V.A.R.', redirect_uris: [redirectUri], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none' }) });
   } catch (e) { throw toConnectorError(e); }
   let j = null; try { j = r.json(); } catch { /* below */ }
   if (!(r.status >= 200 && r.status < 300) || typeof j?.client_id !== 'string' || !/^[\x21-\x7e]{1,300}$/.test(j.client_id)) throw new ConnectorError('registration_failed', 'クライアントの自動登録に失敗しました。クライアントIDを入力してください', 400);
@@ -73,7 +73,7 @@ export const oauthView = (rec) => (rec ? { connected: Boolean(rec.access_token),
  * Begin the flow for connector `c`. @param {{cfg:object, c:object, redirectUri:string, clientSecret?:string, fetchImpl?:Function}} o
  * @returns {Promise<{url:string, state:string}>}
  */
-export async function startConnectorOAuth({ cfg, c, redirectUri, clientSecret = '', fetchImpl = safeFetch }) {
+export async function startConnectorOAuth({ cfg, c, redirectUri, clientSecret = '', fetchImpl = safeFetch, bind = null }) {
   const allowPrivate = c.network?.allowPrivate;
   let wwwAuthenticate = '';
   try { const r = await fetchImpl(c.mcp.url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: '{"jsonrpc":"2.0","id":1,"method":"ping"}', timeoutMs: 8000, maxBytes: 16384, allowPrivate }); wwwAuthenticate = r.headers['www-authenticate'] || ''; } catch { /* discovery may still work from the well-known paths */ }
@@ -83,10 +83,10 @@ export async function startConnectorOAuth({ cfg, c, redirectUri, clientSecret = 
   if (!clientId) {
     const saved = cur?.data;
     if (saved?.dynamicClient && saved.redirectUri === redirectUri && saved.authUrl === meta.authUrl && saved.clientId) { clientId = saved.clientId; secret = saved.clientSecret || ''; dynamicClient = true; }
-    else { const reg = await registerClient(meta, redirectUri, { fetchImpl, allowPrivate }); clientId = reg.clientId; secret = reg.clientSecret || ''; dynamicClient = true; }
+    else { const reg = await registerClient(meta, redirectUri, { fetchImpl, allowPrivate, who: bind?.who }); clientId = reg.clientId; secret = reg.clientSecret || ''; dynamicClient = true; }
   }
   const scopes = (c.auth.scopes?.length ? c.auth.scopes : []).slice(0, 20);
-  const f = await startFlow({ pending: pendingFor(cfg.db), provider: 'mcp', authUrl: meta.authUrl, tokenUrl: meta.tokenUrl, clientId, clientSecret: secret, redirectUri, scopes,
+  const f = await startFlow({ bind, pending: pendingFor(cfg.db), provider: 'mcp', authUrl: meta.authUrl, tokenUrl: meta.tokenUrl, clientId, clientSecret: secret, redirectUri, scopes,
     params: { resource: meta.resource }, tokenParams: { resource: meta.resource }, requireRefresh: false, meta: { connectorId: c.id, resource: meta.resource, authUrl: meta.authUrl, dynamicClient, revocationUrl: meta.revocationUrl || null } });
   // remember the registered client now (the state itself is only in the URL)
   await writeTok(cfg, c.id, { clientId, clientSecret: secret || undefined, dynamicClient, redirectUri, authUrl: meta.authUrl, tokenUrl: meta.tokenUrl, resource: meta.resource, scopes }, { revokeUrl: meta.revocationUrl || null });

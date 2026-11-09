@@ -14,6 +14,7 @@ import { getKeyring } from '../auth/keyring.js';
 import { invalidateUserConfig } from '../auth/load-user-config.js';
 import { startFlow, handleCallback, claimFlow, discardPending, STATE_RE } from '../oauth/flow.js';
 import { pendingFor, openPendingByState } from '../oauth/pending.js';
+import { newBind, bindCookie, nonceFromReq } from '../oauth/browser-bind.js';
 import { runWithConfig, cfgEnv } from '../config/resolve.js';
 import { googleConfig, googleConfigured, googleState, googleClientConfigured, googleToolAllowed, parseServices, scopesFor, base, AUTH_URL, SERVICES } from './config.js';
 import { accessToken } from './http.js';
@@ -114,12 +115,13 @@ export async function connectStart({ req, user }) {
     const re = redirectUriFor(req); if (!re.ok) return bad(400, 'origin_unknown', re.error);
     if (!(await cfg.hit('google-start', 600, 20))) return bad(429, 'rate_limited', '操作が多すぎます。しばらくしてからもう一度お試しください');
     const sel = selectionFrom((n) => cfg.get(n)), scopes = scopesFor(sel);
+    const { nonce, bind } = newBind(user.email);
     const { url, state } = await startFlow({
-      pending: pendingFor(user.db), provider: 'google', authUrl: AUTH_URL, tokenUrl: base('oauth', g), clientId: g.clientId, clientSecret: g.clientSecret, redirectUri: re.uri, scopes,
+      bind, pending: pendingFor(user.db), provider: 'google', authUrl: AUTH_URL, tokenUrl: base('oauth', g), clientId: g.clientId, clientSecret: g.clientSecret, redirectUri: re.uri, scopes,
       params: { access_type: 'offline', prompt: 'consent', include_granted_scopes: 'false' },
     });
     audit('google-connect-started', { uid: user.uid.uid, services: sel.services.length, readonly: sel.readonly });
-    return { status: 200, body: { ok: true, url, state, redirectUri: re.uri, scopes } };
+    return { status: 200, headers: { 'set-cookie': bindCookie(state, nonce, { secure: re.uri.startsWith('https:') }) }, body: { ok: true, url, state, redirectUri: re.uri, scopes } };
   });
 }
 
@@ -135,6 +137,13 @@ const FAIL_TEXT = {
   exchange_failed: ['Googleがトークンの発行を断りました。クライアントの種類が「ウェブ アプリケーション」か、登録した戻り先URLが正確かを確認してください。', 400], network: ['Googleとの通信に失敗しました。少し待って、もう一度お試しください。', 502],
 };
 
+/** The page for a callback that arrives in a browser other than the one that started the flow (or where cookies cannot be used): nothing is exchanged until the click. */
+export const confirmPage = ({ who, what, query }) => {
+  const q = new URLSearchParams({ state: String(query.state || ''), ...(typeof query.code === 'string' && query.code ? { code: query.code } : {}), ...(typeof query.error === 'string' && query.error ? { error: query.error } : {}), confirm: '1' });
+  return page('確認', `<h1>CONFIRM</h1><p>${esc(what)}を、E.L.V.A.R. の次のアカウントにつなぎます。</p><p class="ok" style="font-size:20px">${esc(who || '（不明）')}</p><p class="warn">これは、あなた自身のアカウントですか？ 見覚えがない、または誰かに「このリンクを開いて許可して」と頼まれたときは、つながずに、このページを閉じてください（許可すると、あなたの${esc(what)}が、そのアカウントの持ち主に渡ります）。</p>
+    <p><a href="?${esc(q.toString())}" rel="nofollow" style="display:inline-block;border:1px solid #E8B96A;padding:6px 16px;text-decoration:none">はい、私のアカウントです。つなぐ</a></p><p class="sub">違う場合は、このページを閉じてください。</p>`);
+};
+
 /** GET callback. @returns {Promise<{status:number, html:string, headers:object}>} */
 export async function connectCallback({ req, query = {} }) {
   const headers = { 'content-security-policy': PAGE_CSP };
@@ -144,9 +153,10 @@ export async function connectCallback({ req, query = {} }) {
   const state = String(query.state || '');
   if (!STATE_RE.test(state)) return fail(FAIL_TEXT.bad_state[0], 403);
   let r;
-  try { r = await handleCallback({ openPending: openPendingByState(db, 'google'), expectProvider: 'google', tokenUrl: base('oauth', googleConfig(cfgEnv, null)), state, code: typeof query.code === 'string' ? query.code : '', error: typeof query.error === 'string' ? query.error : '' }); }
+  try { r = await handleCallback({ openPending: openPendingByState(db, 'google'), expectProvider: 'google', cookieNonce: nonceFromReq(req, state), confirmed: query.confirm === '1', tokenUrl: base('oauth', googleConfig(cfgEnv, null)), state, code: typeof query.code === 'string' ? query.code : '', error: typeof query.error === 'string' ? query.error : '' }); }
   catch (e) { console.error('[elvar] google callback:', e?.code || e?.message); return fail('サービスに接続できません。', 503); }
   audit('google-callback', { ok: r.ok, reason: r.reason });   // no user id: the callback knows only the state
+  if (!r.ok && r.reason === 'confirm_required') return { status: 200, headers, html: confirmPage({ who: r.who, what: 'Googleのログイン', query }) };
   if (!r.ok) { const [t, s] = FAIL_TEXT[r.reason] || FAIL_TEXT.exchange_failed; return fail(t + ((r.reason === 'denied' || r.reason === 'exchange_failed') && r.error ? `（${esc(r.error)}）` : ''), s); }
   return { status: 200, headers, html: page('Googleと連携しました', '<h1>CONNECTED</h1><p class="ok">Googleの認証を受け取りました。</p><p>E.L.V.A.R. のアプリに戻ってください。アプリが自動で接続を完了します。</p><p class="sub">この画面は閉じて大丈夫です。</p><p><a href="/">アプリを開く</a></p>') };
 }
