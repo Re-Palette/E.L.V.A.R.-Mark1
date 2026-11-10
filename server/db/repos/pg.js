@@ -35,6 +35,7 @@ const limitRow = (r) => ({ provider: r.provider, metric: r.metric, period: r.per
 /** Refuse a write that would take the user over their storage quota (accounts.storage_quota_bytes, default 500 MB). The bytes in use are kept by the triggers of
  *  migration 07 in app.storage_usage: files + extracted texts + notes + their revisions + messages + the uploads that are reserved but not finished. */
 async function assertRoom(tx, uid, grow) {
+  await tx`select app.lock_my_account()`;   // one writer at a time per user (like reserve_file): the counter below cannot be raced past the quota
   const [r] = await tx`select coalesce((select storage_quota_bytes from app.accounts where user_id = ${uid}), 524288000) as quota,
       coalesce((select files_bytes + text_bytes + notes_bytes + messages_bytes + reserved_bytes from app.storage_usage where user_id = ${uid}), 0) as used`;
   if (Number(r.used) + grow > Number(r.quota)) throw dbError('storage_quota_exceeded', 413);
@@ -641,6 +642,8 @@ export function pgSystem(sql) {
     async signupMode() { const [r] = await sql`select app.platform_signup_mode() as m`; return r.m; },
     async accountCount() { const [r] = await sql`select app.account_count() as n`; return Number(r.n); },
     /** The per-file limit of the platform (app.platform_config max_file_bytes; the bucket's file_size_limit follows it by trigger). */
+    /** Which of these user ids (at most 1000) still have an Auth account (the orphan sweep of Storage). */
+    async existingUsers(ids) { V.need(Array.isArray(ids) && ids.length <= 1000 && ids.every(requireUuid)); if (!ids.length) return []; return (await sql`select app.existing_users(${ids}::uuid[]) as id`).map((r) => r.id); },
     async maxFileBytes() { const [r] = await sql`select app.platform_max_file_bytes() as n`; return Number(r.n); },
     async setMaxFileBytes(n) { V.need(Number.isInteger(n) && n >= 1048576 && n <= 5368709120); const [r] = await sql`select app.set_max_file_bytes(${n}) as n`; return Number(r.n); },
     async deviceLookup(hash) {

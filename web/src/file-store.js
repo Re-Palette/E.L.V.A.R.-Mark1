@@ -26,6 +26,15 @@ export function apiError(r, fallback = 'サーバーとの通信に失敗しま�
   return e;
 }
 
+/**
+ * The browser sends its OWN access token to the address the server names in `upload.url`. That address must be the configured Supabase project (its origin, over https, or the local
+ * dev stack's own origin): a wrong answer from the API (a bug, a compromised response) must not be able to point the token at another host. @returns {boolean}
+ */
+export function uploadTargetAllowed(url, origin, base = globalThis.location?.href) {
+  if (!origin) return false;
+  try { const u = new URL(url, base), o = new URL(origin, base); return u.origin === o.origin && (u.protocol === 'https:' || ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname)) && !u.username && !u.password; } catch { return false; }
+}
+
 /** POST a Blob to Storage with the user's own access token (`headers()` gives the Authorization header), with real progress (fetch cannot report upload progress) and cancel. */
 export function xhrUpload(upload, blob, { onProgress, signal, headers = () => ({}) } = {}) {
   return new Promise((resolve, reject) => {
@@ -46,7 +55,7 @@ export function xhrUpload(upload, blob, { onProgress, signal, headers = () => ({
  * @param {{ api: (path:string, o?:{method?:string, body?:any}) => Promise<{status:number, body:any}>, idb?: IDBFactory, storage?: Storage, authHeaders?: () => object,
  *           upload?: typeof xhrUpload, download?: (url:string) => Promise<Blob>, now?: () => number }} o
  */
-export function createFileStore({ api, idb = globalThis.indexedDB, storage = globalThis.localStorage, authHeaders = () => ({}), upload = xhrUpload, download = null, now = () => Date.now() }) {
+export function createFileStore({ api, idb = globalThis.indexedDB, storage = globalThis.localStorage, authHeaders = () => ({}), upload = xhrUpload, download = null, now = () => Date.now(), uploadOrigin = () => null }) {
   if (typeof api !== 'function') throw new Error('createFileStore needs api');
   let dbp = null, files = null, usage = null, loadedAt = 0, dirty = true, offline = false, savedSnap = '';
   const texts = new Map();   // id -> extracted text (this page only)
@@ -153,7 +162,10 @@ export function createFileStore({ api, idb = globalThis.indexedDB, storage = glo
       if (r.status !== 200) throw apiError(r, 'アップロードを始められませんでした');
       if (r.body.duplicate) throw Object.assign(new Error('同じ内容のファイルがすでにあります'), { code: 'duplicate', duplicate: r.body.duplicate });
       const id = r.body.fileId, cancelUpload = () => api(`/api/elvar/files/${id}/cancel`, { method: 'POST', body: {} }).catch(() => {});
-      try { await upload(r.body.upload, blob, { onProgress, signal, headers: authHeaders }); }
+      try {
+        const origin = uploadOrigin(); if (origin !== null && !uploadTargetAllowed(r.body.upload?.url, origin)) throw Object.assign(new Error('アップロード先が正しくありません。取り込みを中止しました'), { code: 'upload_target_untrusted' });
+        await upload(r.body.upload, blob, { onProgress, signal, headers: authHeaders });
+      }
       catch (e) { await cancelUpload(); throw e; }
       onProgress?.({ stage: '確認中' });
       const cols = toColumns(index || {});

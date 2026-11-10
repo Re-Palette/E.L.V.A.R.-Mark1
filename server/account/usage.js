@@ -9,11 +9,19 @@
 import { PROVIDERS, TOOL_PROVIDER, PERIODS, SOFT_ACTIONS, PERIOD_JA, HARD_LIMITS, effectiveHardLimits, isLimitable, fmtAmount } from '../usage-limits.js';
 import { userDay, invalidateUsage } from '../usage.js';
 import { addDays } from '../../shared/tz.js';
+import { TOOL_MAP } from '../google/tools.js';
+import { findConnectorTool } from '../connectors/index.js';
+import { currentConfig } from '../config/resolve.js';
 
 const bad = (status, error, message) => ({ status, body: { error, ...(message ? { message } : {}) } });
 const ok = (body = { ok: true }) => ({ status: 200, body });
 const DAYS = 30;
 const TOOL_NAME = /^[A-Za-z0-9_.:-]{1,40}$/;
+/** How many different tool names one user's reports may add in a day (the catalog has fewer than 100 tools, plus the user's own connector tools). */
+let toolNameCap = 150;
+export const _setToolNameCap = (n) => { toolNameCap = n ?? 150; };
+/** A name the SERVER knows: a tool of the built-in catalog, or one of the caller's own connector tools. Anything else is not a tool and is not recorded. */
+const isKnownTool = (n) => { if (Object.hasOwn(TOOL_MAP, n)) return true; try { return Boolean(findConnectorTool(currentConfig(), n)); } catch { return false; } };
 
 const catalog = () => Object.fromEntries(Object.entries(PROVIDERS).map(([p, v]) => [p, { label: v.label, metrics: v.metrics }]));
 const SOURCES = { calls: 'server', input_tokens: 'server', output_tokens: 'server', live_sessions: 'server', live_seconds: 'client', tools: 'client' };
@@ -104,9 +112,14 @@ export async function postReport({ user, body }) {
     credited = Math.min(sec, Math.floor(gap) + 5, 60);
     await user.db((r) => r.kv.set('usage:live-last', { at: now }, { ttlSec: 600 }));
   }
+  // only names the server's catalog knows, and a bounded number of different ones per day: a page cannot make the usage table grow with made-up names
+  const known = names.filter(isKnownTool), seenKey = `usage:tool-names:${day}`;
+  const seen = new Set((await user.db((r) => r.kv.get(seenKey)))?.names || []), accepted = [];
+  for (const n of known) { if (seen.has(n)) accepted.push(n); else if (seen.size < toolNameCap) { seen.add(n); accepted.push(n); } }
+  if (accepted.length) await user.db((r) => r.kv.set(seenKey, { names: [...seen] }, { ttlSec: 2 * 86400 }));
   await user.db(async (r) => {
     if (credited > 0) await r.usage.record({ provider: 'gemini', metric: 'live_seconds', amount: credited, source: 'client', day });
-    for (const n of names) await r.usage.record({ provider: TOOL_PROVIDER, metric: n, amount: tools[n], source: 'client', day });
+    for (const n of accepted) await r.usage.record({ provider: TOOL_PROVIDER, metric: n, amount: tools[n], source: 'client', day });
   });
   invalidateUsage(user.uid);
   return ok({ credited });

@@ -6,7 +6,7 @@ import { api } from '../elvar/auth.js';
 import { when } from './google-logic.js';
 
 const STATE = { queued: ['依頼済み', 'off'], working: ['作業中', 'ok'], review: ['確認待ち', 'ok'], done: ['完成', 'ok'], failed: ['失敗', 'warn'] };
-const REPO = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
+const REPO = /^(?!\.)[A-Za-z0-9_.-]{1,100}\/(?!\.{1,2}$)[A-Za-z0-9_.-]{1,100}$/;
 
 export function mountBuilds(root) {
   let cfg = null, builds = [], note = { t: '', c: '' };

@@ -9,7 +9,7 @@ import { env } from './config/resolve.js';
 import { cleanPath } from './brain.js';
 
 const API = 'https://api.github.com';
-const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+const REPO_RE = /^(?!\.)[\w.-]+\/(?!\.{1,2}$)[\w.-]+$/;   // owner/name: no `.` or `..` segment (the name goes into an API path with the token)
 const MAX_IMPORT = 300, MAX_PUSH = 40, MAX_FILE = 200_000;
 const bad = (status, error, message) => ({ status, body: { error, ...(message ? { message } : {}) } });
 

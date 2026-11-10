@@ -5,7 +5,7 @@
 //   4b. the data exports (P7): expired and abandoned export jobs are deleted (the zip parts first, then the job)
 //   4. the file vault (P5): remove the Storage objects of deleted files and of uploads that never finished (service key), drop their rows, and recount every user's storage usage
 import { setAppMetadata } from '../db/service.js';
-import { purgeDue } from '../rights/purge.js';
+import { purgeDue, sweepOrphanStorage } from '../rights/purge.js';
 import { getStorage, USER_BUCKET } from '../storage/index.js';
 import { sweepExports } from '../rights/export-job.js';
 import { envMaxFileBytes } from '../config/platform-limits.js';
@@ -22,6 +22,7 @@ export async function dailyCron({ user: ctx }, { env = process.env, setClaim = s
     return { granted: true };
   });
   out.purge = await step('purge', async () => purge(await (await import('../db/index.js')).getDb()));
+  out.orphans = await step('orphan-sweep', async () => sweepOrphanStorage(await (await import('../db/index.js')).getDb(), await getStorage()));
   out.files = await step('files-sweep', () => sweepFiles(ctx.system));
   out.limits = await step('limits-sync', async () => { const n = envMaxFileBytes(env); if (n === null) return { synced: false }; return { synced: true, maxFileBytes: await ctx.system.setMaxFileBytes(n) }; });
   out.exports = await step('exports-sweep', async () => sweepExports({ system: ctx.system, storage: await getStorage() }));

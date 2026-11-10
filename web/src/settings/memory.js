@@ -3,7 +3,7 @@
 import { esc } from '../elvar/ui.js';
 import { api } from '../elvar/auth.js';
 
-const REPO = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
+const REPO = /^(?!\.)[A-Za-z0-9_.-]{1,100}\/(?!\.{1,2}$)[A-Za-z0-9_.-]{1,100}$/;
 const RETENTION = [['7', '7日'], ['30', '30日'], ['90', '90日'], ['180', '180日（標準）'], ['365', '1年'], ['0', 'ずっと残す']];
 
 /** @param {HTMLElement} root @param {{ openBrain?: Function, openConversations?: Function }} [hooks] */

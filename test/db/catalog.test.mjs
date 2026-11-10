@@ -146,7 +146,9 @@ test('definer functions: fixed search_path, never executable by public or anon, 
     my_stale_files: ['authenticated'], recount_my_storage: ['authenticated'], search_files: ['authenticated'], admin_set_quota: ['authenticated'],
     export_job_create: ['elvar_app'], export_job_update: ['elvar_app'], export_jobs_expired: ['elvar_app'], export_job_drop: ['elvar_app'],   // migration 19: the export jobs (server only)
     stale_files: ['elvar_app'], drop_stale_file: ['elvar_app'], reconcile_storage: ['elvar_app'],
-    platform_max_file_bytes: ['authenticated', 'elvar_app'], _sync_bucket_limit: [], set_max_file_bytes: ['elvar_app'],   // migration 20: the platform per-file limit (a number, readable by anyone signed in)
+    platform_max_file_bytes: ['authenticated', 'elvar_app'], _sync_bucket_limit: [], set_max_file_bytes: ['elvar_app'],
+    existing_users: ['elvar_app'], lock_my_account: ['authenticated'],   // migration 21: the orphan sweep asks which owners are still accounts; notes / messages lock the account row for the quota check
+      // migration 20: the platform per-file limit (a number, readable by anyone signed in)
   };
   assert.deepEqual(fns.map((f) => f.proname).sort(), Object.keys(EXPECT).sort(), 'a function was added or removed: update this list deliberately');
   for (const f of fns) {

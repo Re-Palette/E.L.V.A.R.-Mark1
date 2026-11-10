@@ -63,6 +63,8 @@ export function createMemoryStorage({ canInsert = () => true, canRead = () => tr
     async list(prefix, { bucket = USER_BUCKET } = {}) { return [...objects.keys()].filter((k) => k.startsWith(`${bucket}/${prefix}`)).map((k) => k.slice(bucket.length + 1)); },
     async remove(paths, { bucket = USER_BUCKET } = {}) { let n = 0; for (const p of paths) if (objects.delete(key(bucket, p))) n++; return n; },
     async count(prefix, { bucket = USER_BUCKET } = {}) { return (await this.list(prefix, { bucket })).length; },
+    /** The user ids that have objects in one bucket (the orphan sweep). */
+    async owners({ bucket = USER_BUCKET } = {}) { return [...new Set([...objects.keys()].filter((k) => k.startsWith(`${bucket}/users/`)).map((k) => k.split('/')[2]))]; },
     /** The real size and SHA-256 of an object, read with the service key (finalize: the owner's token can no longer read an unverified object). null when it is not there. */
     async hash(path, { bucket = USER_BUCKET, maxBytes = maxObjectBytes } = {}) {
       const o = objects.get(key(bucket, path)); if (!o) return null;

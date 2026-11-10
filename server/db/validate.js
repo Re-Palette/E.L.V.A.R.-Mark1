@@ -63,7 +63,7 @@ export function connectorInput(c) {
 }
 export const BUILD_STATES = Object.freeze(['queued', 'working', 'review', 'done', 'failed']);
 export function buildInput(b) {
-  need(b && typeof b.repo === 'string' && /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/.test(b.repo) && Number.isInteger(b.issueNumber) && b.issueNumber >= 1);
+  need(b && typeof b.repo === 'string' && REPO_RE.test(b.repo) && Number.isInteger(b.issueNumber) && b.issueNumber >= 1);
   const target = b.target === undefined ? 'builds' : b.target, state = b.state === undefined ? 'queued' : b.state;
   need(['builds', 'self'].includes(target) && BUILD_STATES.includes(state) && typeof b.title === 'string' && b.title.length >= 1 && b.title.length <= 200);
   return { repo: b.repo, target, issueNumber: b.issueNumber, state, title: b.title };
@@ -84,6 +84,8 @@ export const MESSAGE_ROLES = Object.freeze(['user', 'assistant', 'tool']);
 export const CHANNELS = Object.freeze(['voice', 'text', 'agent', 'import']);
 export const MESSAGE_MAX = 8000;
 /** [{ role, text, at(ms) }] -> the same, validated (1..120 messages per call). */
+/** owner/name of a GitHub repository: no `.` or `..` segment (the name goes into an API path). */
+export const REPO_RE = /^(?!\.)[A-Za-z0-9_.-]{1,100}\/(?!\.{1,2}$)[A-Za-z0-9_.-]{1,100}$/;
 export function messageTurns(turns) {
   need(Array.isArray(turns) && turns.length >= 1 && turns.length <= 120);
   return turns.map((t) => {

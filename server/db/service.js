@@ -119,3 +119,15 @@ export async function storageHash(bucket, path, { maxBytes = 62914560, ...opts }
   for await (const chunk of r.body) { size += chunk.length; if (size > maxBytes) { try { await r.body.cancel?.(); } catch { /* ignore */ } return { size, sha256: null, tooLarge: true }; } h.update(chunk); }
   return { size, sha256: h.digest('hex') };
 }
+
+/** The user ids that have anything under users/ in one bucket (the folder names; paged). For the orphan sweep: ids only, never content. */
+export async function storageListOwners(bucket, opts = {}) {
+  if (!STORAGE_BUCKET_RE.test(String(bucket))) throw dbError('bad_bucket', 500);
+  const out = [];
+  for (let offset = 0; ; offset += LIST_PAGE) {
+    const r = await authAdmin('POST', `/storage/v1/object/list/${bucket}`, { prefix: 'users', limit: LIST_PAGE, offset, sortBy: { column: 'name', order: 'asc' } }, { ...opts, what: 'storage_admin' });
+    if (r.status === 404 || !Array.isArray(r.body)) return out;
+    for (const e of r.body) if (isUuid(e.name)) out.push(String(e.name).toLowerCase());
+    if (r.body.length < LIST_PAGE || out.length > LIST_MAX) return out;
+  }
+}

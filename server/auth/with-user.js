@@ -20,6 +20,7 @@ import { userConfigShell, cronConfig } from './user-config.js';
 import { loadUserConfig } from './load-user-config.js';
 import { setMultiAccount } from '../net/safe-fetch.js';
 import { effectiveHardLimits, rateMessage } from '../usage-limits.js';
+import { addrHash } from './client-ip.js';
 
 // The account status (active / suspended / pending_deletion) is cached per warm instance for 30 seconds. That is the documented bound on how long a
 // suspension or a deletion request made on ANOTHER instance can go unnoticed by ordinary requests. The instance that makes the change calls
@@ -52,6 +53,8 @@ export function requestAllowed(uid, limit, now = Date.now()) {
   return w.n <= limit;
 }
 export const _clearRequestWindows = () => reqWin.clear();
+/** Requests per minute per address on the device-token routes (the Android sync polls a few times a minute; a shared address has room for many phones). */
+export const DEVICE_REQ_PER_MIN = 240;
 const STATUS_ERROR = { suspended: 'account_suspended', pending_deletion: 'account_pending_deletion' };
 
 async function loadAccount(db, uid, now, { fresh = false } = {}) {
@@ -88,11 +91,27 @@ export function limitDeviceRepos(r, scopes = []) {
   });
 }
 
+/**
+ * The system operations a USER's request may use (ctx.system of a user, admin or device context), each bound to that user: a rate counter, the platform per-file limit and the
+ * export-job calls. The cross-user functions (dueDeletions, staleFiles, purgeExpired, deviceLookup, expiredExportJobs, ...) exist only on the cron context: a user context cannot reach them.
+ * @param {object} system  db.system  @param {object} uid  the request's VerifiedUid
+ */
+export function userSystem(system, uid) {
+  const own = (v) => { if (String(v?.uid ?? v ?? '').toLowerCase() !== uid.uid) throw new DbError('forbidden', 403); };
+  return Object.freeze({
+    rlHit: ({ bucket, windowSec }) => system.rlHit({ bucket, who: uid.uid, windowSec, userId: uid }),
+    maxFileBytes: () => system.maxFileBytes(),
+    createExportJob: async (v) => { own(v); return system.createExportJob(uid); },
+    updateExportJob: async (v, id, o) => { own(v); return system.updateExportJob(uid, id, o); },
+    dropExportJob: async (userId, id) => { own(userId); return system.dropExportJob(uid.uid, id); },
+  });
+}
+
 function makeCtx(db, extra) {
   // A device token is for one narrow job: its ctx.db hands out a reduced repos object (limitDeviceRepos), never the user's whole account.
   const ctx = { ...extra, db: extra.kind === 'device' ? (fn) => db.asUser(ctx.uid, (r) => fn(limitDeviceRepos(r, ctx.scopes))) : (fn) => db.asUser(ctx.uid, fn) };
   ctx.cfg = userConfigShell(ctx);   // until loadConfig(): the strict shell (platform defaults only)
-  ctx.system = db.system;
+  ctx.system = userSystem(db.system, extra.uid);   // narrowed to this user (cron builds its own ctx with the whole system)
   // The user's own settings, secrets and profile (one transaction as that user, cached 10 s per instance). Routes and wrappers call it before the handler.
   if (extra.kind === 'user' || extra.kind === 'admin') {
     ctx.loadConfig = async (o) => {
@@ -130,6 +149,8 @@ export async function authenticate(kind, req, opts = {}) {
     }
     if (kind.startsWith('device:')) {
       const scope = kind.slice('device:'.length);
+      // abuse control before anything is looked up: a device (the phone's sync) makes a few requests a minute; one address making hundreds is guessing or flooding
+      try { if ((await db.system.rlHit({ bucket: 'devauth', who: addrHash(req), windowSec: 60 })) > DEVICE_REQ_PER_MIN) return fail(429, 'rate_limited', rateMessage('リクエスト', '1分あたり')); } catch (e) { console.error('[elvar] device rate limit unavailable:', e?.code || e?.message); }
       const t = parseDeviceToken(deviceTokenFrom(req)); if (!t) return fail(401, 'login_required');
       const row = await db.system.deviceLookup(t.hash);
       if (!row || row.deviceId !== t.deviceId || !row.scopes.includes(scope)) return fail(401, 'invalid_token');

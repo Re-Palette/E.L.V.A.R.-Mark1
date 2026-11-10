@@ -2,6 +2,8 @@
 // user's own NOTIF_SECRET, "elvar-notif-v1"); this server and the database only ever hold ciphertext and a timestamp, for 3 days, at most 200 items.
 // Who may call it (api/notif.js): the signed-in user (reads, clears, status) or the user's own device token (scope notif:push to upload, notif:pull to
 // download; the device's repos contain nothing but the relay, server/auth/with-user.js limitDeviceRepos). The user comes from the token, never from the request.
+/** Pushes per minute per user (a phone batches what it saw; this stops a loop or a leaked token from filling the relay). */
+export const PUSH_PER_MIN = 30;
 const forbidden = () => ({ status: 403, body: { error: 'forbidden' } });
 
 /** @param {{ user: object, method: string, query?: object, body?: object }} o  @returns {Promise<{status:number, body:object}>} */
@@ -13,6 +15,7 @@ export async function handleNotif({ user, method, query = {}, body = {} }) {
   }
   if (method === 'POST') {
     if (body.action === 'clear') { const n = await user.db((r) => (r.notif.clear ? r.notif.clear() : null)); return n === null ? forbidden() : { status: 200, body: { cleared: true } }; }
+    if (user.system?.rlHit && (await user.system.rlHit({ bucket: 'notif-push', windowSec: 60 })) > PUSH_PER_MIN) return { status: 429, body: { error: 'rate_limited' } };   // per user (the device token's owner), whichever device or browser pushes
     const stored = await user.db((r) => (r.notif.push ? r.notif.push(Array.isArray(body.items) ? body.items : []) : null));
     return stored === null ? forbidden() : { status: 200, body: stored };
   }
