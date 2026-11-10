@@ -13,7 +13,7 @@
 - Data store: Supabase (Postgres + RLS, Storage, Auth).
 - O2 Google: no shared platform Google OAuth client. Every user creates and enters their own Google OAuth client (current in-app flow). No Google verification / CASA needed.
 - O5/O6 Plans: build and test on the free Supabase/Vercel plans; switch to paid plans before public launch.
-- O1 Default storage quota: 500MB per user (admin can change per user). Per-file limit 60MB.
+- O1 Default storage quota: 500MB per user (admin can change per user). Per-file limit 60MB (default unchanged; since P8 it is configurable: ELVAR_MAX_FILE_BYTES / `app.platform_config` `max_file_bytes`, and on the Supabase Free plan the project-wide limit of 50MB applies: set 52428800 there).
 - O3 Account deletion: the user chooses at deletion time — delete immediately, or a 7-day grace period during which signing in cancels it.
 - O4 Notes at rest: not encrypted beyond database/storage encryption (keeps search working). Secrets are envelope-encrypted per user. (Default; owner may revisit.)
 - O7 Privacy law baseline: Japan APPI; design export/deletion so GDPR requests can also be met.

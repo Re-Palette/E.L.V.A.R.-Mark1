@@ -41,3 +41,26 @@ test('existing_users answers with the ids that are accounts (elvar_app only)', a
   await assert.rejects(asRole(app, { uid: a }, (tx) => tx`select app.existing_users(array[${a}]::uuid[])`), (e) => e.code === '42501');
   await deleteUser(a);
 });
+
+const hook = async (email) => (await admin`select app.before_user_created(${admin.json({ user: { email }, metadata: { name: 'before-user-created' } })}) as r`)[0].r;
+test('platform caps (P8): max_accounts stops sign-ups at the ceiling; max_total_storage_bytes stops file reservations of everybody', async () => {
+  const [{ n }] = await admin`select count(*)::int as n from auth.users`;
+  try {
+    await admin`insert into app.platform_config (key, value) values ('max_accounts', ${String(n)}) on conflict (key) do update set value = excluded.value`;
+    const denied = await hook(`cap-${Date.now()}@example.test`); assert.equal(denied.error?.http_code, 403); assert.match(denied.error.message, /full/i);
+    await admin`update app.platform_config set value = ${String(n + 5)} where key = 'max_accounts'`;
+    assert.deepEqual(await hook(`cap2-${Date.now()}@example.test`), {}, 'below the ceiling a sign-up is allowed');
+    await admin`update app.platform_config set value = 'not a number' where key = 'max_accounts'`;
+    assert.deepEqual(await hook(`cap3-${Date.now()}@example.test`), {}, 'a bad value means no ceiling');
+  } finally { await admin`delete from app.platform_config where key = 'max_accounts'`; }
+  const u = await newUser(), U = mintVerifiedUid(u, 'test'), reserve = (c) => db.asUser(U, (r) => r.files.reserve({ name: 'c.txt', mime: 'text/plain', kind: 'text', size: Buffer.byteLength(c), sha256: require_hex(c) }));
+  try {
+    const [{ total }] = await admin`select coalesce(sum(files_bytes + text_bytes + notes_bytes + messages_bytes + reserved_bytes), 0)::bigint as total from app.storage_usage`;
+    await admin`insert into app.platform_config (key, value) values ('max_total_storage_bytes', ${String(Number(total) + 10)}) on conflict (key) do update set value = excluded.value`;
+    await assert.rejects(reserve('x'.repeat(50)), (e) => e.code === 'platform_storage_full' && e.status === 413);
+    const ok = await reserve('y'.repeat(5)); assert.ok(ok.fileId, 'a reservation that fits under the ceiling is accepted');
+    await db.asUser(U, async (r) => { await r.files.beginDelete(ok.fileId); await r.files.finishDelete(ok.fileId); });
+  } finally { await admin`delete from app.platform_config where key = 'max_total_storage_bytes'`; await deleteUser(u); }
+});
+import crypto from 'node:crypto';
+const require_hex = (s) => crypto.createHash('sha256').update(s).digest('hex');

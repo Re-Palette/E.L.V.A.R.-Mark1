@@ -124,6 +124,7 @@ export const reserveFile = guard(async ({ user, body }) => {
   try { res = await user.db((r) => r.files.reserve({ name, mime: type[1], kind: type[0], size, sha256, textBytes, source, allowDuplicate: body?.allowDuplicate === true })); }
   catch (e) {
     if (e?.code === 'storage_quota_exceeded' || e?.code === 'file_too_large') { const [usage, acct] = await user.db(async (r) => [await r.usage.storage(), await r.accounts.get()]); return quotaRefusal(e.code, user, acct, usage, size + textBytes); }
+    if (e?.code === 'platform_storage_full') return bad(413, 'platform_storage_full', 'このサービス全体の保存領域がいっぱいです。ご迷惑をおかけします。運営者にご連絡ください');
     if (e?.code === 'conflict') return bad(409, 'too_many_uploads', '同時にアップロードできる数をこえました。少し待ってからにしてください');
     throw e;
   }

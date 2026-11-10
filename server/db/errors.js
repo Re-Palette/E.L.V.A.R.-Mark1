@@ -18,6 +18,7 @@ export function mapPgError(e) {
   if (c === 'P0002') return dbError('not_found', 404, e);                            // no_data_found raised by our definer functions
   if (c === 'EQ001') return dbError('storage_quota_exceeded', 413, e);                // P5: the reservation / write would take the user over their storage quota
   if (c === 'EQ002') return dbError('file_too_large', 413, e);                         // P5: over the per-file limit, or the size differs from the reservation
+  if (c === 'EQ004') return dbError('platform_storage_full', 413, e);                  // P8: the platform-wide storage ceiling (platform_config max_total_storage_bytes)
   if (c === 'EQ003') return dbError('reservation_expired', 409, e);                    // P5: no live upload reservation (finished, expired or never made)
   if (c === '57014') return dbError('db_timeout', 503, e);                            // statement_timeout
   if (c.startsWith('08') || c === '53300' || c === '57P01' || c === '57P03' || /^(ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN)/.test(c) || /^(CONNECT|CONNECTION)_/.test(c)) return dbError('db_unavailable', 503, e);

@@ -16,12 +16,12 @@
 最新の上限と規約は、各社のページで確かめてください。次の点に気をつけます。
 
 - Supabase の無料プランは、使われないとプロジェクトが止まることがあります。バックアップも当てにできません。有料プランに上げて、バックアップを有効にしてください。
-- Supabase の無料プランには、1ファイルのアップロード上限が 50MB という制限があると聞いています。E.L.V.A.R. の 1ファイル上限は 60MB です。無料プランでは、60MB のファイルは通らないかもしれません。確かめてください。
+- Supabase の無料プランでは、プロジェクト全体の「1ファイルのアップロード上限」が **50MB まで**で、バケットの上限もそれを超えられません（Supabase の公式ドキュメント「Storage → Uploads → Limits」で確認済み。有料プランは最大 500GB まで）。E.L.V.A.R. の既定の 1ファイル上限は 60MB（オーナーの決定 O1）なので、**無料プランで動かすときは `ELVAR_MAX_FILE_BYTES=52428800`（50MB）を設定してください**。そうしないと、50MB を超えるファイルは「予約は通るが、アップロードが Storage に断られる」状態になります。有料プランに上げて 60MB 以上にしたいときは、Supabase ダッシュボードの Storage Settings の「Global file size limit」も上げてください（こちらは手作業です）。
 - Supabase 標準のメール送信は、数がとても少なく、本番に使えません。独自のSMTPが必要です（§1.6）。
 - パスワードの漏洩チェックなど、一部の認証機能は上位のプランで使えます。
 - Vercel の無料（Hobby）プランは、商用利用ができない決まりです。公開サービスには、有料プランが必要です。
 - 関数の実行時間は、プランで上限が違います。`vercel.json` は、`agent-run` に 60 秒、`chat` に 40 秒などを指定しています。
-- 定期処理（Cron）は、1日1回だけです（`vercel.json` の `crons`）。
+- 定期処理（Cron）は、1日1回だけです（`vercel.json` の `crons`）。有料プランでは、`/api/elvar/cron/daily` の頻度を上げられます（例: `*/15 * * * *`。どの手順も繰り返して安全で、軽い処理です）。未完了のアップロードの掃除と、削除済みアカウントの残りのファイルの掃除が、その分すばやくなります。
 
 ## 1. Supabase
 
@@ -51,7 +51,7 @@ CLI を使わない場合は、SQLエディタに、ファイルを順に貼っ�
 マイグレーションは、次のものを作ります。
 
 - 非公開スキーマ `app`、サーバー用ロール `elvar_app`、全ユーザーデータのテーブル（RLS 強制）。
-- 非公開の Storage バケット `user-files`（1ファイル 60MB）と `user-exports`（512MB）。作る SQL がマイグレーションの中にあります。
+- 非公開の Storage バケット `user-files`（1ファイル 60MB。`ELVAR_MAX_FILE_BYTES` または `app.platform_config` の `max_file_bytes` を変えると、バケットの上限もトリガーで同じ値になります）と `user-exports`（512MB）。作る SQL がマイグレーションの中にあります。
 - サインアップの制限用の関数（`app.before_user_created`）と、運営者用の設定テーブル。
 
 日本語の全文検索は、PGroonga が使える環境では PGroonga、なければ `pg_trgm` を、マイグレーションが選びます。PGroonga の側は、本物の Supabase ではまだ確かめていません。
@@ -166,6 +166,7 @@ CSP は、`vercel.json` で `challenges.cloudflare.com` を許可済みです。
 | `ELVAR_BOOTSTRAP_ADMIN_EMAIL` | おすすめ | 最初の管理者のメールアドレス（§3） |
 | `ELVAR_TURNSTILE_SITE_KEY` | 任意 | §1.8 のサイトキー |
 | `ELVAR_SIGNUP` | 任意 | `open`、`invite`、`closed`。データベースが無いときの表示だけに使われます。実際の制限は §1.7 の表です |
+| `ELVAR_MAX_FILE_BYTES` | 任意 | 1ファイルの上限（バイト、1MB〜5GB。既定 62914560 = 60MB）。cron がデータベース（`app.platform_config` の `max_file_bytes`）に書き込み、Storage バケットの上限もトリガーで同じ値になります。**Supabase の無料プランは 52428800（50MB）** |
 | `ELVAR_DEFAULT_LIMITS` | 任意 | 1アカウントごとの既定のハード上限（JSON）。例: `{"geminiCallsPerDay":2000,"requestsPerMinute":120}`。管理者が1人ずつ変えられます |
 | `ELVAR_DELETION_RECEIPT_WEBHOOK` | 任意 | アカウント削除が完了したとき、`{to, subject, text}` を受け取る https の URL。確認メールは、あなたの側で送ります |
 | `ELVAR_KEK_PREV` | 回転中だけ | 古い KEK（複数はカンマ区切り） |

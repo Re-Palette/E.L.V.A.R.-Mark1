@@ -43,7 +43,7 @@ export function createMemoryDb({ now = null } = {}) {
   const users = new Set();
   const profilesOfUsers = new Map();   // uid -> { email, confirmed, createdAt, lastSignInAt } (what auth.users holds)
   const receipts = [];
-  let platformMaxFile = envMaxFileBytes() ?? V.FILE_MAX_BYTES;   // app.platform_config max_file_bytes (migration 20)
+  let platformMaxFile = envMaxFileBytes() ?? V.FILE_MAX_BYTES, platformMaxTotal = null, platformMaxAccounts = null;   // platform_config: max_file_bytes, max_total_storage_bytes, max_accounts   // app.platform_config max_file_bytes (migration 20)
   const ownerOf = (t) => REGISTRY.find((e) => e.table === t).ownerColumn;
 
   const rows = (t, uid) => tables[t].filter((r) => r[ownerOf(t)] === uid);
@@ -479,6 +479,7 @@ export function createMemoryDb({ now = null } = {}) {
           if (!v.allowDuplicate) { const d = rows('files', uid).filter((f) => f.sha256 === v.sha256 && f.status === 'ready').sort((p, q) => p.created_at - q.created_at)[0]; if (d) return { duplicate: { id: d.id, name: d.name } }; }
           if (rows('files', uid).filter((f) => f.status === 'pending' && f.reserved_until > clock()).length >= 20) throw dbError('conflict', 409);
           if (usedTotal(usageOf(uid)) + v.size + v.textBytes > a.storage_quota_bytes) throw dbError('storage_quota_exceeded', 413);
+          if (platformMaxTotal !== null && [...users].reduce((s, id) => s + usedTotal(usageOf(id)), 0) + v.size + v.textBytes > platformMaxTotal) throw dbError('platform_storage_full', 413);
           const id = crypto.randomUUID(), objectPath = `users/${uid}/files/${id}/${v.sha256}`, until = clock() + V.FILE_RESERVE_MINUTES * 60_000;
           tables.files.push({ user_id: uid, id, name: v.name, mime: v.mime, kind: v.kind, size_bytes: v.size, sha256: v.sha256, object_path: objectPath, status: 'pending', reserved_bytes: v.size + v.textBytes,
             reserved_until: until, source: v.source, title: null, doc_kind: null, kind_label: null, tags: [], memo: '', keywords: [], snippet: '', analysis: {}, related: null, created_at: clock(), finalized_at: null, updated_at: clock() });
@@ -676,6 +677,10 @@ export function createMemoryDb({ now = null } = {}) {
       usage: (uid) => usageOf(uid),
       now: () => clock(),
       setSignupMode(m) { signupMode = m; },
+      /** platform_config limits for tests: { maxTotalStorageBytes, maxAccounts } (null = none). */
+      setPlatformCaps({ maxTotalStorageBytes = null, maxAccounts = null } = {}) { platformMaxTotal = maxTotalStorageBytes; platformMaxAccounts = maxAccounts; },
+      /** What the Auth hook answers for a sign-up now (the account cap): null = allowed. */
+      signupDenied() { return platformMaxAccounts !== null && users.size >= platformMaxAccounts ? 'full' : null; },
       /** A Map-like synchronous view of one user's live notes ({ text } by path) for tests: get / has / set / keys / delete. set() writes the row directly (no quota, no revision). */
       notesView(uid) {
         const live = () => tables.notes.filter((n) => n.user_id === uid && n.deleted_at === null);

@@ -56,6 +56,18 @@ end $$;
 revoke all on function app.set_max_file_bytes(bigint) from public, anon, authenticated;
 grant execute on function app.set_max_file_bytes(bigint) to elvar_app;
 
+-- A platform-wide ceiling on stored bytes (P8 abuse control; the Supabase Free plan has 1 GB of Storage): app.platform_config `max_total_storage_bytes` (unset = no ceiling). A
+-- reservation that would take the sum of everybody's counted bytes over it is refused with EQ004. Notes and messages are small and bounded per user by the quota, so only the file vault checks it.
+create function app._platform_storage_full(p_add bigint) returns boolean
+language plpgsql stable security definer set search_path = pg_catalog, app as $$
+declare lim bigint;
+begin
+  select case when c.value ~ '^[0-9]{1,15}$' then c.value::bigint end into lim from app.platform_config c where c.key = 'max_total_storage_bytes';
+  if lim is null then return false; end if;
+  return coalesce((select sum(s.files_bytes + s.text_bytes + s.notes_bytes + s.messages_bytes + s.reserved_bytes) from app.storage_usage s), 0) + p_add > lim;
+end $$;
+revoke all on function app._platform_storage_full(bigint) from public, anon, authenticated;
+
 create or replace function app.reserve_file(p_name text, p_mime text, p_kind text, p_size bigint, p_sha256 text, p_text_bytes bigint default 0, p_source text default 'picker',
                                  p_allow_duplicate boolean default false) returns jsonb
 language plpgsql security definer set search_path = pg_catalog, app as $$
@@ -81,6 +93,7 @@ begin
   if live >= 20 then raise exception 'too many uploads at once' using errcode = '55000'; end if;
   select s.files_bytes + s.text_bytes + s.notes_bytes + s.messages_bytes + s.reserved_bytes into used from app.storage_usage s where s.user_id = uid;
   if used + p_size + p_text_bytes > acct.storage_quota_bytes then raise exception 'storage quota exceeded' using errcode = 'EQ001'; end if;
+  if app._platform_storage_full(p_size + p_text_bytes) then raise exception 'platform storage full' using errcode = 'EQ004'; end if;
   path := 'users/' || uid::text || '/files/' || fid::text || '/' || p_sha256;
   insert into app.files (user_id, id, name, mime, kind, size_bytes, sha256, object_path, status, reserved_bytes, reserved_until, source)
     values (uid, fid, p_name, p_mime, p_kind, p_size, p_sha256, path, 'pending', p_size + p_text_bytes, exp_at, left(coalesce(p_source, 'picker'), 40));

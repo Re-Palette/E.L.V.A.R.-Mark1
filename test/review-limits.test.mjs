@@ -96,3 +96,15 @@ test('repository names with a . or .. segment are refused everywhere a repositor
   try { const { syncConfigured } = await import('../server/brain-sync.js'); assert.equal(syncConfigured(), false); process.env.BRAIN_REPO = 'me/notes'; assert.equal(syncConfigured(), true); }
   finally { if (saved === undefined) delete process.env.BRAIN_REPO; else process.env.BRAIN_REPO = saved; if (savedT === undefined) delete process.env.BRAIN_GITHUB_TOKEN; else process.env.BRAIN_GITHUB_TOKEN = savedT; }
 });
+
+test('platform caps on the memory database: the total storage ceiling refuses file reservations of everybody with a plain message', async () => {
+  h.db.testing.setPlatformCaps({ maxTotalStorageBytes: 100 });
+  try {
+    const r = await h.call('POST', '/api/elvar/files/reserve', A, { name: 'big.txt', size: 500, sha256: 'b'.repeat(64) });
+    assert.equal(r.status, 413); assert.equal(r.body.error, 'platform_storage_full'); assert.match(r.body.message, /保存領域/);
+    const small = await h.call('POST', '/api/elvar/files/reserve', A, { name: 'small.txt', size: 5, sha256: 'c'.repeat(64) }); assert.equal(small.status, 200, JSON.stringify(small.body));
+    await h.call('POST', `/api/elvar/files/${small.body.fileId}/cancel`, A, {});
+  } finally { h.db.testing.setPlatformCaps({}); }
+  assert.equal(h.db.testing.signupDenied(), null);
+  h.db.testing.setPlatformCaps({ maxAccounts: 1 }); assert.equal(h.db.testing.signupDenied(), 'full'); h.db.testing.setPlatformCaps({});
+});
