@@ -1,5 +1,9 @@
 # HUD notes (E.L.V.A.R. Mark1)
 
+These are developer notes for the HUD screen: structure, the `mountHud()` API, the phone layout and the Human protocol. They describe the front end only.
+In the multi-user platform every user sees their own data in the HUD (schedule, tasks, usage, persona); the HUD code does not know whose it is, it just renders what the signed-in user's requests return. See `docs/ELVAR_MULTIUSER.md`.
+Two things in this file are about the early build: `mockData.js` holds demo data for `hud-demo.html` and as a placeholder before real data arrives, and the "reference image" is the design picture the layout was traced from (it is not kept in the repo).
+
 ## Structure
 - `web/index.html` holds `#hud-root` and loads `src/main.js` (owned by the live/Gemini code).
 - `web/hud-demo.html` and `web/src/hud/demo.js` are a standalone demo with no backend. It has state buttons, level/pitch sliders, a synthetic speech envelope, and transcript/status buttons. Open the panel with the "demo ⚙" button or `?panel=1`.
@@ -48,7 +52,7 @@ hud.destroy();
 
 ## How fidelity was verified
 - A Playwright/Chromium script (in the agent scratchpad, not the repo) loads `hud-demo.html?freeze=1` at 1671×941. Region crops of the screenshot were compared side by side with the reference (top bar, each panel, sphere, input bar, bottom-right), and the result was iterated on.
-- `docs/hud-compare.png`: the reference is on the left and the HUD is on the right.
+- The side-by-side comparison images (reference left, HUD right) were made during the work and are not kept in the repo. A current screenshot is `docs/hud-elvar.png`.
 - Automated checks:
   - Sphere animation: idle frames 1 s apart differ (mean abs diff about 6).
   - Audio response: level 0 vs 0.9 (model) gives a diff of about 23, and mean sphere luminance goes from 42.7 to 61.7.
@@ -93,7 +97,7 @@ The 1671x941 design stage is scaled uniformly to fit, then the leftover space (`
 - Verification (Playwright, scratchpad scripts):
   - `hud-demo.html?freeze=1` at 852x1846 was compared region by region with the reference. Ink bounding boxes of every text and icon element are within about 2 px of the reference.
   - Whole-image mean absolute difference: 8.9/255, excluding the OS bars.
-  - `docs/hud-compare-mobile.png` shows the reference on the left and the HUD on the right.
+  - The phone comparison image is not kept in the repo. A current phone screenshot is `docs/hud-elvar-mobile.png`.
   - At 852x1846, 393x852, 430x932, 360x640, 768x1024, 1024x1366 and 320x568 there is no horizontal or vertical overflow, every key element's box is inside the viewport, and the sphere rings do not overlap the cards.
   - Desktop at 1671x941: the diff against the pre-change baseline is 0 px outside the sphere box. At 1920x1080 and 1280x720 all diffs fall inside the sphere area.
   - With `prefers-reduced-motion` there are no errors. The sphere still animates (slowed) and the tab chevrons are static.
@@ -123,6 +127,6 @@ Saying 「ヒューマンプロトコル」 (ASR variants such as フューマ�
 - Smooth start: the app prepares the protocol while idle (~4 s after start, `requestIdleCallback`; not on a locked phone, with data saver or 2G; off with `?humanpreload=0`): module, data, background, shaders (compiled without blocking — `KHR_parallel_shader_compile` where available, otherwise one program per slice), buffers (uploaded between yields) and a few off-screen frames at the final size. The renderer is kept after a show for the next one. The HUD fades with opacity only on compositor layers (`will-change` only during a fade). The camera / hand detector start only after the formation, in an idle moment, and the detector (MediaPipe) runs in a Worker (`web/src/hand-worker.js`, frames as transferred ImageBitmaps). The adaptive quality ignores the first 2 s and changes at most once per 4 s (each change resizes the canvas). `controller.stats().startup` shows what the start cost.
 - Debug (`?clapdebug=1`): `__elvar.humanProtocol.start()/stop()/active`, and `.controller` → `seek(sec)`, `freeze(bool)`, `advance(sec)` (with freeze: deterministic steps), `quality(q)`, `tune({...})`, `rig()`, `eyes()`, `pose({...})`, `syncTime(sec)` (with `?humanseed=N`: identical A/B runs), `feedHands(hands, t)`, `hands()`, `stats()` (frame times, draw calls).
 
-- 履修登録サポート (course registration support: timetable, credits vs graduation requirements, CAP, checks, suggestions, link to the シフト screen): see `docs/COURSES.md`.
+- 履修登録サポート (course registration support: timetable, credits vs graduation requirements, CAP, checks, suggestions, link to the シフト screen; the records are the user's own notes): see `docs/COURSES.md`.
 
-- ファイルの取り込み・保存・印刷 (file library on this device, 「〇〇プリントして」 with preview, approval card, print dialog and an honest 「印刷できましたか？」 check): see `docs/FILES_PRINT.md`. Reading the files' content, the memory (keywords / kind / tags / duplicates / search), 60 MB limit and the AI-reading approvals: `docs/FILES_MEMORY.md`.
+- ファイルの取り込み・保存・印刷 (the user's own file vault in their account, 「〇〇プリントして」 with preview, approval card, print dialog and an honest 「印刷できましたか？」 check): see `docs/FILES_PRINT.md`. Reading the files' content, the memory (keywords / kind / tags / duplicates / search), 60 MB limit and the AI-reading approvals: `docs/FILES_MEMORY.md`.

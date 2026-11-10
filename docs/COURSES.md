@@ -1,17 +1,17 @@
 # 履修登録サポート (course-registration support)
 
-Modelled on the シフト module (`server/shift.js`). The owner's own records live in the private second brain; every number (credits, conflicts, CAP, checks, suggestions) is computed by plain code, never by the model.
+Modelled on the シフト module (`server/shift.js`). Each user's records live in that user's own second brain (their notes in the account, visible to them alone; they appear in "My data" and in the export). Nothing is shared between users. Every number (credits, conflicts, CAP, checks, suggestions) is computed by plain code, never by the model.
 
-**What it cannot do (and says so):** the app cannot see the university's registration site, the syllabus or the real course catalogue, and it registers nothing anywhere. The data is only what the owner tells ELVAR or types into the screen. Rules of the university (graduation requirements, CAP) are whatever the owner entered. The persona and the screen both say this. Syllabus URL / PDF reading is deliberately not built.
+**What it cannot do (and says so):** the app cannot see the university's registration site, the syllabus or the real course catalogue, and it registers nothing anywhere. The data is only what the user tells ELVAR or types into the screen. Rules of the university (graduation requirements, CAP) are whatever the user entered. The persona and the screen both say this. Syllabus URL / PDF reading is deliberately not built.
 
-## Data (vault, Markdown; refused when the repo is public)
+## Data (the user's own notes, Markdown, in the account's second brain)
 | File | Content |
 |---|---|
 | `履修/設定.md` | period times (`- 1限：09:00-10:30` … default 1限 9:00–10:30, 2限 10:40–12:10, 3限 13:00–14:30, 4限 14:40–16:10, 5限 16:20–17:50, 6限 18:00–19:30, 7限 19:40–21:10) and the teaching period of each term (`- 後期の授業期間：10-01〜01-31`; default 前期 04-01〜07-31, 後期 10-01〜01-31) |
 | `履修/卒業要件.md` | `- 卒業単位：124`, `- 学期の履修上限：24` (CAP; `- 学期の履修上限 2026-後期：20` for one term), `- 区分 必修：30` …, `- 必修科目：線形代数、微分積分` |
 | `履修/YYYY-前期｜後期.md` | the courses of a term (YYYY = 年度) as a table: id, 科目, 時間割, 単位, 区分, 状態, 必修, 教員, 教室, 成績, 備考 |
 
-時間割 cell: `月3`, `火2-3` (consecutive), `月1・3`, `月3/木3` (twice a week), `集中`, `オンデマンド` (no slot, never conflicts). 状態: 候補 / 履修 / 抽選待ち / 取消 / 修得済み (nothing is called 履修 unless the owner says so; the default is 候補).
+時間割 cell: `月3`, `火2-3` (consecutive), `月1・3`, `月3/木3` (twice a week), `集中`, `オンデマンド` (no slot, never conflicts). 状態: 候補 / 履修 / 抽選待ち / 取消 / 修得済み (nothing is called 履修 unless the user says so; the default is 候補).
 Slot words are parsed by `parseSlots` / `parseSlot`: 「月曜3限」「火2・3」「木曜日の3-4限」「金曜の3限と4限」「月3/木3」. 「水曜の午後」 is understood as a time window, but a course needs a concrete period, so it is asked back.
 
 ## Logic (`server/course.js`, pure and tested)
@@ -34,4 +34,4 @@ Navigation (the nav bar has no free slot, so no icon): a 「履修」 button in 
 Not known: holidays, 休講, makeup days, 集中講義 dates.
 
 ## Not verified here
-The real vault and Google Calendar, real voice use, and any real university's rules (period times, CAP, requirement categories are the owner's input).
+A real Supabase project with these notes, real Google Calendar, real voice use, and any real university's rules (period times, CAP, requirement categories are the user's input).
