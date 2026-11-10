@@ -4,6 +4,7 @@
 //     newUser()        -> uuid of a new auth user          deleteUser(uid)  what `delete from auth.users` does (the cascade)
 //     makeAdmin(uid)   -> a row in app.admins              passTime(ms)     advance the clock (memory) or really wait (Postgres)
 //     setQuota(uid, bytes) / setHardLimits(uid, obj)        what an admin sets (rows of app.accounts)
+//     ageFiles(uid)                                         every file row of the user is 3 hours older (the signed upload links of a reservation have expired)
 //     expireReservations(uid)                               every upload reservation of the user runs out (memory: the clock moves, Postgres: reserved_until is set into the past)
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -839,5 +840,33 @@ export function runDbContract(label, setup) {
     for (const bad of [-1, 1.5, 2 ** 41, '5', null]) await assert.rejects(db.asUser(B, (r) => r.admin.setQuota(a, bad)), code('invalid_value'));
     await assert.rejects(db.asUser(B, (r) => r.admin.setQuota(crypto.randomUUID(), 5)), code('not_found'));
     assert.equal((await db.asUser(B, (r) => r.admin.listUsers({}))).find((u) => u.userId === a).storageQuotaBytes, 123456);
+  });
+
+  T('files: a file deleted while a signed upload link may still work leaves a tombstone - the room is free at once, the row is hidden, and it is dropped only after the link has expired; recent rows are capped', async ({ db, newUser, setQuota, ageFiles }) => {
+    const uid = await newUser(), U = mint(uid), id = await addFile(db, U, 'young.txt', 'young-file-content ' + rnd(3).toString('hex'), { text: 'tt' });
+    await db.asUser(U, (r) => r.accounts.ensure()); await setQuota(uid, 1000);
+    const used = async () => db.asUser(U, (r) => r.usage.storage());
+    assert.ok((await used()).filesBytes > 0);
+    await db.asUser(U, async (r) => {
+      assert.ok(await r.files.beginDelete(id)); assert.equal(await r.files.finishDelete(id), true);
+      assert.deepEqual(await r.usage.storage(), { filesBytes: 0, textBytes: 0, notesBytes: 0, messagesBytes: 0, reservedBytes: 0 }, 'the bytes are free at once');
+      assert.equal(await r.files.get(id), null); assert.deepEqual(await r.files.list(), []); assert.deepEqual(await r.files.allPaths(), []); assert.equal(await r.files.beginDelete(id), null, 'a tombstone is not a file');
+      assert.equal(await r.files.finishDelete(id), false); assert.deepEqual(await r.files.stale(), [], 'a young tombstone is not swept yet: the link could still be used');
+      await assert.rejects(r.files.finalize(id, { size: 5, text: '' }), code('reservation_expired'));
+    });
+    const rowsOf = async () => (await residualCheck(db, mint(uid))).nonzero.find((x) => x.table === 'files')?.n ?? 0;
+    assert.equal(await rowsOf(), 1, 'the tombstone is still a row');
+    assert.deepEqual((await db.system.staleFiles(1000)).filter((x) => x.userId === uid), []);
+    await ageFiles(uid);   // the signed link is dead now
+    await db.asUser(U, async (r) => { assert.deepEqual((await r.files.stale()).map((x) => x.id), [id], 'now it is swept: the object is removed one more time (it catches a late write), then the row goes'); });
+    assert.deepEqual((await db.system.staleFiles(1000)).filter((x) => x.userId === uid).map((x) => x.id), [id]);
+    await db.asUser(U, async (r) => { assert.equal(await r.files.finishDelete(id), true); });
+    assert.equal(await rowsOf(), 0);
+    // the cap: at most 40 pending / tombstone rows younger than the link's life
+    const made = []; for (let i = 0; i < 40; i++) { const x = await db.asUser(U, (r) => r.files.reserve(reqOf(`c${i}.txt`, 'cap-' + i + rnd(3).toString('hex')))); made.push(x.fileId); await db.asUser(U, async (r) => { await r.files.beginDelete(x.fileId); await r.files.finishDelete(x.fileId); }); }
+    await assert.rejects(db.asUser(U, (r) => r.files.reserve(reqOf('one-too-many.txt', 'over-the-cap'))), code('conflict'));
+    assert.deepEqual(await used(), { filesBytes: 0, textBytes: 0, notesBytes: 0, messagesBytes: 0, reservedBytes: 0 }, 'the tombstones count nothing');
+    await ageFiles(uid); await db.asUser(U, async (r) => { for (const x of await r.files.stale()) await r.files.finishDelete(x.id); });
+    assert.equal(await rowsOf(), 0); const again = await db.asUser(U, (r) => r.files.reserve(reqOf('again.txt', 'allowed-again'))); assert.ok(again.fileId, 'old tombstones no longer count against the cap');
   });
 }

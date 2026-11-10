@@ -225,3 +225,22 @@ test('the purge does not finish while a Storage object is left behind (the resid
   await st.service.remove([`users/${c}/files/zz/leftover`]);
   assert.equal((await residualCheck(h.db, mintVerifiedUid(c, 'purge'), { storage: st })).clean, true);
 });
+
+test('a signed upload link outlives the reservation (2 hours): bytes written through it after the file was deleted are removed by the sweep once the link is dead, and a user cannot pile up reservations to hold links', async () => {
+  const c = h.mkUser(), C = await h.bearer(c); await h.call('GET', '/api/elvar/session', C);
+  const bytes = Buffer.from('late write ' + crypto.randomUUID()), r = await reserve(C, bytes, 'late.txt'), path = st.testing.list().length; void path;
+  const cancel = await h.call('POST', `/api/elvar/files/${r.body.fileId}/cancel`, C, {}); assert.equal(cancel.status, 200);
+  assert.equal((await h.call('GET', '/api/elvar/files', C)).body.usage.reservedBytes, 0, 'the room is free at once');
+  await putTo(r.body.upload, Buffer.alloc(5000, 1));   // the link still works: the object appears, and nobody counts it
+  assert.ok(st.testing.list().some((k) => k.includes(r.body.fileId)), 'the late write landed');
+  assert.equal((await h.call('GET', '/api/elvar/files', C)).body.usage.breakdown.files, 0);
+  assert.ok(st.testing.list().some((k) => k.includes(r.body.fileId)), 'a young tombstone is not swept: the link could still be used');
+  h.db.testing.advance(131 * 60_000);   // the link is dead now
+  await h.call('GET', '/api/elvar/files', C);   // the owner's next request (or the daily sweep) removes it for good
+  assert.equal(st.testing.list().some((k) => k.includes(r.body.fileId)), false, 'the late object is gone');
+  assert.equal(h.db.testing.usage(c).filesBytes, 0);
+  // the cap on recent rows: 40 reservations that were given up, the 41st is refused with a plain message
+  const d = h.mkUser(), D = await h.bearer(d); await h.call('GET', '/api/elvar/session', D);
+  for (let i = 0; i < 40; i++) { const x = await reserve(D, Buffer.from('cap ' + i + crypto.randomUUID()), `cap${i}.txt`); assert.equal(x.status, 200); await h.call('POST', `/api/elvar/files/${x.body.fileId}/cancel`, D, {}); }
+  const over = await reserve(D, Buffer.from('cap over ' + crypto.randomUUID()), 'over.txt'); assert.equal(over.status, 409); assert.equal(over.body.error, 'too_many_uploads');
+});

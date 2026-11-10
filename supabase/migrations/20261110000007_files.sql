@@ -12,6 +12,12 @@
 --   patch_file        names, tags, notes, kind label, the memory fields, the extracted text (re-reading, OCR)
 --   begin_delete_file / finish_delete_file   two steps so a file whose Storage object could not be removed is not forgotten (status `deleting`, swept later)
 -- storage_usage is kept by triggers on every table that counts (notes, note_revisions, messages, files, file_texts). reserved bytes are counted as used.
+--
+-- Signed upload links: Supabase gives a signed upload URL a fixed life of 2 hours and it is not single-use, so a path that was deleted (or never finished) could be
+-- written again by whoever still holds the link, and nobody would count those bytes. Therefore a row younger than 130 minutes (the 2 hours plus slack) is not simply
+-- dropped when its file is deleted or its upload given up: it becomes a TOMBSTONE (status `gone`: hidden, counts nothing, so the room is free at once). The sweeps
+-- remove the object again and drop the tombstone once the link can no longer be used. A user can hold at most 40 pending + tombstone rows younger than that, which
+-- bounds what a held link can smuggle in.
 
 create table app.files (
   user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
@@ -22,7 +28,7 @@ create table app.files (
   size_bytes bigint not null check (size_bytes between 1 and 62914560),                       -- O1: 60 MB per file at most
   sha256 text not null check (sha256 ~ '^[0-9a-f]{64}$'),
   object_path text not null check (object_path = 'users/' || user_id::text || '/files/' || id::text || '/' || sha256),
-  status text not null default 'pending' check (status in ('pending', 'ready', 'deleting')),
+  status text not null default 'pending' check (status in ('pending', 'ready', 'deleting', 'gone')),   -- gone: a tombstone (see below), hidden, counts nothing
   reserved_bytes bigint not null default 0 check (reserved_bytes >= 0),                       -- size + the extracted text the client announced
   reserved_until timestamptz,                                                                  -- while pending: the upload must finish before this
   source text not null default 'picker' check (length(source) between 1 and 40),
@@ -80,10 +86,10 @@ begin
     if tg_op <> 'DELETE' then n_text := new.bytes; end if;
   elsif tg_table_name = 'files' then
     if tg_op <> 'INSERT' then
-      if old.status = 'pending' then o_res := old.reserved_bytes; else o_files := old.size_bytes; end if;   -- ready and deleting rows hold real bytes until they are removed
+      if old.status = 'pending' then o_res := old.reserved_bytes; elsif old.status <> 'gone' then o_files := old.size_bytes; end if;   -- ready and deleting rows hold real bytes until they are removed; a tombstone none
     end if;
     if tg_op <> 'DELETE' then
-      if new.status = 'pending' then n_res := new.reserved_bytes; else n_files := new.size_bytes; end if;
+      if new.status = 'pending' then n_res := new.reserved_bytes; elsif new.status <> 'gone' then n_files := new.size_bytes; end if;
     end if;
   end if;
   if o_files = n_files and o_res = n_res and o_text = n_text and o_notes = n_notes and o_msgs = n_msgs then return null; end if;
@@ -129,6 +135,8 @@ begin
   end if;
   select count(*) into live from app.files f where f.user_id = uid and f.status = 'pending' and f.reserved_until > now();
   if live >= 20 then raise exception 'too many uploads at once' using errcode = '55000'; end if;
+  select count(*) into live from app.files f where f.user_id = uid and f.status in ('pending', 'deleting', 'gone') and f.created_at > now() - interval '130 minutes';
+  if live >= 40 then raise exception 'too many recent uploads' using errcode = '55000'; end if;   -- a held signed link can only smuggle in so much (see the note at the top)
   select s.files_bytes + s.text_bytes + s.notes_bytes + s.messages_bytes + s.reserved_bytes into used from app.storage_usage s where s.user_id = uid;
   if used + p_size + p_text_bytes > acct.storage_quota_bytes then raise exception 'storage quota exceeded' using errcode = 'EQ001'; end if;
   path := 'users/' || uid::text || '/files/' || fid::text || '/' || p_sha256;
@@ -210,7 +218,7 @@ declare
   uid uuid := auth.uid(); path text;
 begin
   if uid is null then raise exception 'not authenticated' using errcode = '28000'; end if;
-  update app.files set status = 'deleting', reserved_until = null, updated_at = now() where user_id = uid and id = p_id returning object_path into path;
+  update app.files set status = 'deleting', reserved_until = null, updated_at = now() where user_id = uid and id = p_id and status <> 'gone' returning object_path into path;
   if path is null then raise exception 'not_found' using errcode = 'P0002'; end if;
   return path;
 end $$;
@@ -223,17 +231,27 @@ declare
   uid uuid := auth.uid(); n int;
 begin
   if uid is null then raise exception 'not authenticated' using errcode = '28000'; end if;
-  delete from app.files where user_id = uid and id = p_id and (status = 'deleting' or (status = 'pending' and (reserved_until is null or reserved_until < now())));
+  -- old enough that no signed link can still be used: the row goes for good
+  delete from app.files where user_id = uid and id = p_id and created_at < now() - interval '130 minutes'
+    and (status in ('deleting', 'gone') or (status = 'pending' and reserved_until < now()));
   get diagnostics n = row_count;
+  if n > 0 then return true; end if;
+  -- young: a tombstone (hidden, counts nothing); the sweeps drop it later
+  update app.files set status = 'gone', reserved_until = null, updated_at = now()
+    where user_id = uid and id = p_id and (status = 'deleting' or (status = 'pending' and reserved_until < now()));
+  get diagnostics n = row_count;
+  if n > 0 then delete from app.file_texts where user_id = uid and file_id = p_id; end if;   -- the extracted text goes with the file; only the tombstone stays
   return n > 0;
 end $$;
 revoke all on function app.finish_delete_file(uuid) from public, anon;
 grant execute on function app.finish_delete_file(uuid) to authenticated;
 
--- The caller's own rows whose Storage object has to be removed before the row can go: deleting, or a reservation that ran out.
+-- The caller's own rows whose Storage object has to be removed before the row can go: deleting, a reservation that ran out, or a tombstone old enough to be dropped
+-- (its object is removed one last time, which also catches anything written through a signed link after the file was deleted).
 create function app.my_stale_files() returns table (id uuid, object_path text)
 language sql stable security definer set search_path = pg_catalog, app as $$
-  select f.id, f.object_path from app.files f where f.user_id = auth.uid() and (f.status = 'deleting' or (f.status = 'pending' and f.reserved_until < now()));
+  select f.id, f.object_path from app.files f where f.user_id = auth.uid()
+    and (f.status = 'deleting' or (f.status = 'pending' and f.reserved_until < now()) or (f.status = 'gone' and f.created_at < now() - interval '130 minutes'));
 $$;
 revoke all on function app.my_stale_files() from public, anon;
 grant execute on function app.my_stale_files() to authenticated;
@@ -242,7 +260,7 @@ grant execute on function app.my_stale_files() to authenticated;
 create function app.stale_files(p_limit int default 200) returns table (user_id uuid, id uuid, object_path text)
 language sql stable security definer set search_path = pg_catalog, app as $$
   select f.user_id, f.id, f.object_path from app.files f
-  where f.status = 'deleting' or (f.status = 'pending' and f.reserved_until < now() - interval '5 minutes')
+  where f.status = 'deleting' or (f.status = 'pending' and f.reserved_until < now() - interval '5 minutes') or (f.status = 'gone' and f.created_at < now() - interval '130 minutes')
   order by f.updated_at limit greatest(1, least(coalesce(p_limit, 200), 1000));
 $$;
 revoke all on function app.stale_files(int) from public, anon, authenticated;
@@ -253,8 +271,14 @@ language plpgsql security definer set search_path = pg_catalog, app as $$
 declare
   n int;
 begin
-  delete from app.files where user_id = p_user and id = p_id and (status = 'deleting' or (status = 'pending' and reserved_until < now() - interval '5 minutes'));
+  delete from app.files where user_id = p_user and id = p_id and created_at < now() - interval '130 minutes'
+    and (status in ('deleting', 'gone') or (status = 'pending' and reserved_until < now() - interval '5 minutes'));
   get diagnostics n = row_count;
+  if n > 0 then return true; end if;
+  update app.files set status = 'gone', reserved_until = null, updated_at = now()
+    where user_id = p_user and id = p_id and (status = 'deleting' or (status = 'pending' and reserved_until < now() - interval '5 minutes'));
+  get diagnostics n = row_count;
+  if n > 0 then delete from app.file_texts where user_id = p_user and file_id = p_id; end if;
   return n > 0;
 end $$;
 revoke all on function app.drop_stale_file(uuid, uuid) from public, anon, authenticated;
@@ -269,7 +293,7 @@ declare
 begin
   with c as (
     select a.user_id,
-      coalesce((select sum(f.size_bytes) from app.files f where f.user_id = a.user_id and f.status <> 'pending'), 0)::bigint as files_bytes,
+      coalesce((select sum(f.size_bytes) from app.files f where f.user_id = a.user_id and f.status in ('ready', 'deleting')), 0)::bigint as files_bytes,
       coalesce((select sum(f.reserved_bytes) from app.files f where f.user_id = a.user_id and f.status = 'pending'), 0)::bigint as reserved_bytes,
       coalesce((select sum(t.bytes) from app.file_texts t where t.user_id = a.user_id), 0)::bigint as text_bytes,
       (coalesce((select sum(x.bytes) from app.notes x where x.user_id = a.user_id), 0) + coalesce((select sum(octet_length(r.content)) from app.note_revisions r where r.user_id = a.user_id), 0))::bigint as notes_bytes,
@@ -291,7 +315,7 @@ begin
   if auth.uid() is null then raise exception 'not authenticated' using errcode = '28000'; end if;
   insert into app.storage_usage (user_id) values (auth.uid()) on conflict (user_id) do nothing;
   update app.storage_usage s set
-    files_bytes = coalesce((select sum(f.size_bytes) from app.files f where f.user_id = s.user_id and f.status <> 'pending'), 0),
+    files_bytes = coalesce((select sum(f.size_bytes) from app.files f where f.user_id = s.user_id and f.status in ('ready', 'deleting')), 0),
     reserved_bytes = coalesce((select sum(f.reserved_bytes) from app.files f where f.user_id = s.user_id and f.status = 'pending'), 0),
     text_bytes = coalesce((select sum(t.bytes) from app.file_texts t where t.user_id = s.user_id), 0),
     notes_bytes = coalesce((select sum(x.bytes) from app.notes x where x.user_id = s.user_id), 0) + coalesce((select sum(octet_length(r.content)) from app.note_revisions r where r.user_id = s.user_id), 0),

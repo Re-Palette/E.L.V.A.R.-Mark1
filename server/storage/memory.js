@@ -12,7 +12,7 @@ import { pathOwner, requireOwnPath, USER_BUCKET, USER_BUCKETS, MAX_OBJECT_BYTES 
 
 if (process.env.VERCEL || process.env.NODE_ENV === 'production') throw new Error('server/storage/memory.js must never run in production');
 
-const UPLOAD_TTL_MS = 30 * 60_000;
+const UPLOAD_TTL_MS = 2 * 3600_000;   // Supabase fixes the life of a signed upload link at 2 hours (and it is not single-use); the database keeps a tombstone for 130 minutes because of that
 const enc = (p) => p.split('/').map(encodeURIComponent).join('/');
 
 export function createMemoryStorage({ canInsert = () => true, baseUrl = () => '', now = () => Date.now(), maxObjectBytes = MAX_OBJECT_BYTES } = {}) {

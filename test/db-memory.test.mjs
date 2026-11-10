@@ -13,6 +13,7 @@ runDbContract('memory', async () => {
     setQuota: async (uid, bytes) => db.testing.setQuota(uid, bytes),
     setHardLimits: async (uid, o) => db.testing.setHardLimits(uid, o),
     expireReservations: async () => db.testing.advance(40 * 60_000),
+    ageFiles: async () => db.testing.advance(3 * 3600_000),
     now: () => db.testing.now(),   // the fake clock (earlier tests moved it)
   };
 });

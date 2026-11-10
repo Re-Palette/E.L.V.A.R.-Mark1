@@ -45,7 +45,7 @@ test('the fake: 60 MB per object, expiring links, buckets are private (no public
   let t = 1_000_000; const s = createMemoryStorage({ now: () => t, maxObjectBytes: 10, baseUrl: () => 'https://x.supabase.test' });
   const a = s.forUser({ uid: A }), p = path(A), up = await a.createUploadUrl(p);
   await assert.rejects(s.uploadWithToken(tokenOf(up.url), Buffer.alloc(11)), (e) => e.status === 413);
-  t += 31 * 60_000; await assert.rejects(s.uploadWithToken(tokenOf(up.url), bytes), (e) => e.status === 401, 'the link expired');
+  t += 121 * 60_000; await assert.rejects(s.uploadWithToken(tokenOf(up.url), bytes), (e) => e.status === 401, 'the link expired (2 hours, like Supabase)');
   const up2 = await a.createUploadUrl(p); await s.uploadWithToken(tokenOf(up2.url), Buffer.alloc(10));
   const dl = await a.createDownloadUrl(p, { expiresInSec: 5 }); t += 6000; await assert.rejects(s.downloadWithToken(tokenOf(dl)), (e) => e.status === 401);
   s.testing.put(`users/${A}/exports/j/part-1.zip`, Buffer.from('z'), { bucket: 'user-exports' }); s.testing.put(path(B), Buffer.from('b'));

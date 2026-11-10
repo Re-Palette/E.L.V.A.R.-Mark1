@@ -488,7 +488,7 @@ export function pgRepos(tx, uid, afterCommit = () => {}) {
         V.need(V.FILE_ID_RE.test(String(id))); const p = V.filePatchInput(patch); if (setText) V.fileText(text ?? '');
         await guarded((sp) => sp`select app.patch_file(${id}::uuid, ${p}::jsonb, ${setText ? text ?? '' : null}, ${setText})`);
       },
-      async get(id) { V.need(V.FILE_ID_RE.test(String(id))); const [r] = await tx.unsafe(`select ${FILE_COLS} from app.files where user_id = $1 and id = $2`, [uid, id]); return r ? fileRow(r) : null; },
+      async get(id) { V.need(V.FILE_ID_RE.test(String(id))); const [r] = await tx.unsafe(`select ${FILE_COLS} from app.files where user_id = $1 and id = $2 and status <> 'gone'`, [uid, id]); return r ? fileRow(r) : null; },   // a tombstone is not a file
       /** Ready files, newest first (the library list). */
       async list({ limit = 5000 } = {}) {
         V.need(Number.isInteger(limit) && limit >= 1 && limit <= 20000);
@@ -519,7 +519,7 @@ export function pgRepos(tx, uid, afterCommit = () => {}) {
       /** Rows whose Storage object must be removed first: deleting, or an upload reservation that ran out. */
       async stale() { return (await tx`select id, object_path from app.my_stale_files()`).map((r) => ({ id: r.id, objectPath: r.object_path })); },
       /** Every file the user has, in any state (for "delete everything"): ids and Storage paths. */
-      async allPaths() { return (await tx`select id, object_path from app.files where user_id = ${uid}`).map((r) => ({ id: r.id, objectPath: r.object_path })); },
+      async allPaths() { return (await tx`select id, object_path from app.files where user_id = ${uid} and status <> 'gone'`).map((r) => ({ id: r.id, objectPath: r.object_path })); },
     },
 
     usageLimits: {
