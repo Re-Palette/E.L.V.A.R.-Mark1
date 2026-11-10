@@ -8,7 +8,7 @@ import { requireFresh } from '../auth/with-user.js';
 import { getStorage } from '../storage/index.js';
 import { hardLimit } from '../usage.js';
 import { rateMessage } from '../usage-limits.js';
-import { startExport, stepExport, describeJob, deleteExport } from '../rights/export-job.js';
+import { startExport, stepExport, describeJob, deleteExport, exportsToday } from '../rights/export-job.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const bad = (status, error, message) => ({ status, body: { error, ...(message ? { message } : {}) } });
@@ -27,8 +27,8 @@ export async function createExport({ user }) {
   const storage = await getStorage();
   await sweepOwn(user, storage);
   if ((await user.db((r) => r.exportJobs.list())).some((j) => ['queued', 'running'].includes(j.status))) return bad(409, 'export_running', 'すでに書き出しを作っています。終わるまでお待ちください');
-  const lim = await hardLimit('exportsPerDay');
-  if (lim !== null && lim !== undefined && (await user.system.rlHit({ bucket: 'export', who: user.uid.uid, windowSec: 86400, userId: user.uid })) > lim) return bad(429, 'rate_limited', `${rateMessage('データの書き出し', '1日あたり')}（1日 ${lim} 回まで）。明日、もう一度お試しください`);
+  const lim = await hardLimit('exportsPerDay');   // only FINISHED exports count against it: a failed job does not use up the day
+  if (lim !== null && lim !== undefined && (await exportsToday(user)) >= lim) return bad(429, 'rate_limited', `${rateMessage('データの書き出し', '1日あたり')}（1日 ${lim} 回まで）。明日、もう一度お試しください`);
   let job;
   try { job = await startExport(user, { storage, ...testOpts }); }
   catch (e) { if (e?.code === 'conflict') return bad(409, 'export_running', 'すでに書き出しを作っています。終わるまでお待ちください'); throw e; }

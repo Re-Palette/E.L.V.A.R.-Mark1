@@ -65,14 +65,14 @@ test('the export covers EVERY registry table and EVERY object the user has in St
   // ---- every object in Storage: every original is in the zip, byte for byte; the rest is listed as left out on purpose
   const objects = st.testing.list().filter((k) => k.startsWith(`user-files/users/${a}/`));
   assert.equal(objects.length, 4);
-  for (const k of objects) { const bytes = st.testing.get(k.replace(/^user-files\//, '')), hit = Object.entries(x.files).filter(([n]) => n.startsWith('files/') && n !== 'files/index.json' && sha(x.files[n]) === sha(bytes)); assert.equal(hit.length, 1, `the original ${k} is in the zip exactly once`); }
+  for (const k of objects) { const bytes = st.testing.get(k.replace(/^user-files\//, '')), hit = Object.entries(x.files).filter(([n]) => n.startsWith('files/') && !n.startsWith('files/index-part') && sha(x.files[n]) === sha(bytes)); assert.equal(hit.length, 1, `the original ${k} is in the zip exactly once`); }
   for (const f of fa.files) assert.ok(Object.entries(x.files).some(([n, d]) => n.endsWith(f.name) && d.equals(f.bytes)), f.name);
   const report = x.json('export-report.json'); assert.equal(report.originalsIncluded, 4); assert.deepEqual(report.originalsMissing, []);
   assert.deepEqual(report.objectsLeftOutOnPurpose.counts, { 'user-exports': x.parts.length - 1, 'user-cache': 1 }, 'what is left out is counted, not forgotten (the parts written before the last one, and the one cache object)');
   // ---- notes as Markdown, conversations by day, the index of the files
   assert.equal(x.files['notes/alpha/メモ.md'].toString(), 'alpha のノート本文\n'); assert.ok(x.files['notes/家計/alpha.md']);
-  const jl = Object.entries(x.files).filter(([n]) => n.startsWith('conversations/') && n.endsWith('.jsonl')); assert.equal(jl.length, 1); assert.match(jl[0][1].toString(), /alphaの質問/);
-  assert.equal(x.json('files/index.json').files.length, 4);
+  const jl = Object.entries(x.files).filter(([n]) => n.startsWith('conversations/') && n.endsWith('.jsonl')); assert.ok(jl.length >= 1); assert.match(jl.map(([, d]) => d.toString()).join(''), /alphaの質問/);
+  assert.equal(x.rows('files').length, 4); assert.ok(x.names.some((n) => n.startsWith('files/index-part')), 'the index of the originals');
   // ---- secrets and ciphertext never leave; nothing of B is in A's export
   const all = Object.values(x.files).map((d) => d.toString('latin1')).join('\n'), allU = Object.values(x.files).map((d) => d.toString('utf8')).join('\n');
   for (const secret of [KEY + 'alpha', CXTOKEN + 'alpha']) assert.ok(!all.includes(secret), 'a secret value left in the export');
@@ -116,7 +116,7 @@ test('a missing or altered original is reported (never silently dropped); a job 
   const rows = () => h.db.asUser(mintVerifiedUid(d, 'test'), (r) => r.exportJobs.list());
   assert.ok(st.testing.list().some((k) => k.startsWith(`user-exports/users/${d}/exports/${first.body.job.id}/`)));
   h.db.testing.advance(31 * 60_000); assert.ok(!(await h.db.system.expiredExportJobs()).some((j) => j.userId === d), 'a failed job is not swept at once'); assert.deepEqual((await rows()).map((j) => [j.status, j.error]), [['failed', 'stalled']]);
-  assert.equal((await h.call('POST', '/api/elvar/export', D, {})).status, 429, 'a failed job still used the day\'s one export');
+  const retry = await h.call('POST', '/api/elvar/export', D, {}); assert.equal(retry.status, 200, 'a FAILED job does not use up the day\'s one export'); assert.equal((await h.call('DELETE', `/api/elvar/export/${retry.body.job.id}`, D)).status, 200);
   h.db.testing.advance(2 * 86400_000 + 1000); const swept = await sweepExports({ system: h.db.system, storage: st }); assert.ok(swept.removed >= 1);
   assert.deepEqual(await rows(), []); assert.ok(!st.testing.list().some((k) => k.startsWith(`user-exports/users/${d}/`)), 'the parts went with the job');
 });
@@ -124,7 +124,8 @@ test('a missing or altered original is reported (never silently dropped); a job 
 test('the zip writer: UTF-8 names, deflate and store, CRC checked, duplicate and unsafe names refused', () => {
   const z = createZip(); z.add('メモ/今日.md', '日本語'.repeat(100)); z.add('a.pdf', Buffer.from('%PDF')); z.add('small.txt', 'x');
   const r = readZip(z.finish()); assert.deepEqual(Object.keys(r).sort(), ['a.pdf', 'small.txt', 'メモ/今日.md'].sort()); assert.equal(r['メモ/今日.md'].toString(), '日本語'.repeat(100));
-  const z2 = createZip(); z2.add('x', 'y'); assert.throws(() => z2.add('x', 'z'), /duplicate/); for (const bad of ['../x', 'a/../b', '', 'a//b']) assert.throws(() => z2.add(bad, 'q'), /bad zip entry/);
+  const z2 = createZip(); assert.equal(z2.add('x', 'y'), 'x'); assert.equal(z2.add('x', 'z'), 'x (2)', 'a name taken in this part is renamed, the export does not fail');
+  assert.equal(z2.add('../x', 'q'), '__/x'); assert.equal(z2.add('a//b', 'q'), 'a/b'); assert.throws(() => z2.add('', 'q'), /bad zip entry/); assert.throws(() => z2.add('///', 'q'), /bad zip entry/);
   const buf = createZip(); buf.add('c.txt', 'checksum me please, checksum me please, checksum me please, checksum me please', { store: true }); const raw = buf.finish(); raw[raw.indexOf(Buffer.from('checksum')) + 3] ^= 1;
   assert.throws(() => readZip(raw), /checksum|incorrect|invalid/i);
 });

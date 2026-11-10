@@ -9,6 +9,7 @@ import { dbError } from './errors.js';
 import * as V from './validate.js';
 import { requireVerifiedUid } from './verified-uid.js';
 import { REGISTRY } from '../rights/registry.js';
+import { PAGED, pageRow, keyOf } from '../rights/export-pages.js';
 import { envMaxFileBytes } from '../config/platform-limits.js';
 
 const DEFAULT_QUOTA = 524288000;
@@ -444,7 +445,17 @@ export function createMemoryDb({ now = null } = {}) {
         async list() { return rows('export_jobs', uid).sort((a, b) => b.created_at - a.created_at || (a.id < b.id ? 1 : -1)).slice(0, 20).map(exportRow); },
         async get(id) { V.need(UUID_RE.test(String(id))); const j = find('export_jobs', uid, (x) => x.id === id); return j ? exportRow(j) : null; },
       },
-      rights: { async counts() { return Object.fromEntries(REGISTRY.map((e) => [e.table, ['rate_limits', 'admins'].includes(e.table) ? 0 : tables[e.table].filter((r) => r[e.ownerColumn] === uid).length])); } },   // like the database: the user cannot read these two tables at all
+      rights: {
+        /** The same keyset pager as the Postgres one (server/rights/export-pages.js). */
+        async exportPage(table, { after = null, limit = null } = {}) {
+          const spec = PAGED[table]; V.need(spec); const n = limit ?? spec.page;
+          V.need(Number.isInteger(n) && n >= 1 && n <= 2000 && (after === null || (Array.isArray(after) && after.length === spec.key.length && after.every((x) => typeof x === 'string' && x.length <= 300))));
+          const cmp = (a, b) => { for (const [c, t] of spec.key) { const num = ['int', 'bigint'].includes(t), x = num ? Number(a[c]) : String(a[c]), y = num ? Number(b[c]) : String(b[c]); if (x < y) return -1; if (x > y) return 1; } return 0; };
+          const cursor = after ? Object.fromEntries(spec.key.map(([c], i) => [c, after[i]])) : null;
+          const all = rows(table, uid).sort(cmp).filter((r) => !cursor || cmp(r, cursor) > 0), page = all.slice(0, n);
+          return { rows: page.map((r) => pageRow(table, clone(r))), next: page.length === n ? keyOf(table, page.at(-1)) : null };
+        },
+        async counts() { return Object.fromEntries(REGISTRY.map((e) => [e.table, ['rate_limits', 'admins'].includes(e.table) ? 0 : tables[e.table].filter((r) => r[e.ownerColumn] === uid).length])); } },   // like the database: the user cannot read these two tables at all
       usageLimits: {
         async list() { return rows('usage_limits', uid).sort((a, b) => `${a.provider}|${a.metric}|${a.period}`.localeCompare(`${b.provider}|${b.metric}|${b.period}`)).map((r) => ({ provider: r.provider, metric: r.metric, period: r.period, soft: r.soft, softAction: r.soft_action })); },
         async put({ provider, metric, period, soft, softAction = 'warn' }) {

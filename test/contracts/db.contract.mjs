@@ -688,13 +688,42 @@ export function runDbContract(label, setup) {
     await db.asUser(A, async (r) => { assert.equal((await r.notif.pull({ since: 0 })).length, 2); assert.equal(await r.notif.clear(), 2); assert.deepEqual(await r.notif.pull({ since: 0 }), []); });
   });
 
+  T('export pager: every paged table is walked with a keyset cursor to its last row, in key order, without user_id, only the caller\'s rows (both implementations)', async ({ db, newUser }) => {
+    const { A, B } = await two({ newUser }), { PAGED, PAGED_ORDER } = await import('../../server/rights/export-pages.js'), t0 = Date.now() - 86400_000;
+    await db.asUser(A, async (r) => {
+      for (let i = 0; i < 7; i++) { await r.notes.put({ path: `n/${i}.md`, content: `v1-${i}` }); await r.notes.put({ path: `n/${i}.md`, content: `v2-${i}` }); }
+      for (let i = 0; i < 9; i++) await r.messages.append({ turns: [{ role: 'user', text: `m${i}`, at: t0 + i * 3 * 3600_000 }] });
+      for (let i = 1; i <= 7; i++) await r.builds.record({ repo: 'o/r', issueNumber: i, title: `b${i}`, state: 'queued' });
+      for (let i = 0; i < 5; i++) await r.usage.record({ provider: 'gemini', metric: i % 2 ? 'calls' : 'input_tokens', amount: 1 });
+      await r.usage.record({ provider: 'exa', metric: 'calls', amount: 1 });
+      for (let i = 0; i < 6; i++) await r.audit.append({ action: `a${i}` });
+    });
+    await db.asUser(B, async (r) => { await r.notes.put({ path: 'b/secret.md', content: 'B-ONLY' }); await r.messages.append({ turns: [{ role: 'user', text: 'B-ONLY', at: t0 }] }); });
+    const counts = await db.asUser(A, (r) => r.rights.counts());
+    for (const table of PAGED_ORDER) {
+      for (const limit of [1, 3, 1000]) {
+        const rows = [], pages = []; let after = null;
+        for (let guard = 0; guard < 200; guard++) { const p = await db.asUser(A, (r) => r.rights.exportPage(table, { after, limit })); pages.push(p.rows.length); rows.push(...p.rows); if (!p.next) break; after = p.next; }
+        assert.equal(rows.length, counts[table], `${table} (page ${limit}): every row, once`);
+        const keys = rows.map((x) => PAGED[table].key.map(([c, ty]) => (['int', 'bigint'].includes(ty) ? Number(x[c]) : String(x[c]))));
+        assert.deepEqual(keys, [...keys].sort((a, b) => { for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1; return 0; }), `${table}: key order`);
+        assert.equal(new Set(keys.map((k) => k.join('|'))).size, rows.length, `${table}: no duplicate`);
+        assert.ok(pages.every((n) => n <= limit), `${table}: a page is at most ${limit}`);
+        for (const x of rows) assert.ok(!('user_id' in x) && !('object_path' in x), `${table}: no owner id, no Storage path`);
+        assert.ok(!JSON.stringify(rows).includes('B-ONLY'), `${table}: nothing of B`);
+      }
+    }
+    assert.ok(counts.notes === 7 && counts.note_revisions === 7 && counts.messages === 9 && counts.build_requests === 7 && counts.usage_events === 6, JSON.stringify(counts));
+    await assert.rejects(db.asUser(A, (r) => r.rights.exportPage('user_secrets')), (e) => e.code === 'invalid_value'); await assert.rejects(db.asUser(A, (r) => r.rights.exportPage('notes', { after: ['x', 'y'] })), (e) => e.code === 'invalid_value');
+    assert.ok((await db.asUser(A, (r) => r.rights.exportPage('notes', { limit: 2 }))).rows.every((n) => typeof n.created_at === 'string' && n.created_at.endsWith('Z')), 'timestamps are ISO strings');
+  });
   T('P4 data is deleted with the account (residual check is zero) and the export covers it', async ({ db, newUser, deleteUser, now: clock }) => {
     const now = clock ? clock() : Date.now();
     const { a, A, B } = await two({ newUser });
     await db.asUser(A, async (r) => { await r.notes.put({ path: 'a.md', content: '1' }); await r.notes.put({ path: 'a.md', content: '2' }); await r.messages.append({ turns: [{ role: 'user', text: 'hi', at: now }] }); await r.inbox.add({ title: 'x' }); await r.notif.push([{ id: 'n1-aa', at: now, iv: 'AAAAAAAAAAAAAAAA', ct: 'BBBBBBBBBBBBBBBBBBBBBBBB' }]); });
     await db.asUser(B, (r) => r.notes.put({ path: 'b.md', content: 'B' }));
     const { buildExport } = await import('../../server/rights/export.js');
-    const ex = await db.asUser(A, (r) => buildExport(r)); assert.equal(ex.files['notes.json'].notes[0].revisions.length, 1); assert.equal(ex.files['conversations.json'].conversations[0].messages.length, 1); assert.equal(ex.files['inbox.json'].inbox.length, 1); assert.equal(ex.files['notifications.json'].stored, 1);
+    const ex = await db.asUser(A, (r) => buildExport(r)); assert.equal(ex.rows.notes.length, 1); assert.equal(ex.rows.note_revisions.length, 1); assert.equal(ex.rows.conversations.length, 1); assert.equal(ex.rows.messages.length, 1); assert.equal(ex.rows.inbox_items.length, 1); assert.equal(ex.files['notifications.json'].stored, 1);
     assert.ok(!JSON.stringify(ex).includes('BBBBBBBB'), 'the relay\'s ciphertext is not exported');
     await deleteUser(a);
     const res = await residualCheck(db, mint(a)); assert.equal(res.clean, true);

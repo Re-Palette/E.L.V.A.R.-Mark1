@@ -8,6 +8,7 @@ import { dbError, mapPgError, isDriverError } from '../errors.js';
 import * as V from '../validate.js';
 import { requireVerifiedUid } from '../verified-uid.js';
 import { REGISTRY } from '../../rights/registry.js';
+import { PAGED, pageRow, keyOf } from '../../rights/export-pages.js';
 const guardedSys = async (_sql, fn) => { try { return await fn(); } catch (e) { throw isDriverError(e) ? mapPgError(e) : e; } };
 
 const requireUuid = (u) => typeof u === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(u);
@@ -543,6 +544,16 @@ export function pgRepos(tx, uid, afterCommit = () => {}) {
     },
     /** How many rows of every registered table this user can see (the "my data" screen and the export manifest). RLS applies: a table the user cannot read counts 0. */
     rights: {
+      /** The export's keyset pager (server/rights/export-pages.js): up to `limit` rows of one table after the cursor `after` (the key of the last row of the previous page), in primary-key order.
+       *  @returns {Promise<{rows: object[], next: string[]|null}>} next = null when there are no more rows */
+      async exportPage(table, { after = null, limit = null } = {}) {
+        const spec = PAGED[table]; V.need(spec); const n = limit ?? spec.page;
+        V.need(Number.isInteger(n) && n >= 1 && n <= 2000 && (after === null || (Array.isArray(after) && after.length === spec.key.length && after.every((x) => typeof x === 'string' && x.length <= 300))));
+        const cols = spec.key.map(([c]) => c).join(', '), cond = after ? `and (${cols}) > (${spec.key.map(([, t], i) => '$' + (i + 2) + '::' + t).join(', ')})` : '';
+        const raw = (await tx.unsafe(`select to_jsonb(t) as j from app.${table} t where user_id = $1 ${cond} order by ${cols} limit ${n}`, [uid, ...(after || [])])).map((r) => r.j);
+        const rows = raw.map((j) => pageRow(table, j));
+        return { rows, next: raw.length === n ? keyOf(table, raw.at(-1)) : null };
+      },
       async counts() {
         const out = {};
         for (const e of REGISTRY) {
