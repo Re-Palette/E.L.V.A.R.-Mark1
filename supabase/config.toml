@@ -53,3 +53,7 @@ file_size_limit = "60MiB"
 [storage.buckets.user-files]
 public = false
 file_size_limit = "60MiB"
+
+[storage.buckets.user-exports]
+public = false
+file_size_limit = "512MiB"

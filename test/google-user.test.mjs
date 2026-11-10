@@ -12,6 +12,7 @@ import { executeTool } from '../server/tools/execute.js';
 import { declarations, googleConfigured } from '../server/google/index.js';
 import { getKeyring } from '../server/auth/keyring.js';
 import { mintVerifiedUid } from '../server/db/verified-uid.js';
+import { exportBody } from './helpers/export.mjs';
 import { resetTokenCache } from '../server/google/http.js';
 
 const G = '/api/elvar/connect/google';
@@ -149,7 +150,7 @@ test('invalid_grant flags the reconnect for THAT user only; the client id changi
 test('disconnect revokes at Google and deletes the token; only the caller\'s own; the account export lists the connection without the token', () => withWorld(async ({ A, B, g, h, a, uid }) => {
   await A.configure('a-client-0001.apps.example', 'a-secret-aaaaaaaa'); await B.configure('b-client-0002.apps.example', 'b-secret-bbbbbbbb');
   await (await A.connect()).claim(); await (await B.connect()).claim();
-  const ex = (await A.call('GET', '/api/elvar/account/export')).body; assert.deepEqual(ex.files['connections.json'].connections.map((c) => [c.provider, c.status]), [['google', 'ok']]); assert.ok(!JSON.stringify(ex).includes('RT-a-client') && !JSON.stringify(ex).includes('a-secret-aaaaaaaa'));
+  const ex = await exportBody(h, A.hd); assert.deepEqual(ex.files['connections.json'].connections.map((c) => [c.provider, c.status]), [['google', 'ok']]); assert.ok(!JSON.stringify(ex).includes('RT-a-client') && !JSON.stringify(ex).includes('a-secret-aaaaaaaa'));
   const d = await A.call('POST', `${G}/disconnect`, {}); assert.deepEqual([d.body.ok, d.body.revoked, d.body.disconnected], [true, true, true]);
   assert.deepEqual(g.st.revoked.map((t) => t.slice(0, 12)), ['RT-a-client-'], 'only A\'s token was revoked at Google');
   assert.equal(await h.db.asUser(uid(a), (r) => r.oauthTokens.get('google')), null); assert.equal((await A.call('GET', `${G}/status`)).body.state, 'client_only');

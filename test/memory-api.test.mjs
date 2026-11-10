@@ -3,6 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { startHarness } from './helpers/api-harness.mjs';
+import { exportBody } from './helpers/export.mjs';
 
 const withH = async (fn) => { const h = await startHarness(); try { const u = h.mkUser('a@example.test'); await fn(h, await h.bearer(u, { email: 'a@example.test' }), u); } finally { await h.stop(); } };
 
@@ -46,9 +47,9 @@ test('inbox: add (same key replaces), mark read, delete, clear; the export carri
   assert.equal((await h.call('GET', '/api/elvar/inbox', A)).body.items.length, 1);
   assert.equal((await h.call('PATCH', `/api/elvar/inbox/${x.id}`, A, { read: true })).status, 200); assert.notEqual((await h.call('GET', '/api/elvar/inbox', A)).body.items[0].readAt, null);
   await h.call('POST', '/api/elvar/notes', A, { path: 'メモ', content: '本文' }); await h.call('POST', '/api/elvar/messages', A, { turns: [{ at: Date.now(), user: 'こんにちは', model: 'はい' }] });
-  const ex = (await h.call('GET', '/api/elvar/account/export', A)).body.files;
+  const ex = (await exportBody(h, A)).files;
   assert.equal(ex['notes.json'].notes[0].content, '本文\n'); assert.equal(ex['conversations.json'].conversations[0].messages.length, 2); assert.equal(ex['inbox.json'].inbox[0].title, '製作（完成）');
-  assert.equal((await h.call('DELETE', `/api/elvar/inbox/${x.id}`, A)).status, 200); assert.equal((await h.call('DELETE', '/api/elvar/inbox', A)).body.deleted, 0);
+  assert.equal((await h.call('DELETE', `/api/elvar/inbox/${x.id}`, A)).status, 200); assert.equal((await h.call('DELETE', '/api/elvar/inbox', A)).body.deleted, 1, 'only the notice that the export is ready is left');
 }));
 
 // ---- the GitHub mirror, with a stand-in for GitHub (the user's OWN repository and token)

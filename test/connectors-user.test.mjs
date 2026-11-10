@@ -14,6 +14,7 @@ import { exportConnectors, secretName, providerOf, getSecret } from '../server/c
 import { getKeyring } from '../server/auth/keyring.js';
 import { mintVerifiedUid } from '../server/db/verified-uid.js';
 import { startMcp, startApi } from './helpers/mock-mcp.mjs';
+import { exportBody } from './helpers/export.mjs';
 
 process.env.ELVAR_UNSAFE_TEST_NETWORK = 'loopback'; delete process.env.VERCEL; delete process.env.NODE_ENV;
 const SECRET = 'api-secret-1234', BEARER = 'mcp-bearer-secret-5678';
@@ -58,7 +59,7 @@ test('create (secret write-only) -> sync lists tools -> the user enables: nothin
     assert.equal((await prefs(A, id, {}, { enabled: true })).body.connector.enabled, true);
     assert.equal((await A.run('cx_notes_search', { query: 'x' })).body.needsApproval, true);
     // write-only: not in any answer, any log, and the stored value is ciphertext
-    const all = JSON.stringify([created.body, sync.body, (await A.call('GET', C)).body, (await A.call('GET', `${C}/${id}`)).body, (await A.call('GET', '/api/elvar/session')).body, (await A.call('GET', '/api/elvar/config')).body, (await A.call('GET', `${C}/export`)).body, (await A.call('GET', '/api/elvar/account/export')).body]) + logs.join('\n');
+    const all = JSON.stringify([created.body, sync.body, (await A.call('GET', C)).body, (await A.call('GET', `${C}/${id}`)).body, (await A.call('GET', '/api/elvar/session')).body, (await A.call('GET', '/api/elvar/config')).body, (await A.call('GET', `${C}/export`)).body, (await exportBody(h, A.hd))]) + logs.join('\n');
     assert.ok(!all.includes(BEARER) && !all.includes('mcp-bearer-secret'), 'the bearer token appears nowhere readable');
     const stored = await h.db.asUser(uid(a), (r) => r.secrets.get(secretName(id))); assert.ok(!stored.ct.includes(Buffer.from(BEARER)), 'stored as ciphertext under the user\'s key'); assert.equal(stored.last4, '5678');
     assert.equal(mcp.st.requests.find((r) => /initialize/.test(r.body)).headers.authorization, `Bearer ${BEARER}`, 'but it is what is sent to the server');

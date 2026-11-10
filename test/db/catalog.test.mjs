@@ -144,6 +144,7 @@ test('definer functions: fixed search_path, never executable by public or anon, 
     // the admin quota change (checks is_admin itself), and the daily sweep / reconciliation helpers (elvar_app only)
     _storage_track: [], reserve_file: ['authenticated'], finalize_file: ['authenticated'], patch_file: ['authenticated'], begin_delete_file: ['authenticated'], finish_delete_file: ['authenticated'],
     my_stale_files: ['authenticated'], recount_my_storage: ['authenticated'], search_files: ['authenticated'], admin_set_quota: ['authenticated'],
+    export_job_create: ['elvar_app'], export_job_update: ['elvar_app'], export_jobs_expired: ['elvar_app'], export_job_drop: ['elvar_app'],   // migration 19: the export jobs (server only)
     stale_files: ['elvar_app'], drop_stale_file: ['elvar_app'], reconcile_storage: ['elvar_app'],
   };
   assert.deepEqual(fns.map((f) => f.proname).sort(), Object.keys(EXPECT).sort(), 'a function was added or removed: update this list deliberately');

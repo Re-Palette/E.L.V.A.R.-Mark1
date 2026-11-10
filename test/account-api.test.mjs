@@ -7,6 +7,7 @@ import { startHarness } from './helpers/api-harness.mjs';
 import { DEFAULT_PROFILE } from '../shared/profile.js';
 import { REGISTRY } from '../server/rights/registry.js';
 import { EXPORTERS, exportedFiles } from '../server/rights/export.js';
+import { runExport } from './helpers/export.mjs';
 
 const withHarness = (fn) => async () => { const h = await startHarness(); try { await fn(h); } finally { await h.stop(); } };
 const GEMINI = 'AIzaSyTESTKEY-for-unit-tests-0001';
@@ -125,22 +126,21 @@ test('usage: the user sees their own numbers only', withHarness(async (h) => {
   assert.equal(ua.quotaBytes, 524288000);
 }));
 
-test('export: needs a recent sign-in; one file per registry entry; no key values, ciphertext, hashes or tokens leave', withHarness(async (h) => {
+test('export: needs a recent sign-in; one data file per registry entry; no key values, ciphertext, hashes or tokens leave; one a day; the job is the caller\'s own', withHarness(async (h) => {
   const u = h.mkUser('alice@example.test'), old = await h.bearer(u, { email: 'alice@example.test' }, { iat: Math.floor(Date.now() / 1000) - 3000 });
-  const r0 = await h.call('GET', '/api/elvar/account/export', old); assert.deepEqual(r0, { status: 401, body: { error: 'reauth_required' } });
+  const r0 = await h.call('POST', '/api/elvar/export', old, {}); assert.deepEqual(r0, { status: 401, body: { error: 'reauth_required' } });
   const hd = await h.bearer(u, { email: 'alice@example.test' });
   await h.call('PATCH', '/api/elvar/config', hd, { secrets: { GEMINI_API_KEY: GEMINI }, settings: { BRAIN_REPO: 'me/notes' } });
   const dev = (await h.call('POST', '/api/elvar/devices', hd, { name: 'p' })).body;
-  const r = await h.call('GET', '/api/elvar/account/export', hd);
-  assert.equal(r.status, 200); assert.match(r.headers['content-disposition'], /attachment/);
-  assert.deepEqual(Object.keys(r.body.files).sort(), exportedFiles());
-  const text = JSON.stringify(r.body);
+  const x = await runExport(h, hd);   // ask, step until done, download every part through its link, open the zips
+  assert.deepEqual(x.names.filter((n) => n.startsWith('data/')).map((n) => n.slice(5)).sort(), exportedFiles());
+  const text = Object.values(x.files).map((b) => b.toString('utf8')).join('\n');
   for (const secret of [GEMINI, dev.token, dev.token.split('.')[2]]) assert.ok(!text.includes(secret), 'a secret left in the export');
-  assert.ok(!/token_hash|"ct"|"iv"|wrapped/.test(text));
-  assert.equal(r.body.files['settings.json'].settings.BRAIN_REPO, 'me/notes'); assert.equal(r.body.files['secrets.json'].secrets.find((s) => s.name === 'GEMINI_API_KEY').last4, GEMINI.slice(-4));
-  assert.equal(r.body.user.email, 'alice@example.test');
-  for (let i = 0; i < 2; i++) await h.call('GET', '/api/elvar/account/export', hd);
-  assert.equal((await h.call('GET', '/api/elvar/account/export', hd)).status, 429, '3 a day');
+  assert.ok(!/token_hash|"ct"|"iv"|wrapped/.test(x.names.filter((n) => n !== 'manifest.json').map((n) => x.files[n].toString('utf8')).join('\n')), 'no ciphertext column in any data file (the manifest only NAMES the columns that never leave)');
+  assert.deepEqual(x.json('manifest.json').tables.user_secrets.columnsNeverExported, ['ct', 'iv']);
+  assert.equal(x.json('data/settings.json').settings.BRAIN_REPO, 'me/notes'); assert.equal(x.json('data/secrets.json').secrets.find((s) => s.name === 'GEMINI_API_KEY').last4, GEMINI.slice(-4));
+  assert.equal(x.json('manifest.json').user.email, 'alice@example.test');
+  const again = await h.call('POST', '/api/elvar/export', hd, {}); assert.equal(again.status, 429, 'one a day'); assert.match(again.body.message, /1日 1 回まで/);
 }));
 
 test('the exporter covers every registered table that is exported (a new table cannot be added without deciding what leaves with the user)', () => {

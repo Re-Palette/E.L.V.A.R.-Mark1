@@ -8,7 +8,7 @@ import { getVerifier, bearerFrom } from '../auth/jwt.js';
 if (process.env.VERCEL || process.env.NODE_ENV === 'production') throw new Error('server/dev/fake-storage-http.js must never run in production');
 
 const MAX_BODY = 62914560 + 1024 * 1024;   // the bucket limit (60 MB) plus a little: anything bigger is refused by the storage itself
-const UPLOAD = /^\/storage\/v1\/object\/user-files\/(.+)$/, DOWNLOAD = /^\/storage\/v1\/object\/sign\/user-files\/(.+)$/;
+const UPLOAD = /^\/storage\/v1\/object\/user-files\/(.+)$/, DOWNLOAD = /^\/storage\/v1\/object\/sign\/(?:user-files|user-exports)\/(.+)$/;
 
 function readBody(req, max) {
   return new Promise((resolve, reject) => {

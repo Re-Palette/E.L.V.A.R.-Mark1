@@ -9,6 +9,7 @@ import { getStorage, pathOwner } from '../server/storage/index.js';
 import { mintVerifiedUid } from '../server/db/verified-uid.js';
 import { sweepFiles } from '../server/admin/cron.js';
 import { browserUpload, pathOfUpload } from './helpers/upload.mjs';
+import { exportBody } from './helpers/export.mjs';
 
 const MB = 1024 * 1024;
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
@@ -195,7 +196,7 @@ test('delete everything (principle 7) needs the confirmation word and removes ev
 });
 
 test('the export lists the files (metadata, memory, text) and a download path for every original; the Storage path is not in it', async () => {
-  const x = (await h.call('GET', '/api/elvar/account/export', A)).body.files['files.json'];
+  const x = (await exportBody(h, A)).files['files.json'];
   assert.ok(x.files.length >= 1); assert.ok(x.files.every((f) => 'text' in f && !('objectPath' in f)));
   assert.equal(x.originals.length, x.files.length); assert.ok(x.originals.every((o) => o.downloadPath === `/api/elvar/files/${o.id}/download` && o.exportPath.startsWith(`files/${o.id}-`)));
   assert.equal(JSON.stringify(x).includes(`users/${a}`), false);

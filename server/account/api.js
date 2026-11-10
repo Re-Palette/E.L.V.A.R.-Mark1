@@ -15,7 +15,6 @@ import { invalidateAccount, requireFresh, signOutEverywhere } from '../auth/with
 import { newDeviceToken } from '../auth/device-token.js';
 import { DEVICE_SCOPES } from '../db/validate.js';
 import { purgeAccount } from '../rights/purge.js';
-import { buildExport } from '../rights/export.js';
 
 const bad = (status, error, message, extra = {}) => ({ status, body: { error, ...(message ? { message } : {}), ...extra } });
 const audit = (event, extra) => console.log('[audit] ' + JSON.stringify({ at: new Date().toISOString(), event, ...extra }));
@@ -150,14 +149,6 @@ export async function removeDevice({ user, params }) {
 // ---- the account: export and delete (principle 7)
 export async function getDeletion({ user }) { return { status: 200, body: { status: user.account.status, deletion: await user.db((r) => r.accounts.deletion()) } }; }
 
-export async function exportData({ user }) {
-  await requireFresh(user);
-  if (!(await user.system.rlHit({ bucket: 'export', who: user.uid.uid, windowSec: 86400, userId: user.uid }) <= 3)) return bad(429, 'rate_limited', '書き出しは1日3回までです');
-  const data = await user.db((r) => buildExport(r, { user: { id: user.uid.uid, email: user.email } }));
-  audit('account-exported', { uid: user.uid.uid });
-  return { status: 200, headers: { 'content-disposition': 'attachment; filename="elvar-export.json"' }, body: data };
-}
-
 /**
  * O3: the user chooses, at deletion time, immediate deletion or a 7-day grace period during which signing in offers to cancel.
  * Needs a recent sign-in (requireFresh): the client asks for the password or a new Google sign-in first.
@@ -173,7 +164,7 @@ export async function deleteAccount({ user, body }) {
   await signOutEverywhere(user);
   audit('account-delete-requested', { uid: user.uid.uid, graceDays });
   if (graceDays === 0) {
-    const res = await purgeAccount(await getDb(), user.uid.uid);
+    const res = await purgeAccount(await getDb(), user.uid.uid, { email: user.email });
     audit('account-deleted', { tablesChecked: res.tablesChecked });
     return { status: 200, body: { deleted: true } };
   }

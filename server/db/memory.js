@@ -14,6 +14,7 @@ const DEFAULT_QUOTA = 524288000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const UUID_ANYWHERE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const iso = (ms) => new Date(ms).toISOString();
+const exportRow = (j) => ({ id: j.id, status: j.status, cursor: structuredClone(j.cursor ?? null), parts: j.parts, bytes: j.bytes, createdAt: iso(j.created_at), expiresAt: j.expires_at ? iso(j.expires_at) : null, error: j.error ?? null, updatedAt: iso(j.updated_at) });
 const jclone = (v) => JSON.parse(JSON.stringify(v));   // what a jsonb column does to a value (undefined keys vanish)
 const sameBytes = (a, b) => Buffer.from(a).equals(Buffer.from(b));
 const clone = (v) => {
@@ -437,6 +438,11 @@ export function createMemoryDb({ now = null } = {}) {
         async clear() { return remove('notif_items', (r) => r.user_id === uid); },
         async count() { return rows('notif_items', uid).filter((r) => r.at >= clock() - V.NOTIF_KEEP_MS).length; },
       },
+      exportJobs: {
+        async list() { return rows('export_jobs', uid).sort((a, b) => b.created_at - a.created_at || (a.id < b.id ? 1 : -1)).slice(0, 20).map(exportRow); },
+        async get(id) { V.need(UUID_RE.test(String(id))); const j = find('export_jobs', uid, (x) => x.id === id); return j ? exportRow(j) : null; },
+      },
+      rights: { async counts() { return Object.fromEntries(REGISTRY.map((e) => [e.table, ['rate_limits', 'admins'].includes(e.table) ? 0 : tables[e.table].filter((r) => r[e.ownerColumn] === uid).length])); } },   // like the database: the user cannot read these two tables at all
       usageLimits: {
         async list() { return rows('usage_limits', uid).sort((a, b) => `${a.provider}|${a.metric}|${a.period}`.localeCompare(`${b.provider}|${b.metric}|${b.period}`)).map((r) => ({ provider: r.provider, metric: r.metric, period: r.period, soft: r.soft, softAction: r.soft_action })); },
         async put({ provider, metric, period, soft, softAction = 'warn' }) {
@@ -550,6 +556,27 @@ export function createMemoryDb({ now = null } = {}) {
       if (!r) { r = { bucket, who: w, window_start: start, n: 0, user_id: uid, expires_at: start + windowSec * 2000 }; tables.rate_limits.push(r); }
       return ++r.n;
     },
+    // P7: export jobs (progress is written only here; the same rules as migration 19)
+    async createExportJob(vuid) {
+      const u = requireVerifiedUid(vuid); if (!users.has(u)) throw dbError('not_found', 404);
+      if (tables.export_jobs.some((j) => j.user_id === u && ['queued', 'running'].includes(j.status))) throw dbError('conflict', 409);
+      const id = crypto.randomUUID(); tables.export_jobs.push({ user_id: u, id, status: 'queued', cursor: null, parts: 0, bytes: 0, created_at: clock(), expires_at: null, error: null, updated_at: clock() });
+      tables.audit_log.push({ user_id: u, id: ++auditSeq, at: clock(), actor: 'user', actor_id: u, action: 'export.requested', target: id, meta: null });
+      return id;
+    },
+    async updateExportJob(vuid, id, { status, cursor = null, parts = 0, bytes = 0, error = null, expiresAt = null }) {
+      const u = requireVerifiedUid(vuid); V.need(UUID_RE.test(id) && ['running', 'done', 'failed'].includes(status) && Number.isInteger(parts) && parts >= 0 && Number.isFinite(bytes) && bytes >= 0);
+      const j = tables.export_jobs.find((x) => x.user_id === u && x.id === id && ['queued', 'running'].includes(x.status)); if (!j) return false;
+      Object.assign(j, { status, cursor: clone(cursor), parts, bytes, error: error ? String(error).slice(0, 500) : null, updated_at: clock(), ...(status === 'done' ? { expires_at: expiresAt ? new Date(expiresAt).getTime() : null } : {}) });
+      if (status === 'done') tables.audit_log.push({ user_id: u, id: ++auditSeq, at: clock(), actor: 'system', actor_id: null, action: 'export.completed', target: id, meta: { parts, bytes } });
+      return true;
+    },
+    async expiredExportJobs(limit = 100) {
+      V.need(Number.isInteger(limit) && limit >= 1 && limit <= 500);
+      for (const j of tables.export_jobs) if (['queued', 'running'].includes(j.status) && j.updated_at < clock() - 30 * 60_000) { j.status = 'failed'; j.error = 'stalled'; j.updated_at = clock(); }
+      return tables.export_jobs.filter((j) => (j.status === 'done' && j.expires_at <= clock()) || (['failed', 'expired'].includes(j.status) && j.updated_at < clock() - 2 * 864e5)).slice(0, limit).map((j) => ({ userId: j.user_id, id: j.id }));
+    },
+    async dropExportJob(userId, id) { V.need(UUID_RE.test(userId) && UUID_RE.test(id)); return remove('export_jobs', (j) => j.user_id === userId && j.id === id) > 0; },
     async staleFiles(limit = 200) {
       V.need(Number.isInteger(limit) && limit >= 1 && limit <= 1000);
       return tables.files.filter((f) => f.status === 'deleting' || (f.status === 'pending' && f.reserved_until < clock() - STALE_GRACE_MS)).sort((a, b) => a.updated_at - b.updated_at).slice(0, limit).map((f) => ({ userId: f.user_id, id: f.id, objectPath: f.object_path }));
@@ -578,7 +605,7 @@ export function createMemoryDb({ now = null } = {}) {
     async residualCheck(vuid) {
       const uid = requireVerifiedUid(vuid);
       return REGISTRY.map((e) => ({ table: e.table, n: tables[e.table].filter((r) => r[e.ownerColumn] === uid || (e.table === 'rate_limits' && (r.who === `u:${uid}` || r.who === uid))).length })).sort((a, b) => (a.table < b.table ? -1 : 1)); },
-    async dueDeletions(limit = 20) { return tables.deletion_requests.filter((r) => r.purge_after <= clock()).sort((a, b) => a.purge_after - b.purge_after).slice(0, Math.max(1, Math.min(limit, 200))).map((r) => ({ userId: r.user_id, graceDays: r.grace_days })); },
+    async dueDeletions(limit = 20) { return tables.deletion_requests.filter((r) => r.purge_after <= clock()).sort((a, b) => a.purge_after - b.purge_after).slice(0, Math.max(1, Math.min(limit, 200))).map((r) => ({ userId: r.user_id, graceDays: r.grace_days, email: r.email_for_receipt ?? null })); },
     async recordReceipt(tablesChecked) { V.need(Number.isInteger(tablesChecked) && tablesChecked >= 0); receipts.push({ completedAt: clock(), tablesChecked }); },
     async bootstrapAdmin(email) {
       V.need(typeof email === 'string' && email.length >= 3 && email.length <= 320);

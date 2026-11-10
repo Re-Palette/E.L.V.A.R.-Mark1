@@ -17,6 +17,8 @@ import * as BUILDS from './account/builds.js';
 import * as MEM from './account/notes.js';
 import * as FILES from './account/files.js';
 import * as USAGE from './account/usage.js';
+import * as EXPORTS from './account/exports.js';
+import * as MYDATA from './account/mydata.js';
 import * as SYNC from './brain-sync.js';
 import * as ADMIN from './admin/api.js';
 import { dailyCron } from './admin/cron.js';
@@ -45,7 +47,15 @@ export const ROUTES = [
   { method: 'POST', path: '/api/elvar/usage/report', auth: 'user', handler: USAGE.postReport },
   // ---- the account itself (principle 7)
   { method: 'GET', path: '/api/elvar/account/deletion', auth: 'user', authOpts: { allowPendingDeletion: true }, handler: API.getDeletion },
-  { method: 'GET', path: '/api/elvar/account/export', auth: 'user', authOpts: FRESH, handler: API.exportData },
+  // ---- data rights (P7): the 「私のデータ」 overview, my audit log, and the data export as an asynchronous job (a zip in parts, links that expire after 24 hours)
+  { method: 'GET', path: '/api/elvar/mydata', auth: 'user', handler: MYDATA.getMyData },
+  { method: 'POST', path: '/api/elvar/mydata/:type/delete', auth: 'user', handler: MYDATA.deleteType },
+  { method: 'GET', path: '/api/elvar/audit', auth: 'user', handler: MYDATA.listAudit },
+  { method: 'POST', path: '/api/elvar/export', auth: 'user', authOpts: FRESH, handler: EXPORTS.createExport },
+  { method: 'GET', path: '/api/elvar/export', auth: 'user', handler: EXPORTS.listExports },
+  { method: 'GET', path: '/api/elvar/export/:id', auth: 'user', handler: EXPORTS.getExport },
+  { method: 'POST', path: '/api/elvar/export/:id/step', auth: 'user', handler: EXPORTS.stepExportRoute },
+  { method: 'DELETE', path: '/api/elvar/export/:id', auth: 'user', handler: EXPORTS.deleteExportRoute },
   { method: 'POST', path: '/api/elvar/account/delete', auth: 'user', authOpts: FRESH, handler: API.deleteAccount },
   { method: 'POST', path: '/api/elvar/account/delete/cancel', auth: 'user', authOpts: { allowPendingDeletion: true, freshAccount: true }, handler: API.cancelDeletion },
   // ---- admin: metadata only

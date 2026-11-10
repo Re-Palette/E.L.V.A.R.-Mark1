@@ -508,7 +508,7 @@ export function runDbContract(label, setup) {
     assert.ok((await db.asUser(A, (r) => r.audit.list())).some((x) => x.action === 'account.delete_cancelled'));
     await db.asUser(A, (r) => r.accounts.requestDeletion(0));
     assert.equal(await db.asUser(A, (r) => r.accounts.cancelDeletion()), false, 'an immediate deletion cannot be undone');
-    assert.deepEqual((await db.system.dueDeletions(50)).filter((x) => x.userId === A.uid), [{ userId: A.uid, graceDays: 0 }]);
+    assert.deepEqual((await db.system.dueDeletions(50)).filter((x) => x.userId === A.uid), [{ userId: A.uid, graceDays: 0, email: null }]);
     assert.equal((await db.system.dueDeletions(50)).some((x) => x.userId === B.uid), false);
   });
 

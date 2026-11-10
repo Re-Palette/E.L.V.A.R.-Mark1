@@ -86,6 +86,9 @@ const noA = (value, w) => {
   for (const s of [A_KEY, A_NAME, 'Alice-Secret-Name', 'a-user/private-notes', 'a-phone', w.dev.id, w.dev.token, w.a, A_CLIENT, A_GSECRET, A_REFRESH, A_CX_NAME, A_CX_TOKEN, A_CX_HOST, A_BUILD, A_BUILD_REPO, w.cx.id, w.build.id, A_NOTE_PATH, A_NOTE_TEXT, A_NOTE_OLD, A_MSG, A_INBOX, A_RELAY_CT, 'A-TRASHED-BODY', 'A-INBOX-BODY', w.mem.noteId, w.mem.convId, w.mem.inboxId, A_FILE_NAME, A_FILE_TEXT, A_FILE_MEMO, A_FILE_TAG, 'A-PRIVATE-TITLE', 'A-PRIVATE-KEYWORD', 'A-PRIVATE-SNIPPET', 'A-PENDING', w.files.id, w.files.pendingId, sha256(A_FILE_BYTES), `users/${w.a}`]) assert.ok(!t.includes(s), `B's answer contains ${s}`);
 };
 
+/** B asks for an export (the one-a-day limit is lifted for the test); w.bJob = the job id. */
+async function bExport(h, w) { const { runExport } = await import('./helpers/export.mjs'); h.db.testing.setHardLimits(w.b, { exportsPerDay: 1000 }); const x = await runExport(h, w.B); w.bJob = x.job.id; return x; }
+
 // "METHOD /path" -> async (h, w) => void
 export const CASES = {
   'GET /api/elvar/session': async (h, w) => { const r = await h.call('GET', '/api/elvar/session', w.B); assert.equal(r.body.user.id, w.b); noA(r.body, w); assert.equal(r.body.profile.assistant.displayName, 'E.L.V.A.R.'); },
@@ -116,7 +119,7 @@ export const CASES = {
   },
   'GET /api/elvar/usage': async (h, w) => { const r = await h.call('GET', '/api/elvar/usage', w.B); assert.deepEqual(r.body.daily, []); noA(r.body, w); },
   'GET /api/elvar/account/deletion': async (h, w) => { await h.call('POST', '/api/elvar/account/delete', w.A, { graceDays: 7 }); const r = await h.call('GET', '/api/elvar/account/deletion', w.B); assert.deepEqual(r.body, { status: 'active', deletion: null }); },
-  'GET /api/elvar/account/export': async (h, w) => { const r = await h.call('GET', '/api/elvar/account/export', w.B); assert.equal(r.status, 200); noA(r.body, w); assert.equal(r.body.user.id, w.b); },
+  // the old synchronous export route is gone: see POST /api/elvar/export (P7)
   'POST /api/elvar/account/delete': async (h, w) => {
     assert.equal((await h.call('POST', '/api/elvar/account/delete', w.B, { graceDays: 7 })).status, 200);
     assert.equal((await h.call('GET', '/api/elvar/session', w.A)).status, 200, 'A is still active'); assert.equal((await h.call('GET', '/api/elvar/session', w.B)).body.error, 'account_pending_deletion');
@@ -354,6 +357,40 @@ Object.assign(CASES, {
     assert.equal((await h.call('POST', `/api/elvar/admin/users/${w.a}/quota`, adminB, { bytes: -5 })).status, 400);
     assert.equal((await h.call('POST', `/api/elvar/admin/users/${w.a}/quota`, adminB, { bytes: 1234 })).status, 200, 'an admin can');
     assert.equal(await quota(), 1234);
+  },
+  // ---- P7: data rights - the overview, the audit log, deleting kinds of data, and the export job
+  'GET /api/elvar/mydata': async (h, w) => {
+    const r = await h.call('GET', '/api/elvar/mydata', w.B); assert.equal(r.status, 200); noA(r.body, w);
+    const by = Object.fromEntries(r.body.types.map((t) => [t.id, t])); assert.equal(by.notes.count, 0); assert.equal(by.files.count, 0); assert.equal(by.conversations.count, 0); assert.equal(by.connectors.count, 0); assert.equal(by.google.count, 0); assert.equal(by.devices.count, 0);
+    const a = (await h.call('GET', '/api/elvar/mydata', w.A)).body; assert.ok(a.types.find((t) => t.id === 'notes').count >= 1 && a.types.find((t) => t.id === 'files').count >= 1, 'A sees A\'s own');
+  },
+  'POST /api/elvar/mydata/:type/delete': async (h, w) => {
+    const before = await w.snapshotA();
+    assert.equal((await h.call('POST', '/api/elvar/mydata/profile/delete', w.B, {})).status, 400, 'needs the confirmation word'); assert.equal((await h.call('POST', '/api/elvar/mydata/notes/delete', w.B, { confirm: 'delete' })).status, 404, 'only the kinds without an endpoint of their own');
+    for (const t of ['profile', 'settings', 'keys', 'builds', 'devices']) assert.equal((await h.call('POST', `/api/elvar/mydata/${t}/delete`, w.B, { confirm: 'delete' })).status, 200, t);
+    assert.equal(await w.snapshotA(), before, 'nothing of A changed');
+    assert.equal((await h.call('GET', '/api/elvar/profile', w.A)).body.profile.assistant.displayName, A_NAME); assert.equal((await h.call('GET', '/api/elvar/config', w.A)).body.secrets.GEMINI_API_KEY.set, true); assert.equal((await h.call('GET', '/api/elvar/devices', w.A)).body.devices.length, 1); assert.equal((await h.call('GET', '/api/elvar/builds', w.A)).body.builds.length, 1);
+  },
+  'GET /api/elvar/audit': async (h, w) => { const r = await h.call('GET', '/api/elvar/audit', w.B); assert.equal(r.status, 200); noA(r.body, w); assert.ok(r.body.audit.every((e) => e.actorId === null || e.actorId === w.b || e.actor === 'admin' || e.actor === 'system')); },
+  'POST /api/elvar/export': async (h, w) => {
+    const before = await w.snapshotA();
+    const x = await bExport(h, w);
+    const mine = JSON.stringify(x.names) + Object.values(x.files).map((b) => b.toString('latin1')).join('\n'); noA(mine, w);
+    assert.ok(!x.names.some((n) => n.includes('A-PRIVATE')) && !Object.values(x.files).some((b) => b.includes(A_FILE_BYTES) || b.includes('A-PENDING-UPLOAD-BYTES')), 'none of A\'s files or notes is in B\'s zip');
+    assert.equal(x.json('manifest.json').user.id, w.b); assert.equal(await w.snapshotA(), before, 'A is untouched');
+    assert.deepEqual((await h.call('GET', '/api/elvar/export', w.A)).body.jobs, [], 'A does not see B\'s job'); w.bJob = x.job.id;
+  },
+  'GET /api/elvar/export': async (h, w) => { await bExport(h, w); const r = await h.call('GET', '/api/elvar/export', w.B); assert.equal(r.status, 200); noA(r.body, w); assert.ok(r.body.jobs.every((j) => !JSON.stringify(j).includes(w.a))); assert.deepEqual((await h.call('GET', '/api/elvar/export', w.A)).body.jobs.filter((j) => j.id === w.bJob), []); },
+  'GET /api/elvar/export/:id': async (h, w) => {
+    await bExport(h, w); assert.equal((await h.call('GET', `/api/elvar/export/${w.bJob}`, w.A)).status, 404, 'A cannot read B\'s job (nor its links)'); assert.equal((await h.call('GET', `/api/elvar/export/${w.bJob}`, w.B)).status, 200);
+    assert.equal((await h.call('GET', '/api/elvar/export/not-a-uuid', w.B)).status, 404); assert.equal((await h.call('GET', `/api/elvar/export/${crypto.randomUUID()}`, w.B)).status, 404);
+  },
+  'POST /api/elvar/export/:id/step': async (h, w) => { await bExport(h, w); const before = await w.snapshotA(); assert.equal((await h.call('POST', `/api/elvar/export/${w.bJob}/step`, w.A, {})).status, 404); assert.equal((await h.call('POST', `/api/elvar/export/${crypto.randomUUID()}/step`, w.A, {})).status, 404); assert.equal(await w.snapshotA(), before); },
+  'DELETE /api/elvar/export/:id': async (h, w) => {
+    await bExport(h, w);
+    assert.equal((await h.call('DELETE', `/api/elvar/export/${w.bJob}`, w.A)).status, 404, 'A cannot delete B\'s export'); assert.equal((await h.call('GET', `/api/elvar/export/${w.bJob}`, w.B)).status, 200, 'it is still there');
+    const st = await getStorage(); assert.ok(st.testing.list().some((k) => k.startsWith(`user-exports/users/${w.b}/exports/${w.bJob}/`)), 'and so are its objects');
+    assert.equal((await h.call('DELETE', `/api/elvar/export/${w.bJob}`, w.B)).status, 200); assert.equal((await h.call('GET', `/api/elvar/export/${w.bJob}`, w.B)).status, 404); assert.ok(!st.testing.list().some((k) => k.startsWith(`user-exports/users/${w.b}/exports/`)), 'objects removed with it');
   },
   // ---- P6: usage and limits
   'PUT /api/elvar/usage/limits': async (h, w) => {

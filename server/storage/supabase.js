@@ -6,7 +6,7 @@
 // (POST object/<bucket>/<path> by the browser, object/info, object/authenticated, POST object/sign, DELETE object/<bucket>) and are covered by test/storage-supabase.test.mjs with a stub.
 import crypto from 'node:crypto';
 import { dbError } from '../db/errors.js';
-import { storageListUser, storageRemove } from '../db/service.js';
+import { storageListUser, storageRemove, storagePut, storageGet, storageSign } from '../db/service.js';
 import { USER_BUCKET, MAX_OBJECT_BYTES, pathOwner, requireOwnPath } from './index.js';
 
 const TIMEOUT_MS = 15_000, HASH_TIMEOUT_MS = 60_000;
@@ -94,6 +94,10 @@ export function createSupabaseStorage({ env = process.env, fetchImpl = null } = 
       return storageListUser(bucket, m[1], { env, fetchImpl: fetchImpl || undefined });
     },
     async remove(paths, { bucket = USER_BUCKET } = {}) { return storageRemove(bucket, paths, { env, fetchImpl: fetchImpl || undefined }); },
+    /** The export (P7): write a part, read an original for the zip, hand out a link that expires. Service key, only users/<uuid>/ paths. */
+    async put(path, bytes, { bucket = USER_BUCKET, contentType } = {}) { return storagePut(bucket, path, bytes, { contentType, env, fetchImpl: fetchImpl || undefined }); },
+    async get(path, { bucket = USER_BUCKET } = {}) { return storageGet(bucket, path, { env, fetchImpl: fetchImpl || undefined }); },
+    async sign(path, { bucket = USER_BUCKET, expiresInSec = 3600, name = '' } = {}) { return storageSign(bucket, path, expiresInSec, { name, env, fetchImpl: fetchImpl || undefined }); },
     async count(prefix, { bucket = USER_BUCKET } = {}) { return (await this.list(prefix, { bucket })).length; },
   };
   return { kind: 'supabase', forUser, service };

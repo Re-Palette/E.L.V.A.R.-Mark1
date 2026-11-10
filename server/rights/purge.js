@@ -31,7 +31,22 @@ export async function sweepUserStorage(storage, uid) {
   return removed;
 }
 
-export async function purgeAccount(db, uid, { deleteUser = deleteAuthUser, revoke = null, fetchImpl = null, storage = null } = {}) {
+/**
+ * The optional confirmation hook: when ELVAR_DELETION_RECEIPT_WEBHOOK is set, the address the user left (read once from the deletion request) and a Japanese text are POSTed to it
+ * AFTER the deletion was verified clean, so an operator can send the mail through their own provider. Nothing about the user is kept afterwards: the request row (with the
+ * address) went with the account, the receipt has no id and no address. A failing hook is logged and never undoes or retries the deletion.
+ */
+export async function sendDeletionReceipt(email, { env = process.env, fetchImpl = globalThis.fetch } = {}) {
+  const url = String(env.ELVAR_DELETION_RECEIPT_WEBHOOK || '').trim();
+  if (!url || !email) return false;
+  try {
+    const u = new URL(url); if (u.protocol !== 'https:' && !(u.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname))) return false;
+    const r = await fetchImpl(url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(8000), headers: { 'content-type': 'application/json' }, body: JSON.stringify({ to: email, subject: 'E.L.V.A.R. アカウントを削除しました', text: 'E.L.V.A.R. のアカウントと、保存していたデータ（ファイルを含む）の削除が完了しました。このメールが、削除の確認です。\n\nバックアップには、運営者の定める期間（最長7日）だけ残ることがあります。' }) });
+    return r.ok;
+  } catch (e) { console.error('[elvar] deletion receipt hook failed (the deletion itself is done):', e?.code || e?.message); return false; }
+}
+
+export async function purgeAccount(db, uid, { deleteUser = deleteAuthUser, revoke = null, fetchImpl = null, storage = null, email = null, notify = sendDeletionReceipt } = {}) {
   const v = mintVerifiedUid(uid, 'purge');
   const revokers = revoke || [async (vu) => { const res = await revokeAll(db, vu, { fetchImpl }); console.log('[audit] ' + JSON.stringify({ at: new Date().toISOString(), event: 'purge-revoked', google: res.google, connectors: res.connectors, failed: res.failed })); }];
   for (const fn of revokers) { try { await fn(v); } catch (e) { console.error('[elvar] purge: could not revoke an external grant:', e?.code || e?.message); } }
@@ -45,14 +60,15 @@ export async function purgeAccount(db, uid, { deleteUser = deleteAuthUser, revok
     throw Object.assign(new Error('purge_incomplete'), { code: 'purge_incomplete', status: 500 });
   }
   await db.system.recordReceipt(res.tablesChecked);
-  return { tablesChecked: res.tablesChecked, storageChecked: res.storage.length };
+  const mailed = email ? await notify(email) : false;   // optional; the address is not kept anywhere after this
+  return { tablesChecked: res.tablesChecked, storageChecked: res.storage.length, mailed };
 }
 
 /** The cron step: every account whose deletion is due. @returns {Promise<{purged:number, failed:number}>} */
 export async function purgeDue(db, opts = {}) {
   let purged = 0, failed = 0;
   for (const d of await db.system.dueDeletions(20)) {
-    try { await purgeAccount(db, d.userId, opts); purged++; } catch (e) { failed++; console.error('[elvar] purge failed (will retry on the next run):', e?.code || e?.message); }
+    try { await purgeAccount(db, d.userId, { email: d.email, ...opts }); purged++; } catch (e) { failed++; console.error('[elvar] purge failed (will retry on the next run):', e?.code || e?.message); }
   }
   return { purged, failed };
 }

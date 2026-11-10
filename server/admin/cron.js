@@ -2,10 +2,12 @@
 //   1. sweep expired short-lived rows (kv, rate limits, ticket uses, oauth pending)
 //   2. bootstrap admin: the confirmed account whose e-mail equals ELVAR_BOOTSTRAP_ADMIN_EMAIL becomes an admin (table row + signed claim)
 //   3. purge the accounts whose deletion is due (the 7-day grace is over)
+//   4b. the data exports (P7): expired and abandoned export jobs are deleted (the zip parts first, then the job)
 //   4. the file vault (P5): remove the Storage objects of deleted files and of uploads that never finished (service key), drop their rows, and recount every user's storage usage
 import { setAppMetadata } from '../db/service.js';
 import { purgeDue } from '../rights/purge.js';
 import { getStorage, USER_BUCKET } from '../storage/index.js';
+import { sweepExports } from '../rights/export-job.js';
 
 export async function dailyCron({ user: ctx }, { env = process.env, setClaim = setAppMetadata, purge = purgeDue } = {}) {
   const out = { swept: null, admin: null, purge: null, errors: [] };
@@ -20,6 +22,7 @@ export async function dailyCron({ user: ctx }, { env = process.env, setClaim = s
   });
   out.purge = await step('purge', async () => purge(await (await import('../db/index.js')).getDb()));
   out.files = await step('files-sweep', () => sweepFiles(ctx.system));
+  out.exports = await step('exports-sweep', async () => sweepExports({ system: ctx.system, storage: await getStorage() }));
   out.reconciled = await step('storage-reconcile', () => ctx.system.reconcileStorage());
   return { status: 200, body: out };
 }

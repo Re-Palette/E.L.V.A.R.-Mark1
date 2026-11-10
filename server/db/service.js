@@ -74,3 +74,37 @@ export async function storageRemove(bucket, paths, opts = {}) {
   for (let i = 0; i < paths.length; i += 1000) await authAdmin('DELETE', `/storage/v1/object/${bucket}`, { prefixes: paths.slice(i, i + 1000) }, { ...opts, what: 'storage_admin' });
   return paths.length;
 }
+
+// ---- Storage writes and reads of the export (P7). The user has no write access to `user-exports` (nobody can tamper with an export), so the zip parts are written
+// with the service key, read back only for the signed-link step, and removed when the job expires. Same path rule as above: users/<uuid>/...
+const okPath = (p) => /^users\/[0-9a-f-]{36}\/[^\u0000-\u001f]+$/.test(String(p)) && !String(p).split('/').some((x) => x === '..' || x === '.' || x === '');
+const encPath = (p) => String(p).split('/').map(encodeURIComponent).join('/');
+async function storageRaw(method, path, { body, headers = {}, env = process.env, fetchImpl = fetchOverride || globalThis.fetch, timeoutMs = 60_000 } = {}) {
+  const { url, key } = serviceConfig(env);
+  try { return await fetchImpl(`${url}/storage/v1${path}`, { method, redirect: 'error', signal: AbortSignal.timeout(timeoutMs), headers: { apikey: key, authorization: `Bearer ${key}`, ...headers }, body }); }
+  catch (e) { throw dbError('storage_admin_unreachable', 502, e); }
+}
+/** Write one object (overwrites: a retried step writes the same part again). */
+export async function storagePut(bucket, path, bytes, { contentType = 'application/octet-stream', ...opts } = {}) {
+  if (!STORAGE_BUCKET_RE.test(String(bucket)) || !okPath(path)) throw dbError('bad_path', 500);
+  const r = await storageRaw('POST', `/object/${bucket}/${encPath(path)}`, { ...opts, body: bytes, headers: { 'content-type': contentType, 'x-upsert': 'true' } });
+  if (!r.ok) throw dbError('storage_admin_failed', 502);
+  return true;
+}
+/** Read one object (null when it is not there). */
+export async function storageGet(bucket, path, opts = {}) {
+  if (!STORAGE_BUCKET_RE.test(String(bucket)) || !okPath(path)) throw dbError('bad_path', 500);
+  const r = await storageRaw('GET', `/object/${bucket}/${encPath(path)}`, opts);
+  if (r.status === 404 || r.status === 400) return null;
+  if (!r.ok) throw dbError('storage_admin_failed', 502);
+  return Buffer.from(await r.arrayBuffer());
+}
+/** A signed download link that expires (seconds). */
+export async function storageSign(bucket, path, expiresInSec, { name = '', ...opts } = {}) {
+  if (!STORAGE_BUCKET_RE.test(String(bucket)) || !okPath(path) || !Number.isInteger(expiresInSec) || expiresInSec < 1 || expiresInSec > 7 * 86400) throw dbError('bad_path', 500);
+  const r = await storageRaw('POST', `/object/sign/${bucket}/${encPath(path)}`, { ...opts, body: JSON.stringify({ expiresIn: expiresInSec }), headers: { 'content-type': 'application/json' } });
+  if (!r.ok) throw dbError('storage_admin_failed', 502);
+  const j = await r.json().catch(() => null), rel = j?.signedURL ?? j?.signedUrl;
+  if (typeof rel !== 'string' || !rel.startsWith('/object/sign/')) throw dbError('storage_admin_failed', 502);
+  return `${serviceConfig(opts.env || process.env).url}/storage/v1${rel}${name ? `${rel.includes('?') ? '&' : '?'}download=${encodeURIComponent(name)}` : ''}`;
+}

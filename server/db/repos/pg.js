@@ -7,11 +7,14 @@
 import { dbError, mapPgError, isDriverError } from '../errors.js';
 import * as V from '../validate.js';
 import { requireVerifiedUid } from '../verified-uid.js';
+import { REGISTRY } from '../../rights/registry.js';
+const guardedSys = async (_sql, fn) => { try { return await fn(); } catch (e) { throw isDriverError(e) ? mapPgError(e) : e; } };
 
 const requireUuid = (u) => typeof u === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(u);
 const iso = (d) => (d ? new Date(d).toISOString() : null);
 const num = (x) => (x === null || x === undefined ? x : Number(x));
 
+const exportRow = (r) => ({ id: r.id, status: r.status, cursor: r.cursor ?? null, parts: r.parts, bytes: num(r.bytes), createdAt: iso(r.created_at), expiresAt: iso(r.expires_at), error: r.error ?? null, updatedAt: iso(r.updated_at) });
 const accountRow = (r) => (r ? { userId: r.user_id, status: r.status, storageQuotaBytes: num(r.storage_quota_bytes), hardLimits: r.hard_limits, suspendedReason: r.suspended_reason, createdAt: iso(r.created_at) } : null);
 const keyRow = (r) => (r ? { kekId: r.kek_id, dekVer: r.dek_ver, wrapped: Buffer.from(r.wrapped), iv: Buffer.from(r.iv), rotatedAt: iso(r.rotated_at) } : null);
 const secretMeta = (r) => ({ name: r.name, last4: r.last4, dekVer: r.dek_ver, updatedAt: iso(r.updated_at) });
@@ -533,6 +536,24 @@ export function pgRepos(tx, uid, afterCommit = () => {}) {
       async allPaths() { return (await tx`select id, object_path from app.files where user_id = ${uid}`).map((r) => ({ id: r.id, objectPath: r.object_path })); },
     },
 
+    /** The export jobs of this user (read only: progress is written by the server through the system functions). */
+    exportJobs: {
+      async list() { return (await tx`select id, status, cursor, parts, bytes, created_at, expires_at, error, updated_at from app.export_jobs where user_id = ${uid} order by created_at desc, id limit 20`).map(exportRow); },
+      async get(id) { V.need(requireUuid(id)); const [r] = await tx`select id, status, cursor, parts, bytes, created_at, expires_at, error, updated_at from app.export_jobs where user_id = ${uid} and id = ${id}`; return r ? exportRow(r) : null; },
+    },
+    /** How many rows of every registered table this user can see (the "my data" screen and the export manifest). RLS applies: a table the user cannot read counts 0. */
+    rights: {
+      async counts() {
+        const out = {};
+        for (const e of REGISTRY) {
+          const [p] = await tx.unsafe(`select has_table_privilege(current_user, 'app.${e.table}', 'select') as ok`);   // working tables (counters, admins) are not readable by the user at all: 0
+          if (!p.ok) { out[e.table] = 0; continue; }
+          const [r] = await tx.unsafe(`select count(*)::int as n from app.${e.table} where ${e.ownerColumn} = $1`, [uid]); out[e.table] = r.n;
+        }
+        return out;
+      },
+    },
+
     usageLimits: {
       async list() { return (await tx`select provider, metric, period, soft, soft_action from app.usage_limits where user_id = ${uid} order by provider collate "C", metric collate "C", period`).map(limitRow); },
       async put({ provider, metric, period, soft, softAction = 'warn' }) {
@@ -579,6 +600,14 @@ export function pgSystem(sql) {
     },
     /** The daily sweep of the file vault: rows whose Storage object must be removed (deleting, or an upload that was never finished). */
     async staleFiles(limit = 200) { V.need(Number.isInteger(limit) && limit >= 1 && limit <= 1000); return (await sql`select user_id, id, object_path from app.stale_files(${limit})`).map((r) => ({ userId: r.user_id, id: r.id, objectPath: r.object_path })); },
+    /** P7: export jobs. The user id is a VerifiedUid; progress is only ever written here. */
+    async createExportJob(vuid) { const [r] = await guardedSys(sql, () => sql`select app.export_job_create(${requireVerifiedUid(vuid)}::uuid) as id`); return r.id; },
+    async updateExportJob(vuid, id, { status, cursor = null, parts = 0, bytes = 0, error = null, expiresAt = null }) {
+      V.need(requireUuid(id) && ['running', 'done', 'failed'].includes(status) && Number.isInteger(parts) && parts >= 0 && Number.isFinite(bytes) && bytes >= 0);
+      const [r] = await sql`select app.export_job_update(${requireVerifiedUid(vuid)}::uuid, ${id}::uuid, ${status}, ${sql.json(cursor)}::jsonb, ${parts}, ${bytes}, ${error}, ${expiresAt}::timestamptz) as ok`; return r.ok === true;
+    },
+    async expiredExportJobs(limit = 100) { V.need(Number.isInteger(limit) && limit >= 1 && limit <= 500); return (await sql`select user_id, id from app.export_jobs_expired(${limit})`).map((r) => ({ userId: r.user_id, id: r.id })); },
+    async dropExportJob(userId, id) { V.need(requireUuid(userId) && requireUuid(id)); const [r] = await sql`select app.export_job_drop(${userId}::uuid, ${id}::uuid) as ok`; return r.ok === true; },
     async dropStaleFile(userId, id) { V.need(requireUuid(userId) && requireUuid(id)); const [r] = await sql`select app.drop_stale_file(${userId}::uuid, ${id}::uuid) as ok`; return r.ok === true; },
     /** Recount everybody's storage_usage from the tables. @returns {Promise<number>} users corrected */
     async reconcileStorage() { const [r] = await sql`select app.reconcile_storage() as n`; return Number(r.n); },
@@ -586,7 +615,7 @@ export function pgSystem(sql) {
     async residualCheck(vuid) { return (await sql`select table_name, n from app.residual_check(${requireVerifiedUid(vuid)})`).map((r) => ({ table: r.table_name, n: Number(r.n) })); },
     /** Whose device token is this? hash = sha256 of the token's secret part. Returns the raw ids; the caller turns them into a VerifiedUid. */
     /** Accounts whose deletion is due (grace over, or immediate). */
-    async dueDeletions(limit = 20) { return (await sql`select user_id, grace_days from app.due_deletions(${limit})`).map((r) => ({ userId: r.user_id, graceDays: r.grace_days })); },
+    async dueDeletions(limit = 20) { return (await sql`select user_id, grace_days, email from app.due_deletions(${limit})`).map((r) => ({ userId: r.user_id, graceDays: r.grace_days, email: r.email ?? null })); },
     /** Proof that a deletion happened and how many tables were verified clean. Carries no user id and no e-mail. */
     async recordReceipt(tablesChecked) { V.need(Number.isInteger(tablesChecked) && tablesChecked >= 0); await sql`select app.record_deletion_receipt(${tablesChecked})`; },
     /** The confirmed account with this e-mail becomes an admin (the first one). @returns {Promise<string|null>} its id */

@@ -60,6 +60,14 @@ export function createMemoryStorage({ canInsert = () => true, baseUrl = () => ''
     async list(prefix, { bucket = USER_BUCKET } = {}) { return [...objects.keys()].filter((k) => k.startsWith(`${bucket}/${prefix}`)).map((k) => k.slice(bucket.length + 1)); },
     async remove(paths, { bucket = USER_BUCKET } = {}) { let n = 0; for (const p of paths) if (objects.delete(key(bucket, p))) n++; return n; },
     async count(prefix, { bucket = USER_BUCKET } = {}) { return (await this.list(prefix, { bucket })).length; },
+    /** The export (P7): the same three calls as the real service client. */
+    async put(path, bytes, { bucket = USER_BUCKET, contentType = 'application/octet-stream' } = {}) { if (!pathOwner(path)) throw dbError('bad_path', 500); objects.set(key(bucket, path), { bytes: Buffer.from(bytes), contentType, createdAt: now() }); return true; },
+    async get(path, { bucket = USER_BUCKET } = {}) { const o = objects.get(key(bucket, path)); return o ? Buffer.from(o.bytes) : null; },
+    async sign(path, { bucket = USER_BUCKET, expiresInSec = 3600, name = '' } = {}) {
+      if (!pathOwner(path) || !objects.has(key(bucket, path))) throw dbError('not_found', 404);
+      sweepTokens(); const t = token(); downloads.set(t, { bucket, path, exp: now() + expiresInSec * 1000, name });
+      return `${url('sign', bucket, path, t)}${name ? `&download=${encodeURIComponent(name)}` : ''}`;
+    },
   };
 
   return {
