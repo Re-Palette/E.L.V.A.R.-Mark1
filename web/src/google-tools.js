@@ -81,8 +81,13 @@ export function initGoogleTools({ live, approval, authHeaders, agents, systemChe
   }, true);
   const autoClose = createAutoClose({ live, store });   // screens ELVAR opens go away ~5 s after the explanation unless the owner touches them
   const docCard = createDocCard();
-  const fileView = initFileView({   // 取り込んだファイルの一覧・プレビュー・印刷（この端末のIndexedDBだけ。印刷は承認カードのあとだけ）
-    approval, store: createFileStore(), sendText: (t) => live.sendText(t), onActivity: (a) => hudLive?.logActivity(a),
+  // the file vault is the account's own (Storage + database); this device keeps only a cache. JSON calls to the account's /api/elvar/files* routes:
+  const filesApi = async (path, { method = 'GET', body } = {}) => {
+    const r = await fetch(path, { method, cache: 'no-store', headers: { ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...authHeaders() }, body: body !== undefined ? JSON.stringify(body) : undefined });
+    return { status: r.status, body: await r.json().catch(() => ({})) };
+  };
+  const fileView = initFileView({   // 取り込んだファイルの一覧・プレビュー・印刷（アカウントの保管庫。この端末のIndexedDBはキャッシュだけ。印刷は承認カードのあとだけ）
+    approval, store: createFileStore({ api: filesApi }), sendText: (t) => live.sendText(t), onActivity: (a) => hudLive?.logActivity(a),
     saveToBrain: async ({ path, content, replace }) => {
       if (window.__elvarDeviceLocked) return { ok: false, message: 'スマホのロックを解除してからお試しください' };
       const r = await post({ tool: 'file_note_save', args: { path, content, ...(replace ? { replace: true } : {}) } });
@@ -152,7 +157,7 @@ export function initGoogleTools({ live, approval, authHeaders, agents, systemChe
     if (!all.length) return { out: { output: { found: false, note: 'ファイルが1つも取り込まれていません。「ファイルを取り込んで」で、取り込み画面を開けます。' } } };
     const q = String(query || '').trim();
     if (!q) { const sel = all.find((f) => f.id === fileView.selectedId); if (sel) return { file: sel }; return { out: { output: { found: false, note: `どのファイルを${what}か分かりません。ファイル名を${ownerAddress()}に尋ねてください。`, names: all.slice(0, 8).map((f) => f.name) } } }; }
-    const m = fileView.match(q);
+    const m = await fileView.matchOrSearch(q);   // the name and the memory first, then the words inside the files (the server looks through the extracted texts)
     if (m.kind === 'one') return { file: m.file };
     if (m.kind === 'none') return { out: { output: { found: false, note: `「${q.slice(0, 40)}」に合うファイルは見当たりません。別のファイルを推測で選ばないでください。${ownerAddress()}に伝えて、名前を聞き直してください。`, names: all.slice(0, 8).map((f) => f.name) } } };
     const labels = choiceLabels(m.items);
@@ -164,7 +169,7 @@ export function initGoogleTools({ live, approval, authHeaders, agents, systemChe
       usage.tool(tool);
       if (tool === 'file_import') {
         await fileView.open({ flash: true });
-        return { output: { opened: true, savedOnDevice: true, note: '取り込みの画面を開きました。ブラウザの仕組み上、ファイルを選ぶのは' + ownerAddress() + 'の操作が必要です。「画面の『ファイルを取り込む』ボタンから選ぶか、ドラッグ＆ドロップしてください。ファイルはこの端末の中だけに保存されます」と、一言で伝えてください' } };
+        return { output: { opened: true, savedInAccount: true, note: '取り込みの画面を開きました。ブラウザの仕組み上、ファイルを選ぶのは' + ownerAddress() + 'の操作が必要です。「画面の『ファイルを取り込む』ボタンから選ぶか、ドラッグ＆ドロップしてください。ファイルはあなたのアカウントにだけ保存されます」と、一言で伝えてください' } };
       }
       if (tool === 'file_list') {
         await fileView.open(); const all = await fileView.candidates(); autoClose.arm({ close: fileView.close, el: fileView.el });
@@ -185,7 +190,7 @@ export function initGoogleTools({ live, approval, authHeaders, agents, systemChe
         return { error: 'ファイルが見つかりませんでした。' };
       }
       if (tool === 'file_search') {
-        // Local search. What goes back to the model (= to the AI) is ONLY names, kinds and snippets of at most 120 characters (searchResultForModel) - never the full text.
+        // Search over the account's own files, on the server. What goes back to the model (= to the AI) is ONLY names, kinds and snippets of at most 120 characters (searchResultForModel) - never the full text.
         const q = String(args.query || '').trim(); if (!q) return { error: '探す言葉が空です。' + ownerAddress() + 'に何を探すか尋ねてください。' };
         const res = await fileView.search(q); await fileView.open({ query: q }); autoClose.arm({ close: fileView.close, el: fileView.el });
         return { output: { query: q.slice(0, 60), count: res.length, results: searchResultForModel(res), shown: '検索結果を画面に表示しました', note: res.length ? '名前と種類を短く伝えてください。ここにある短い抜粋以外の中身は、まだ分かりません。中身を知りたいときは file_read（承認カードが出ます）を使います' : '「見当たりません」と正直に伝えてください。別のファイルを推測で挙げないでください' } };
@@ -206,7 +211,7 @@ export function initGoogleTools({ live, approval, authHeaders, agents, systemChe
         const res = await fileView.tagFile(r.file.id, { tags: args.tags, memo: args.memo, kind: args.kind });
         if (!res.ok) return { error: res.error };
         hudLive?.logActivity({ icon: 'doc', title: 'ファイルのタグ・メモを保存', sub: r.file.name });
-        return { output: { saved: true, name: r.file.name, tags: res.tags, kind: res.kind, memo: res.memo ? '（あり）' : '', note: '保存しました。一言で伝えてください（この端末の中だけの編集です）' } };
+        return { output: { saved: true, name: r.file.name, tags: res.tags, kind: res.kind, memo: res.memo ? '（あり）' : '', note: '保存しました。一言で伝えてください（あなたのアカウントの中だけの編集です）' } };
       }
       // print_file: the file content + the approval card come first; the print dialog opens only after the owner approved
       const r = await pickFile(args.name, { what: '印刷しますか' }); if (r.out) return r.out;

@@ -405,7 +405,7 @@ export const TOOLS = [
 
   // ファイル library + printing (executed in the page: files live in this device's IndexedDB and the print dialog is the browser's). Offered without Google too.
   { name: 'file_import', kind: 'read', alwaysOn: true,
-    description: 'ファイルの取り込み画面（ファイルを選ぶボタンとドロップ欄）を開く。「ファイルを取り込んで」「ファイルを追加したい」「ファイルを保存したい」と言われたら使う。ブラウザの仕組み上、ファイルを選ぶのは{{U}}の操作（ボタンを押す／ドラッグ＆ドロップ）が必要。取り込んだファイルは、この端末の中だけに保存され、外には送られない。「画面のボタンから選んでください」と一言で伝える。',
+    description: 'ファイルの取り込み画面（ファイルを選ぶボタンとドロップ欄）を開く。「ファイルを取り込んで」「ファイルを追加したい」「ファイルを保存したい」と言われたら使う。ブラウザの仕組み上、ファイルを選ぶのは{{U}}の操作（ボタンを押す／ドラッグ＆ドロップ）が必要。取り込んだファイルは、{{U}}のアカウントの保管庫（{{U}}だけが見られる）に保存される。中身の読み取りはこの端末の中で行い、AIには承認カードのあとだけ送る。「画面のボタンから選んでください」と一言で伝える。',
     schema: S({}),
     async run() { throw new Error('このツールはページ側（ブラウザ）が実行します'); } },
   { name: 'file_list', kind: 'read', alwaysOn: true,
@@ -421,12 +421,12 @@ export const TOOLS = [
     schema: S({ name: str('印刷するファイルの名前（一部でよい）。「さっきの資料」も可'), copies: num('部数（既定1。「2部」と言われたら2）') }),
     async run() { throw new Error('このツールはページ側（ブラウザ）が実行します'); } },
   { name: 'file_delete', kind: 'read', alwaysOn: true,
-    description: '取り込んだファイルを名前で探して、この端末から削除する（承認カードが出る。{{U}}が承認したときだけ消える）。「〇〇のファイルを消して」「〇〇を削除して」と言われたときだけ使う。',
+    description: '取り込んだファイルを名前で探して、アカウントから削除する（保存先の原本も消え、容量が空く。承認カードが出る。{{U}}が承認したときだけ消える）。「〇〇のファイルを消して」「〇〇を削除して」と言われたときだけ使う。',
     schema: S({ name: str('削除するファイルの名前（一部でよい）') }, ['name']),
     async run() { throw new Error('このツールはページ側（ブラウザ）が実行します'); } },
   // The file "memory": search (local), read (sends text to the AI, needs an approval card per file) and tag (local edit). All executed in the page.
   { name: 'file_search', kind: 'read', alwaysOn: true,
-    description: '取り込んだファイルを、名前・タグ・種類・キーワード・本文から探す（この端末の中で検索する）。「〇〇の書類どこ？」「領収書ある？」「履修表を探して」「先月のレポート」のように、ファイルを探すときに使う。結果として返るのは、ファイルの名前・種類・短い抜粋（120字以内）だけ（この結果はAIに渡るため、中身の全文は含めない）。中身を読みたいときは file_read。見つからなければ「見当たりません」と正直に伝える。',
+    description: '取り込んだファイルを、名前・タグ・種類・キーワード・本文から探す（{{U}}のアカウントの中を検索する。他の人のファイルは出ない）。「〇〇の書類どこ？」「領収書ある？」「履修表を探して」「先月のレポート」のように、ファイルを探すときに使う。結果として返るのは、ファイルの名前・種類・短い抜粋（120字以内）だけ（この結果はAIに渡るため、中身の全文は含めない）。中身を読みたいときは file_read。見つからなければ「見当たりません」と正直に伝える。',
     schema: S({ query: str('探す言葉（{{U}}の言い方のまま。「先月の」「領収書」などもそのまま）') }, ['query']),
     async run() { throw new Error('このツールはページ側（ブラウザ）が実行します'); } },
   { name: 'file_read', kind: 'read', alwaysOn: true,
@@ -434,7 +434,7 @@ export const TOOLS = [
     schema: S({ name: str('ファイル名（一部でよい）。省略すると、いま選ばれているファイル'), part: num('何番目の部分か（既定1。続きを読むときに2, 3...）') }),
     async run() { throw new Error('このツールはページ側（ブラウザ）が実行します'); } },
   { name: 'file_tag', kind: 'read', alwaysOn: true,
-    description: '取り込んだファイルに、タグ・メモ・種類の名前を付ける（この端末の中だけの編集。外には送らない）。「この領収書に経費タグを付けて」「このファイルのメモに〇〇と書いて」「これは契約書にして」と言われたときに使う。tags は追加ではなく置き換え（既存のタグも含めて渡す）。省略した項目は変えない。',
+    description: '取り込んだファイルに、タグ・メモ・種類の名前を付ける（{{U}}自身のファイルの編集。AIには送らない）。「この領収書に経費タグを付けて」「このファイルのメモに〇〇と書いて」「これは契約書にして」と言われたときに使う。tags は追加ではなく置き換え（既存のタグも含めて渡す）。省略した項目は変えない。',
     schema: S({ name: str('ファイル名（一部でよい）。省略すると、いま選ばれているファイル'), tags: { type: 'array', items: { type: 'string' }, description: 'タグ（短い言葉。例: ["経費","2026"]）' }, memo: str('メモ（空文字で消す）'), kind: str('種類の名前: レポート/論文・領収書・請求書→「領収書・請求書」・契約書・履修・時間割・シフト表・議事録・資料/スライド・表計算・手紙・その他 のいずれか。空文字で自動判定に戻す') }),
     async run() { throw new Error('このツールはページ側（ブラウザ）が実行します'); } },
   { name: 'file_note_save', kind: 'write', danger: 'normal', auto: () => true, hidden: true, enabled: brainConfigured,   // the screen's 「第二の脳にも保存」 button (a summary note: title, kind, keywords, snippet/summary, tags; the owner's own record, no approval card)

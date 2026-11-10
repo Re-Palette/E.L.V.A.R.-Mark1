@@ -18,7 +18,8 @@
     var F = typeof IDBFactory !== 'undefined' ? IDBFactory.prototype : null;
     if (F) {
       var open = F.open, del = F.deleteDatabase;
-      window.__elvarRawIdb = { deleteDatabase: function (fullName) { return del.call(indexedDB, fullName); } };   // for clearing a user's databases by their full name
+      // for clearing a user's databases by their full name, and for reading the pre-account library `elvar-files` (no namespace) once, to move it into the account
+      window.__elvarRawIdb = { deleteDatabase: function (fullName) { return del.call(indexedDB, fullName); }, open: function (fullName, v) { return arguments.length > 1 ? open.call(indexedDB, fullName, v) : open.call(indexedDB, fullName); } };
       F.open = function (name, v) { return arguments.length > 1 ? open.call(this, name + '@' + ns, v) : open.call(this, name + '@' + ns); };
       F.deleteDatabase = function (name) { return del.call(this, name + '@' + ns); };
     }

@@ -282,8 +282,8 @@ export async function extractFile(blob, opts = {}) {
     if (!c.ok) return { ...base, status: 'unsupported', error: c.reason };
     opts.onProgress?.({ stage: '中身を読み取り中' });
     if (c.kind === 'text') {
-      const head = new Uint8Array(await blob.slice(0, EXTRACT.textBytes).arrayBuffer()), d = decodeText(head, head.length);
-      const truncated = blob.size > EXTRACT.textBytes;
+      const head = new Uint8Array(await blob.slice(0, EXTRACT.textBytes).arrayBuffer());
+      const truncated = blob.size > EXTRACT.textBytes, d = decodeText(head, head.length, { cut: truncated });   // a cut in the middle of a Japanese character is not "not UTF-8"
       return { ...base, text: cut(d.text, EXTRACT.textChars), textTruncated: truncated || d.text.length > EXTRACT.textChars, notes: truncated ? [`長いため、先頭の約${Math.round(EXTRACT.textBytes / 1048576)} MBだけ読み取りました`] : [], status: 'ok' };
     }
     if (c.kind === 'image') {

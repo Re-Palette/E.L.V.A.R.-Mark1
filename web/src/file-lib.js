@@ -60,10 +60,12 @@ export function fmtSize(n) {
   return `${(n / MB).toFixed(n < 10 * MB ? 1 : 0)} MB`;
 }
 
-/** Can a file of `size` bytes be added when `used` bytes are already stored? `deviceFree` = what navigator.storage.estimate() says is left (optional, an estimate). */
+/** Can a file of `size` bytes be added when `used` bytes are already stored? `deviceFree` = what navigator.storage.estimate() says is left (optional, an estimate).
+ *  `limits.account` = the numbers are the account's quota (the answer is worded like the server's); otherwise they are this device's. */
 export function checkQuota({ name = 'ファイル', size, used = 0, deviceFree = null }, limits = LIMITS) {
   if (!(size > 0)) return { ok: false, reason: `「${name}」は空のファイルのため取り込めません` };
   if (size > limits.perFile) return { ok: false, reason: `「${name}」は ${fmtSize(size)} あり、1ファイル ${fmtSize(limits.perFile)} までのため取り込めません` };
+  if (limits.account && used + size > limits.total) return { ok: false, reason: `保存容量の上限に達しました（使用中 ${fmtSize(used)} ／ 上限 ${fmtSize(limits.total)}）。このファイル（${fmtSize(size)}）を入れるには、あと ${fmtSize(used + size - limits.total)} の空きが必要です。不要なファイルを削除してから、もう一度お試しください` };   // the account's meter (the server says the same, and also counts the extracted text)
   if (used + size > limits.total) return { ok: false, reason: `保存の上限（合計 ${fmtSize(limits.total)}）を超えるため「${name}」は取り込めません（いま ${fmtSize(used)} 使用中・残り ${fmtSize(Math.max(0, limits.total - used))}）。要らないファイルを削除してください` };
   if (deviceFree != null && Number.isFinite(deviceFree) && size * 1.1 > deviceFree) return { ok: false, reason: `この端末の保存領域の空きが足りない可能性があります（ブラウザの見積もりで残り約 ${fmtSize(deviceFree)}、「${name}」は ${fmtSize(size)}）。要らないファイルを削除するか、端末の空きを増やしてください` };
   return { ok: true };
@@ -73,6 +75,24 @@ export function quotaText(used, limits = LIMITS, space = null, persisted = null)
   if (space) t += `　端末の空き：約 ${fmtSize(space.free)}（ブラウザの見積もり）`;
   if (persisted === false) t += '　※ ブラウザが容量不足のとき自動で消す可能性があります';
   return t;
+}
+
+/**
+ * The account's storage meter (docs/ELVAR_MULTIUSER.md 6.2, 6.4). `u` is what GET /api/elvar/files returns as `usage`: bytes used (files, extracted text, notes, conversation),
+ * reserved (uploads in progress), the quota and the per-file limit. null when there are no numbers (not loaded yet).
+ */
+export function meterModel(u) {
+  if (!u || !Number.isFinite(u.quotaBytes) || u.quotaBytes <= 0) return null;
+  const b = u.breakdown || {}, used = u.usedBytes || 0, reserved = u.reservedBytes || 0, quota = u.quotaBytes;
+  const pct = (n) => Math.min(100, (n / quota) * 100), total = used + reserved;
+  return {
+    used, reserved, quota, pct: Math.round(pct(total) * 10) / 10, hot: total / quota >= 0.8, full: total >= quota, maxFile: u.maxFileBytes || LIMITS.perFile,
+    parts: [['f', 'ファイルの原本', b.files || 0], ['x', '読み取った文字', b.text || 0], ['n', 'ノート', b.notes || 0], ['m', '会話の記録', b.messages || 0], ['r', 'アップロード中', reserved]].filter(([, , n]) => n > 0).map(([k, label, n]) => ({ k, label, bytes: n, width: pct(n) })),
+  };
+}
+export function accountQuotaText(u) {
+  const m = meterModel(u); if (!m) return 'アカウントに保存（あなただけが見られます）';
+  return `使用中 ${fmtSize(m.used + m.reserved)} / ${fmtSize(m.quota)}（${m.pct}%）・1ファイル ${fmtSize(m.maxFile)} まで・あなたのアカウントにだけ保存`;
 }
 
 // ---------------------------------------------------------------- finding a file by what the owner said
@@ -209,13 +229,14 @@ export function formatLogEntry(e) {
 export const escHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 /** Bytes -> text. UTF-8 when valid, else Shift_JIS (CSV from Excel). Cut at `max` bytes. */
-export function decodeText(bytes, max = Infinity) {
+export function decodeText(bytes, max = Infinity, { cut: alreadyCut = false } = {}) {
   const cut = bytes.length > max ? bytes.subarray(0, max) : bytes;
   let text = null;
   // A cut can end in the middle of a UTF-8 character: step back (at most 3 bytes) before deciding the file is not UTF-8.
-  for (let k = 0; k <= (cut === bytes ? 0 : 3) && text === null; k++) { try { text = new TextDecoder('utf-8', { fatal: true }).decode(cut.subarray(0, cut.length - k)); } catch { /* next */ } }
+  // `cut: true` = the caller already cut `bytes` out of a longer file (the extraction reads only the first 2 MB), so its end may be mid-character too.
+  for (let k = 0; k <= (cut === bytes && !alreadyCut ? 0 : 3) && text === null; k++) { try { text = new TextDecoder('utf-8', { fatal: true }).decode(cut.subarray(0, cut.length - k)); } catch { /* next */ } }
   if (text === null) { try { text = new TextDecoder('shift_jis').decode(cut); } catch { text = new TextDecoder('utf-8').decode(cut); } }
-  return { text: text.replace(/^\uFEFF/, ''), truncated: bytes.length > max };
+  return { text: text.replace(/^\uFEFF/, ''), truncated: bytes.length > max || alreadyCut };
 }
 
 const PRINT_CSS = '@page{margin:14mm}html,body{margin:0;padding:0;background:#fff;color:#000}';

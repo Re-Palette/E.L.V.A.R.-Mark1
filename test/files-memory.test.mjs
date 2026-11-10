@@ -357,3 +357,11 @@ test('server: file_summarize / file_ocr validate input and send only what they a
     assert.ok(!sent.tools && !sent.systemInstruction, 'no tools, no persona: a plain transcription');
   } finally { globalThis.fetch = saved.fetch; if (saved.key === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = saved.key; }
 });
+
+test('a UTF-8 Japanese text cut in the middle of a character (the extraction reads only the first 2 MB) is still UTF-8, not Shift_JIS mojibake', () => {
+  const full = new TextEncoder().encode('日本語のテキスト'.repeat(1000)), headBytes = full.subarray(0, 3 * 1000 + 1);   // ends one byte into a 3-byte character
+  assert.match(decodeText(headBytes, headBytes.length, { cut: true }).text, /^日本語のテキスト/); assert.equal(decodeText(headBytes, headBytes.length, { cut: true }).truncated, true);
+  assert.ok(!decodeText(headBytes, headBytes.length, { cut: true }).text.includes('\ufffd'));
+  assert.equal(decodeText(headBytes, headBytes.length).text.startsWith('日本語'), false, 'without the hint the old behaviour: a cut byte makes it look like Shift_JIS');
+  const sjis = new Uint8Array([0x93, 0xfa, 0x96, 0x7b, 0x8c, 0xea]); assert.equal(decodeText(sjis, sjis.length, { cut: true }).text, '日本語', 'real Shift_JIS is still recognised');
+});

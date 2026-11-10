@@ -1,5 +1,5 @@
 // Settings > 管理 (only for admins): the list of accounts with metadata and usage, and suspend / lift. An admin CANNOT see anybody's persona, conversations,
-// notes, files or keys: the server returns only these columns (docs/ELVAR_MULTIUSER.md 2.4, M11).
+// notes, files or keys: the server returns only these columns (docs/ELVAR_MULTIUSER.md 2.4, M11). The storage quota of an account can be changed here (P5).
 import { esc } from '../elvar/ui.js';
 import { api, authClient } from '../elvar/auth.js';
 
@@ -17,7 +17,7 @@ export function mountAdmin(root) {
         <thead><tr style="color:#b99b6a;text-align:left"><th>メール</th><th>登録</th><th>最終ログイン</th><th>状態</th><th>容量</th><th>今日の呼び出し</th><th>30日</th><th></th></tr></thead>
         <tbody>${users.map((u) => `<tr style="border-top:1px solid rgba(232,185,106,.15)"><td>${esc(u.email || '—')}${u.isAdmin ? ' <span class="ev-chip ok">管理者</span>' : ''}</td><td>${esc(when(u.createdAt))}</td><td>${esc(when(u.lastSignInAt))}</td>
           <td><span class="ev-chip ${u.status === 'active' ? 'ok' : 'off'}">${esc(STATUS[u.status] || u.status)}</span></td><td>${esc(mb(u.storageUsedBytes))} / ${esc(mb(u.storageQuotaBytes))}</td><td>${esc(u.callsToday)}</td><td>${esc(u.calls30d)}</td>
-          <td>${u.isAdmin || u.status === 'pending_deletion' ? '' : u.status === 'suspended' ? `<button class="ev-btn sm" type="button" data-lift="${esc(u.userId)}">解除</button>` : `<button class="ev-btn sm danger" type="button" data-stop="${esc(u.userId)}">停止</button>`}</td></tr>`).join('')}</tbody></table></div>
+          <td>${u.status === 'pending_deletion' ? '' : `<button class="ev-btn sm" type="button" data-quota="${esc(u.userId)}" data-mb="${esc(Math.round(Number(u.storageQuotaBytes || 0) / 1048576))}" title="このアカウントの保存容量の上限を変えます（ファイルの中身は見えません）">容量</button> `}${u.isAdmin || u.status === 'pending_deletion' ? '' : u.status === 'suspended' ? `<button class="ev-btn sm" type="button" data-lift="${esc(u.userId)}">解除</button>` : `<button class="ev-btn sm danger" type="button" data-stop="${esc(u.userId)}">停止</button>`}</td></tr>`).join('')}</tbody></table></div>
     </section><div class="ev-msg" id="ad-msg" role="status"></div>`;
   }
   async function refresh() {
@@ -28,6 +28,16 @@ export function mountAdmin(root) {
     users = r.body.users; draw();
   }
   root.addEventListener('click', async (e) => {
+    const q = e.target.closest('[data-quota]');
+    if (q) {   // the storage quota of one account (O1: 500 MB by default)
+      const mbText = prompt('このアカウントの保存容量の上限（MB）', q.dataset.mb); if (mbText === null) return;
+      const n = Number(String(mbText).normalize('NFKC').trim());
+      if (!Number.isFinite(n) || n < 0 || n > 1048576) { msg('0〜1048576 の数（MB）で入力してください', 'warn'); return; }
+      try { await authClient().refresh(); } catch { /* reported by the call */ }
+      const r = await api(`/api/elvar/admin/users/${encodeURIComponent(q.dataset.quota)}/quota`, { method: 'POST', body: { bytes: Math.round(n * 1048576) } });
+      if (r.status === 200) { await refresh(); msg('保存容量の上限を変更しました', 'ok'); } else msg(r.body?.message || r.body?.error || 'できませんでした', 'warn');
+      return;
+    }
     const stop = e.target.closest('[data-stop]'), lift = e.target.closest('[data-lift]');
     if (!stop && !lift) return;
     const id = (stop || lift).dataset.stop || (stop || lift).dataset.lift;

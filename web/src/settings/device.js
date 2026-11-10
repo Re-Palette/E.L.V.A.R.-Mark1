@@ -21,7 +21,7 @@ export function mountDevice(root, app, { close }) {
       <label class="vs-row"><input id="vs-loop" type="checkbox"><span>ループする（止めるまで流し続ける。オフなら、起動時に一度だけ）</span></label>
       <label class="vs-row"><span class="l">音量</span><input id="vs-vol" type="range" min="0" max="100" step="1"><output id="vs-vol-o"></output></label>
       <label class="vs-row"><span class="l">声が出ている間の音量</span><input id="vs-duck" type="range" min="0" max="100" step="1"><output id="vs-duck-o"></output></label>
-      <p class="vs-note">後者は「音量」に対する割合です。途中で止めるには、下の「■ STOP」または Esc キー。ファイルはこの端末の中だけに保存され、どこにも送られません。</p>
+      <p class="vs-note">後者は「音量」に対する割合です。途中で止めるには、下の「■ STOP」または Esc キー。取り込んだファイルは、あなたのアカウントの保管庫（あなただけが見られます）に保存されます。中身の読み取りはこの端末の中で行い、AIには承認したときだけ送ります。</p>
     </section>
 
     <section class="vs-sec"><h3>声</h3>

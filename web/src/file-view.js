@@ -1,10 +1,13 @@
 // ファイル screen: import (drop / picker / paste) with progress and cancel, the library list with search / filters, the preview + the file's "memory" (kind, tags, memo, keywords,
 // extracted text), and the print flow (preview -> approval card -> browser print dialog -> "did it print?").
-// Files and everything read from them stay on this device (IndexedDB). Nothing is uploaded, except when the owner approves an explicit card (AIで要約 / AIで内容を読み取る / file_read).
+// Files live in the owner's own account (docs/ELVAR_MULTIUSER.md 3.3, 8.2): the original in private Storage, the memory (kind, keywords, tags, text) in the database, both visible to this
+// user alone, with the account's storage quota. Reading a file (text, keywords, hash) still happens on THIS device, in a Worker; what goes to the AI is only what the owner approves on a card
+// (AIで要約 / AIで内容を読み取る / file_read). IndexedDB is just this device's cache of what the account holds (web/src/file-store.js).
 // Printing only ever starts after the owner approves the card; the printer is chosen in the browser's print dialog.
 // It reuses the .vf-* look injected by finance-view.js (same family of screens).
-import { ACCEPT, LIMITS, TROUBLESHOOT, approvalLines, checkQuota, classify, clampCopies, countPdfPagesRough, decodeText, escHtml as esc, fmtSize, formatLogEntry, imagePrintHtml, matchFiles, printMode, quotaText, safeName, textPrintHtml } from './file-lib.js';
-import { KINDS, STATUS_JA, LANG_JA, buildIndex, choiceDetail, deviceSpace, findExactDuplicate, findNearDuplicate, gatedRead, indexNote, kindOf, normTags, searchFiles } from './file-index.js';
+import { ACCEPT, LIMITS, TROUBLESHOOT, approvalLines, checkQuota, classify, clampCopies, countPdfPagesRough, decodeText, escHtml as esc, fmtSize, formatLogEntry, imagePrintHtml, matchFiles, meterModel, printMode, accountQuotaText, safeName, textPrintHtml } from './file-lib.js';
+import { KINDS, STATUS_JA, LANG_JA, buildIndex, choiceDetail, findExactDuplicate, findNearDuplicate, gatedRead, indexNote, kindOf, normTags, searchFiles } from './file-index.js';
+import { legacyLibraries, migrateLibrary } from './file-legacy.js';
 import { startAnalysis } from './file-analyze-client.js';
 import { classifyReply } from './approval.js';
 import { toBase64 } from './doc-card.js';
@@ -61,6 +64,23 @@ const CSS = `
 .vfl-ask .b button{background:transparent;color:#8fe3ff;border:1px solid rgba(25,211,255,.7);border-radius:3px;padding:7px 18px;cursor:pointer;font:inherit;font-weight:600}.vfl-ask .b button:hover,.vfl-ask .b button:focus-visible{background:rgba(25,211,255,.22);color:#fff;outline:none}.vfl-ask .b .go{background:rgba(25,211,255,.28)}
 .vfl-dz{position:fixed;inset:0;z-index:80;display:none;align-items:center;justify-content:center;background:rgba(0,40,60,.72);border:3px dashed #1ee8c0;color:#fff;font:600 22px 'Noto Sans JP','Yu Gothic UI',sans-serif;pointer-events:none;letter-spacing:2px;text-align:center;padding:20px}
 .vfl-dz.on{display:flex}
+/* gold theme (the same family as the second-brain and conversation screens): only colours, scoped to this screen */
+.vfl-back{background:rgba(4,3,2,.9)}
+.vfl-back .vf{background:linear-gradient(180deg,rgba(21,16,10,.98),rgba(8,6,4,.99));color:#f6efe2;border-color:rgba(232,185,106,.9);box-shadow:0 0 18px rgba(232,185,106,.28)}
+.vfl-back .vf-top h2{color:#FFD99A}.vfl-back .vf-top i{background:#E8B96A;box-shadow:0 0 6px #E8B96A}.vfl-back .vf-top{border-bottom-color:rgba(232,185,106,.32)}
+.vfl-back .vf-btn{color:#FFD99A;border-color:rgba(232,185,106,.6);background:transparent}.vfl-back .vf-btn:hover,.vfl-back .vf-btn:focus-visible{background:rgba(232,185,106,.2);color:#fff}.vfl-back .vf-btn.pri,.vfl-back .vfl-drop .vf-btn,.vfl-back .vfl-act .vf-btn.pri{background:rgba(232,185,106,.28);color:#fff}
+.vfl-back .vf-muted,.vfl-back .vfl-row .sb,.vfl-back .vfl-h span,.vfl-back .vfl-empty,.vfl-back .vfl-info .hint,.vfl-back .vfl-info .r>b,.vfl-back .vfl-act label,.vfl-back .vfl-x,.vfl-back .vf-top small{color:#b99b6a}.vfl-back .vfl-row .sn{color:#8a7350}
+.vfl-back .vfl-drop{border-color:rgba(232,185,106,.6);background:rgba(232,185,106,.06);color:#cdb88e}.vfl-back .vfl-drop.hot,.vfl-back .vfl-drop.flash{border-color:#FFD99A;background:rgba(232,185,106,.18);color:#fff}
+.vfl-back .vfl-prog,.vfl-back .vfl-list,.vfl-back .vfl-main,.vfl-back .vfl-log,.vfl-back .vfl-pv,.vfl-back .vfl-info .ai{border-color:rgba(232,185,106,.32)}.vfl-back .vfl-pv{background:rgba(13,10,6,.85)}.vfl-back .vfl-prog{color:#e9dcc4}.vfl-back progress{accent-color:#E8B96A}
+.vfl-back .vfl-flt input,.vfl-back .vfl-flt select,.vfl-back .vfl-info input,.vfl-back .vfl-info select,.vfl-back .vfl-info textarea,.vfl-back .vfl-act input[type=number]{background:#0d0a06;color:#f6efe2;border-color:rgba(232,185,106,.45)}
+.vfl-back .vfl-row{border-bottom-color:rgba(232,185,106,.16)}.vfl-back .vfl-row:hover{background:rgba(232,185,106,.1)}.vfl-back .vfl-row.sel{background:rgba(232,185,106,.22)}
+.vfl-back .bd{border-color:rgba(232,185,106,.6);color:#FFD99A}.vfl-back .bd.w{border-color:#ffb347;color:#ffb347}
+.vfl-back .vfl-tabs button{color:#FFD99A;border-color:rgba(232,185,106,.45)}.vfl-back .vfl-tabs button.on{background:rgba(232,185,106,.28);color:#fff}
+.vfl-back .vfl-pv pre,.vfl-back .vfl-note,.vfl-back .vfl-info,.vfl-back .vfl-log{color:#e9dcc4}.vfl-back .vfl-info .kw{background:rgba(232,185,106,.16);color:#f6efe2}
+.vfl-back .vfl-msg{color:#FFD99A}.vfl-back .vfl-msg.warn{color:#ffb347}
+.vfl-back .vfl-meter{border-color:rgba(232,185,106,.4);background:rgba(13,10,6,.7);color:#e9dcc4}.vfl-back .vfl-meter .bar{background:rgba(232,185,106,.14)}.vfl-back .vfl-meter .bar .m{background:#6a5224}.vfl-back .vfl-meter .m-d{color:#b99b6a}
+.vfl-meter{padding:6px 8px;border:1px solid rgba(25,211,255,.25);border-radius:4px;background:rgba(5,25,40,.55);font-size:12px;color:#cfeeff}.vfl-meter .m-t{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}.vfl-meter .m-t b{color:#fff;font-weight:600}.vfl-meter .bar{margin-top:4px;height:8px;border-radius:4px;background:rgba(25,211,255,.14);overflow:hidden;display:flex}.vfl-meter .bar i{display:block;height:100%;min-width:0}.vfl-meter .bar .f{background:linear-gradient(90deg,#d9a441,#f3cf7a)}.vfl-meter .bar .x{background:#b8862b}.vfl-meter .bar .n{background:#8f6a2a}.vfl-meter .bar .r{background:repeating-linear-gradient(45deg,#6d5a2c,#6d5a2c 3px,#3f3318 3px,#3f3318 6px)}.vfl-meter.hot .m-t b{color:#ffb347}.vfl-meter .m-d{margin-top:3px;color:#9fb9c9;white-space:normal}.vfl-meter .off{color:#ffb347}
+.vfl-mig{padding:8px 10px;border:1px solid rgba(217,164,65,.6);border-radius:4px;background:rgba(60,45,15,.35);font-size:13px;color:#f3e3b8}.vfl-mig .b{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}.vfl-mig progress{width:100%;height:8px;margin-top:6px}
 .vfl-pf{position:fixed;right:0;bottom:0;width:1px;height:1px;border:0;opacity:0;pointer-events:none}
 @media (max-width:760px){.vfl-body{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(300px,52%) minmax(0,1fr);overflow:auto}.vfl-drop .dz-n,.vfl-drop .dz-t{display:none}.vfl-drop{padding:4px 8px}.vf-back.printing .vfl-body{padding-bottom:var(--vfl-pad,360px);grid-template-rows:minmax(0,1fr)}.vf-back.printing .vfl-side{display:none}.vfl .vf-top small{display:none}.vfl-flt input{flex-basis:100%}.vfl-info .r>b{flex-basis:100%}}
 @media (min-width:761px) and (max-height:640px){.vf-back.printing .vfl-body{grid-template-columns:minmax(0,1fr)}.vf-back.printing .vfl-side{display:none}.vfl-body{gap:6px;padding:6px 10px 8px}.vfl-main{padding:6px 8px;gap:4px}.vfl-drop{padding:3px 8px}.vfl-drop .dz-n{display:none}.vfl-row{padding:3px 8px}}
@@ -85,11 +105,13 @@ async function shrinkImage(blob) {
  */
 export function initFileView({ approval, store, saveToBrain = null, callAI = null, sendText = () => {}, onActivity = () => {} }) {
   const style = document.createElement('style'); style.textContent = CSS; document.head.appendChild(style);
-  const back = document.createElement('div'); back.className = 'vf-back'; back.setAttribute('role', 'dialog'); back.setAttribute('aria-modal', 'true'); back.setAttribute('aria-label', 'ファイル');
-  back.innerHTML = `<div class="vf vfl"><div class="vf-top"><i></i><h2>FILES</h2><small id="vfl-quota"></small><span class="sp"></span><button class="vf-btn" data-showlog type="button">印刷ログ</button><button class="vf-btn" data-x type="button">閉じる</button></div>
+  const back = document.createElement('div'); back.className = 'vf-back vfl-back'; back.setAttribute('role', 'dialog'); back.setAttribute('aria-modal', 'true'); back.setAttribute('aria-label', 'ファイル');
+  back.innerHTML = `<div class="vf vfl"><div class="vf-top"><i></i><h2>FILES</h2><small id="vfl-quota">あなたのアカウントに保存（あなただけが見られます）</small><span class="sp"></span><button class="vf-btn" data-showlog type="button">印刷ログ</button><button class="vf-btn" data-x type="button">閉じる</button></div>
     <div class="vfl-body">
       <div class="vfl-side">
-        <div class="vfl-drop" id="vfl-drop"><div class="dz-t">ここにドロップ／貼り付け（Ctrl+V）</div><button class="vf-btn" data-pick type="button">ファイルを取り込む</button><div class="vf-muted dz-n">PDF・画像・テキスト・Office ／ 1ファイル ${Math.round(LIMITS.perFile / 1048576)} MBまで ／ 中身は端末の中で読み取り、外には送りません</div></div>
+        <div class="vfl-drop" id="vfl-drop"><div class="dz-t">ここにドロップ／貼り付け（Ctrl+V）</div><button class="vf-btn" data-pick type="button">ファイルを取り込む</button><div class="vf-muted dz-n">PDF・画像・テキスト・Office ／ 1ファイル ${Math.round(LIMITS.perFile / 1048576)} MBまで ／ アカウントにだけ保存・中身はこの端末の中で読み取り、AIには承認したときだけ送ります</div></div>
+        <div class="vfl-meter" id="vfl-meter" role="status" aria-label="保存容量"></div>
+        <div class="vfl-mig" id="vfl-mig" hidden></div>
         <div class="vfl-prog" id="vfl-prog" hidden><span class="t" id="vfl-prog-t"></span><progress id="vfl-prog-p" max="100" value="0"></progress><button class="vf-btn" data-cancel type="button">キャンセル</button></div>
         <div class="vfl-dup" id="vfl-dup" hidden></div>
         <div class="vfl-msg" id="vfl-msg" role="status"></div>
@@ -103,10 +125,10 @@ export function initFileView({ approval, store, saveToBrain = null, callAI = nul
   const dz = document.createElement('div'); dz.className = 'vfl-dz'; dz.textContent = 'ここにドロップすると、ファイルを取り込みます'; document.body.appendChild(dz);
   const ask = document.createElement('div'); ask.className = 'vfl-ask'; ask.setAttribute('role', 'alertdialog'); ask.setAttribute('aria-label', '印刷の確認'); document.body.appendChild(ask);
   const $ = (id) => back.querySelector('#' + id);
-  const input = $('vfl-input'), listEl = $('vfl-list'), mainEl = $('vfl-main'), msgEl = $('vfl-msg'), quotaEl = $('vfl-quota'), progEl = $('vfl-prog'), dupEl = $('vfl-dup');
+  const input = $('vfl-input'), listEl = $('vfl-list'), mainEl = $('vfl-main'), msgEl = $('vfl-msg'), quotaEl = $('vfl-quota'), progEl = $('vfl-prog'), dupEl = $('vfl-dup'), meterEl = $('vfl-meter'), migEl = $('vfl-mig');
   const qEl = $('vfl-q'), fkEl = $('vfl-fk'), ftEl = $('vfl-ft'), fsEl = $('vfl-fs');
 
-  let files = [], indexes = new Map(), textCache = null, space = null, persisted = null, dfCache = null;
+  let files = [], indexes = new Map(), textCache = null, usage = null, dfCache = null, hits = null, searchSeq = 0, uploadCtl = null, legacy = null, legacyAsked = false, migrating = false;
   let selectedId = null, tab = 'view', pvUrl = '', showLog = false, printing = false, pendingConfirm = null, lastDoc = null, lastDocSavedId = null, pf = null, pfTimer = 0;
   let running = null, batchCancelled = false, pendingDups = [];
   const flt = { q: '', kind: '', tag: '', sort: 'new' };
@@ -115,21 +137,27 @@ export function initFileView({ approval, store, saveToBrain = null, callAI = nul
   const setPv = (blob) => { if (pvUrl) URL.revokeObjectURL(pvUrl); pvUrl = blob ? URL.createObjectURL(blob) : ''; return pvUrl; };
 
   // ---------------------------------------------------------------- data
-  async function spaceInfo() {
-    try { space = deviceSpace(await navigator.storage?.estimate?.()); } catch { space = null; }
-    try { persisted = (await navigator.storage?.persisted?.()) ?? null; } catch { persisted = null; }
+  /** The account's storage meter: used / quota with where the bytes are, and the warning colour from 80%. */
+  function renderMeter() {
+    const m = meterModel(usage);
+    if (!m) { meterEl.hidden = true; return; }
+    meterEl.hidden = false; meterEl.className = 'vfl-meter' + (m.hot ? ' hot' : '');
+    meterEl.innerHTML = `<div class="m-t"><b>保存容量 ${esc(fmtSize(m.used + m.reserved))} / ${esc(fmtSize(m.quota))}</b><span>${m.pct}%</span></div>
+      <div class="bar" role="img" aria-label="使用中 ${m.pct}%">${m.parts.map((x) => `<i class="${x.k}" style="width:${x.width.toFixed(2)}%" title="${esc(x.label)} ${esc(fmtSize(x.bytes))}"></i>`).join('')}</div>
+      <div class="m-d">${m.parts.map((x) => `${esc(x.label)} ${esc(fmtSize(x.bytes))}`).join(' ／ ') || 'まだ何も保存していません'}${m.full ? '<br><span class="off">容量がいっぱいです。不要なファイルを削除すると、また取り込めます</span>' : ''}${store.offline ? '<br><span class="off">オフラインです（読み取り専用）</span>' : ''}</div>`;
+    quotaEl.textContent = accountQuotaText(usage); quotaEl.title = quotaEl.textContent;
   }
-  async function refresh() {
-    try { files = await store.list(); indexes = await store.indexes(); } catch (e) { files = []; indexes = new Map(); say(String(e?.message || e), true); }
+  async function refresh({ force = false } = {}) {
+    try {
+      if (force) await store.reload();
+      files = await store.list(); indexes = await store.indexes(); usage = await store.usage();
+    } catch (e) { files = []; indexes = new Map(); say(String(e?.message || e), true); }
     textCache = null; dfCache = null;
-    await spaceInfo();
-    const used = files.reduce((s, f) => s + (f.size || 0), 0);
-    quotaEl.textContent = quotaText(used, LIMITS, space, persisted); quotaEl.title = quotaEl.textContent;
-    fillFilters();
+    renderMeter(); fillFilters();
     return files;
   }
-  /** Full texts for searching (loaded once per change; a memory budget leaves the rest out). */
-  async function ensureTexts() { if (!textCache) { try { textCache = await store.allTexts(); } catch { textCache = new Map(); } } return textCache; }
+  /** The extracted texts stay in the account and are searched on the server (see serverSearch); nothing is loaded here. */
+  async function ensureTexts() { return textCache; }
   function docFreq() {
     if (dfCache) return dfCache;
     const df = {}; for (const ix of indexes.values()) for (const k of new Set(ix.keywords || [])) df[k] = (df[k] || 0) + 1;
@@ -170,24 +198,27 @@ export function initFileView({ approval, store, saveToBrain = null, callAI = nul
     dupEl.hidden = !pendingDups.length;
     dupEl.innerHTML = pendingDups.map((d, i) => `<div>同じ内容のファイルがすでにあります（${esc(d.dup.name)}）。「${esc(d.name)}」は二重に保存しません。</div><div class="b"><button class="vf-btn" data-dupkeep="${i}" type="button">それでも保存する</button><button class="vf-btn" data-dupskip="${i}" type="button">保存しない</button></div>`).join('');
   }
-  async function storeOne({ file, name, c, an, source, dup = null }) {
+  /** Upload one analysed file into the account: the server reserves room first (quota), the browser sends the bytes to Storage, then the memory is saved. */
+  async function storeOne({ file, name, c, an, source, dup = null, progressBase = {} }) {
     const near = dup ? null : findNearDuplicate({ name, keywords: an.index.keywords, sha256: an.sha256 }, files, indexes);
-    const index = { ...an.index, related: near, ...(dup ? { dupOf: { id: dup.id, name: dup.name } } : {}) };
-    const meta = { id: uid(), name, type: c.mime, kind: c.kind, size: file.size, addedAt: Date.now(), source };
-    await store.put(meta, file.slice(0, file.size, c.mime), index, an.text);
-    files = [meta, ...files]; indexes.set(meta.id, index); textCache = null; dfCache = null;
-    return { meta, near };
+    const index = { ...an.index, sha256: an.sha256 || an.index.sha256, related: near, ...(dup ? { dupOf: { id: dup.id, name: dup.name } } : {}) };
+    uploadCtl = new AbortController();
+    try {
+      const meta = await store.put({ name, type: c.mime, kind: c.kind, size: file.size, addedAt: Date.now(), source }, file.slice(0, file.size, c.mime), index, an.text, { allowDuplicate: !!dup, signal: uploadCtl.signal, onProgress: throttle((p) => showProg({ ...progressBase, ...p })) });
+      files = [meta, ...files.filter((f) => f.id !== meta.id)]; indexes = await store.indexes(); textCache = null; dfCache = null;
+      return { meta, near };
+    } finally { uploadCtl = null; showProg(null); }
   }
   async function importFiles(list, source = 'picker') {
     const arr = Array.from(list || []); const added = [], rejected = [], duplicates = [], similar = [];
     if (!arr.length) return { added, rejected, duplicates };
     open(); batchCancelled = false;
-    await refresh(); let used = files.reduce((s, f) => s + (f.size || 0), 0);
+    await refresh({ force: true }); let used = (usage?.usedBytes || 0) + (usage?.reservedBytes || 0);
     for (let i = 0; i < arr.length; i++) {
       if (batchCancelled) { rejected.push({ name: arr[i].name, reason: `「${safeName(arr[i].name)}」：取り込みをキャンセルしました` }); continue; }
       const f = arr[i], name = safeName(f.name || 'ファイル'), c = classify(name, f.type);
       if (!c.ok) { rejected.push({ name, reason: `「${name}」：${c.reason}` }); continue; }
-      const q = checkQuota({ name, size: f.size, used, deviceFree: space ? space.free : null });
+      const q = checkQuota({ name, size: f.size, used }, { ...LIMITS, account: true, perFile: usage?.maxFileBytes || LIMITS.perFile, total: usage?.quotaBytes || LIMITS.total });
       if (!q.ok) { rejected.push({ name, reason: q.reason }); continue; }
       let an;
       try { an = await analyse(f, name, c.mime, { name, i: i + 1, n: arr.length }); }
@@ -198,16 +229,20 @@ export function initFileView({ approval, store, saveToBrain = null, callAI = nul
       }
       const dup = findExactDuplicate(an.sha256, files, indexes);
       if (dup) { duplicates.push({ name, dup }); pendingDups.push({ file: f, name, c, an, source, dup }); continue; }
-      try { const { meta, near } = await storeOne({ file: f, name, c, an, source }); used += f.size; added.push(meta); if (near) similar.push({ name, near }); }
-      catch (e) { rejected.push({ name, reason: `「${name}」を保存できませんでした：${e?.message || e}（この端末の空き容量や、ブラウザの保存設定を確認してください）` }); }
+      try { const { meta, near } = await storeOne({ file: f, name, c, an, source, progressBase: { name, i: i + 1, n: arr.length } }); used += f.size; added.push(meta); if (near) similar.push({ name, near }); }
+      catch (e) {
+        if (e?.cancelled) { batchCancelled = true; rejected.push({ name, reason: `「${name}」：取り込みをキャンセルしました` }); continue; }
+        if (e?.code === 'duplicate') { duplicates.push({ name, dup: e.duplicate }); pendingDups.push({ file: f, name, c, an, source, dup: e.duplicate }); continue; }
+        if (e?.code === 'storage_quota_exceeded' || e?.code === 'file_too_large') { rejected.push({ name, reason: e.message }); if (e.code === 'storage_quota_exceeded' && Number.isFinite(e.body?.usedBytes)) used = e.body.usedBytes; continue; }   // the server's own message says what is used and what is needed; the next files are checked against its numbers
+        rejected.push({ name, reason: `「${name}」を保存できませんでした：${e?.message || e}` });
+      }
     }
     showProg(null); dupBox();
-    if (added.length && persisted === false) { try { persisted = (await navigator.storage?.persist?.()) ?? persisted; } catch { /* ignore */ } }
     await refresh();
     if (added.length) { selectedId = added[added.length - 1].id; onActivity({ icon: 'doc', title: 'ファイルを取り込み', sub: added.length === 1 ? added[0].name : `${added.length}件` }); }
     open(); await render();
     const parts = [];
-    if (added.length) parts.push(`${added.length}件を取り込みました（この端末の中だけに保存）`);
+    if (added.length) parts.push(`${added.length}件を取り込みました（あなたのアカウントに保存・あなただけが見られます）`);
     for (const s of similar) parts.push(`「${s.name}」は「${s.near.name}」の別版かもしれません（まとめたり、消したりはしていません）`);
     for (const a of added) { const ix = indexes.get(a.id); if (ix && ix.status !== 'ok' && ix.status !== 'image') parts.push(`「${a.name}」：${STATUS_JA[ix.status] || ''}${ix.error ? '（' + ix.error + '）' : ''}`); }
     if (rejected.length) parts.push(rejected.map((r) => r.reason).join('\n'));
@@ -216,10 +251,49 @@ export function initFileView({ approval, store, saveToBrain = null, callAI = nul
   }
   async function keepDuplicate(i) {
     const d = pendingDups[i]; if (!d) return; pendingDups.splice(i, 1); dupBox();
-    try { await storeOne({ ...d, dup: d.dup }); await refresh(); selectedId = files[0]?.id || selectedId; await render(); say(`「${d.name}」を、同じ内容のファイルとして別に保存しました`); }
-    catch (e) { say(`保存できませんでした：${e?.message || e}`, true); }
+    try { await storeOne({ ...d, dup: d.dup, progressBase: { name: d.name } }); await refresh(); selectedId = files[0]?.id || selectedId; await render(); say(`「${d.name}」を、同じ内容のファイルとして別に保存しました`); }
+    catch (e) { say(e?.cancelled ? 'キャンセルしました' : `保存できませんでした：${e?.message || e}`, true); }
   }
   function skipDuplicate(i) { const d = pendingDups[i]; pendingDups.splice(i, 1); dupBox(); if (d) say(`「${d.name}」は保存しませんでした（すでにある「${d.dup.name}」と同じ内容です）`); }
+
+  // ---------------------------------------------------------------- the old library of this device -> the account (once, with the owner's say-so)
+  async function checkLegacy() {
+    if (legacyAsked || migrating) return; legacyAsked = true;
+    try { legacy = await legacyLibraries(); } catch { legacy = []; }
+    await drawLegacy();
+  }
+  async function drawLegacy() {
+    if (!legacy?.length) { migEl.hidden = true; return; }
+    let count = 0, bytes = 0; for (const l of legacy) { const x = await l.summary(); count += x.count; bytes += x.bytes; }
+    if (!count) { migEl.hidden = true; return; }
+    migEl.hidden = false;
+    migEl.innerHTML = `<div><b>この端末のファイルを、アカウントに移しますか</b><br>この端末に、以前の方式（この端末の中だけ）で保存したファイルが <b>${count}件（${esc(fmtSize(bytes))}）</b>あります。アカウントに移すと、どの端末からも見られます（あなただけが見られます）。同じ内容のファイルは、二重に保存しません。</div><div class="b"><button class="vf-btn pri" data-migrate type="button">移す</button><button class="vf-btn" data-migrate-later type="button">あとで</button></div>`;
+  }
+  async function runMigration() {
+    if (migrating || !legacy?.length) return; migrating = true; batchCancelled = false;
+    migEl.innerHTML = '<div><b>アカウントに移しています…</b></div><progress id="vfl-mig-p" max="100"></progress><div class="vf-muted" id="vfl-mig-t"></div><div class="b"><button class="vf-btn" data-cancel type="button">中止</button></div>';
+    const tot = { moved: 0, skipped: [], failed: [], stopped: null, message: '' };
+    try {
+      for (const lib of legacy) {
+        const r = await migrateLibrary(lib, {
+          store, analyse: (blob, name, mime) => analyse(blob, name, mime, { name }), shouldStop: () => batchCancelled,
+          onProgress: (p) => { const bar = migEl.querySelector('#vfl-mig-p'), t = migEl.querySelector('#vfl-mig-t'); if (bar && p.total) bar.value = Math.round((p.done / p.total) * 100); if (t) t.textContent = `${p.i}/${p.n}　${p.name}：${p.stage || '処理中'}`; },
+        });
+        tot.moved += r.moved; tot.skipped.push(...r.skipped); tot.failed.push(...r.failed); if (r.stopped) { tot.stopped = r.stopped; tot.message = r.message; break; }
+      }
+    } catch (e) { tot.failed.push({ name: '', reason: String(e?.message || e) }); }
+    migrating = false; showProg(null);
+    legacy = await legacyLibraries().catch(() => []);   // what is left (nothing, when everything moved: the old library was removed)
+    await refresh({ force: true }); await render(); await drawLegacy();
+    const parts = [];
+    if (tot.moved) parts.push(`${tot.moved}件をアカウントに移しました`);
+    if (tot.skipped.length) parts.push(`すでにアカウントにある ${tot.skipped.length}件は、二重に保存しませんでした（${tot.skipped.slice(0, 3).map((n) => '「' + n + '」').join('')}${tot.skipped.length > 3 ? ' ほか' : ''}）`);
+    if (tot.stopped === 'quota') parts.push((tot.message || '保存容量が足りません') + '\n残りはこの端末に残してあります（容量を空けてから、もう一度移せます）');
+    else if (tot.stopped === 'cancelled') parts.push('中止しました。残りはこの端末に残してあります');
+    else if (tot.stopped === 'offline') parts.push((tot.message || 'オフラインです') + '。残りはこの端末に残してあります');
+    for (const f of tot.failed) parts.push(`「${f.name}」：${f.reason}（この端末に残してあります）`);
+    say(parts.join('\n') || '移すファイルはありませんでした', !!(tot.failed.length || tot.stopped));
+  }
 
   /** (Re)read a stored file: the old files from before the memory existed, or "読み取り直す". The owner's tags / memo / label / summaries are kept. */
   async function reanalyse(id, { quiet = false } = {}) {
@@ -255,7 +329,8 @@ export function initFileView({ approval, store, saveToBrain = null, callAI = nul
     if (flt.tag) arr = arr.filter((x) => (x.ix?.tags || []).includes(flt.tag));
     if (flt.q.trim()) {
       const by = new Map(arr.map((x) => [x.file.id, x]));
-      return searchFiles({ files: arr.map((x) => x.file), indexes, texts: textCache }, flt.q, { limit: 200 }).map((r) => ({ ...by.get(r.file.id), where: r.where }));
+      if (hits && hits.q === flt.q.trim()) return hits.list.filter((h) => by.has(h.id)).map((h) => ({ ...by.get(h.id), where: h.matched }));   // the server's answer (names, tags, memory AND the extracted text)
+      return searchFiles({ files: arr.map((x) => x.file), indexes, texts: null }, flt.q, { limit: 200 }).map((r) => ({ ...by.get(r.file.id), where: r.where }));   // until it arrives: what this device already knows
     }
     const cmp = { new: (a, b) => b.file.addedAt - a.file.addedAt, old: (a, b) => a.file.addedAt - b.file.addedAt, name: (a, b) => a.file.name.localeCompare(b.file.name, 'ja'), kind: (a, b) => KINDS.indexOf(kindOf(a.ix)) - KINDS.indexOf(kindOf(b.ix)) || b.file.addedAt - a.file.addedAt, size: (a, b) => b.file.size - a.file.size }[flt.sort] || (() => 0);
     return arr.sort(cmp);
@@ -351,11 +426,21 @@ export function initFileView({ approval, store, saveToBrain = null, callAI = nul
     if (flash) { const d = $('vfl-drop'); d.classList.add('flash'); setTimeout(() => d.classList.remove('flash'), 2500); $('vfl-drop').querySelector('[data-pick]').focus({ preventScroll: true }); }
   }
   function close() { back.classList.remove('on'); setPv(null); }
+  /** Ask the server (the account's files only) and show its ranking; a newer question makes an older answer irrelevant. */
+  async function serverSearch(q) {
+    const t = String(q || '').trim(), seq = ++searchSeq;
+    if (!t) { hits = null; renderList(); return []; }
+    let list; try { list = await store.search(t); } catch (e) { if (seq === searchSeq) say(String(e?.message || e), true); return []; }
+    if (seq !== searchSeq) return list;
+    hits = { q: t, list }; renderList(); return list;
+  }
   async function openLibrary({ flash = false, query = null } = {}) {
-    await refresh(); showLog = false; if (selectedId && !files.some((f) => f.id === selectedId)) selectedId = null;
-    if (query !== null) { flt.q = query; qEl.value = query; flt.kind = ''; flt.tag = ''; fillFilters(); if (query) await ensureTexts(); }
+    await refresh({ force: true }); showLog = false; if (selectedId && !files.some((f) => f.id === selectedId)) selectedId = null;
+    if (query !== null) { flt.q = query; qEl.value = query; flt.kind = ''; flt.tag = ''; fillFilters(); hits = null; }
     open({ flash }); await render();
+    if (query) serverSearch(query).catch(() => {});
     autoIndexMissing().catch((e) => console.warn('[files] index', e?.message || e));
+    checkLegacy().catch((e) => console.warn('[files] legacy', e?.message || e));
   }
   async function select(id, { tab: t = 'view' } = {}) {
     showLog = false; tab = t; await refresh(); open();
@@ -448,13 +533,13 @@ export function initFileView({ approval, store, saveToBrain = null, callAI = nul
     const conf = back.querySelector('#vfl-conf');
     const target = conf && selectedId === id ? conf : null;
     if (!target) { selectedId = id; await render(); return confirmDeleteInline(id); }
-    target.hidden = false; target.innerHTML = `<span>「${esc(f.name)}」をこの端末から削除します。元に戻せません。</span><button class="vf-btn" data-delyes="${esc(id)}" type="button">削除する</button><button class="vf-btn" data-delno type="button">やめる</button>`;
+    target.hidden = false; target.innerHTML = `<span>「${esc(f.name)}」をアカウントから削除します（保存先の原本も消え、容量が空きます）。元に戻せません。</span><button class="vf-btn" data-delyes="${esc(id)}" type="button">削除する</button><button class="vf-btn" data-delno type="button">やめる</button>`;
     target.querySelector('[data-delno]').focus();
   }
   async function requestDelete(id, approvalId) {
     const f = files.find((x) => x.id === id); if (!f) return { status: 'notfound' };
     selectedId = id; open(); await render();
-    const ok = await approval.ask({ id: approvalId || 'filedel:' + id, tool: 'file_delete', summary: [`「${f.name}」を削除します`, `種類：${classify(f.name, f.type).label}　サイズ：${fmtSize(f.size)}`, 'この端末のファイル一覧から消えます。元に戻せません。'], danger: 'high', voice: true, yes: '削除する', no: 'やめる', title: '削除の確認' });
+    const ok = await approval.ask({ id: approvalId || 'filedel:' + id, tool: 'file_delete', summary: [`「${f.name}」を削除します`, `種類：${classify(f.name, f.type).label}　サイズ：${fmtSize(f.size)}`, 'アカウントから消え、保存先の原本も削除されます（容量が空きます）。元に戻せません。'], danger: 'high', voice: true, yes: '削除する', no: 'やめる', title: '削除の確認' });
     if (ok !== true) return { status: 'declined' };
     await removeFile(id); return { status: 'deleted', name: f.name };
   }
@@ -573,7 +658,9 @@ export function initFileView({ approval, store, saveToBrain = null, callAI = nul
     const t = e.target;
     if (t === back || t.closest('[data-x]')) { close(); return; }
     if (t.closest('[data-pick]')) { input.click(); return; }
-    if (t.closest('[data-cancel]')) { batchCancelled = true; running?.cancel(); say('キャンセルしています…'); return; }
+    if (t.closest('[data-cancel]')) { batchCancelled = true; running?.cancel(); uploadCtl?.abort(); say('キャンセルしています…'); return; }
+    if (t.closest('[data-migrate]')) { runMigration().catch((err) => { migrating = false; say(String(err?.message || err), true); }); return; }
+    if (t.closest('[data-migrate-later]')) { migEl.hidden = true; say('あとで移せます（ファイル画面を開き直すと、また案内します）'); return; }
     const dk = t.closest('[data-dupkeep]'); if (dk) { await keepDuplicate(Number(dk.dataset.dupkeep)); return; }
     const ds = t.closest('[data-dupskip]'); if (ds) { skipDuplicate(Number(ds.dataset.dupskip)); return; }
     if (t.closest('[data-showlog]')) { showLog = !showLog; await renderMain(); return; }
@@ -595,7 +682,7 @@ export function initFileView({ approval, store, saveToBrain = null, callAI = nul
   });
   back.addEventListener('keydown', (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target.classList?.contains('vfl-row')) { e.preventDefault(); select(e.target.dataset.id, { tab }); } });
   let qTimer = 0;
-  qEl.addEventListener('input', () => { clearTimeout(qTimer); qTimer = setTimeout(async () => { flt.q = qEl.value; if (flt.q.trim()) await ensureTexts(); renderList(); }, 150); });
+  qEl.addEventListener('input', () => { clearTimeout(qTimer); qTimer = setTimeout(async () => { flt.q = qEl.value; hits = null; renderList(); await serverSearch(flt.q); }, 250); });
   fkEl.addEventListener('change', () => { flt.kind = fkEl.value; renderList(); });
   ftEl.addEventListener('change', () => { flt.tag = ftEl.value; renderList(); });
   fsEl.addEventListener('change', () => { flt.sort = fsEl.value; renderList(); });
@@ -621,10 +708,21 @@ export function initFileView({ approval, store, saveToBrain = null, callAI = nul
   return {
     el: back, open: openLibrary, close, importFiles, select, requestPrint, requestDelete, refresh, download, toBrain, readFile, tagFile, reanalyse,
     /** The files ELVAR knows by name (for matching), including the last made document. The extracted texts are loaded here so matching and searching can use them. */
-    async candidates() { await refresh(); await ensureTexts(); return allFiles(); },
+    async candidates() { await refresh(); return allFiles(); },
     match(query) { return matchFiles(allFiles(), query, { lastDocId: lastDocId(), indexes, texts: textCache }); },
-    /** Local search. The caller decides what goes to the model (see searchResultForModel in file-index.js: names, kinds and short snippets only). */
-    async search(query) { await refresh(); await ensureTexts(); return searchFiles({ files, indexes, texts: textCache }, query, { limit: 8 }); },
+    /** The name / memory match first; when nothing matches, the server looks through the extracted texts of this account (the words only the body contains). */
+    async matchOrSearch(query) {
+      const m = this.match(query); if (m.kind !== 'none') return m;
+      let found; try { found = await store.search(String(query).slice(0, 200)); } catch { return m; }
+      const by = new Map(files.map((f) => [f.id, f])), items = found.filter((x) => by.has(x.id)).slice(0, 4).map((x) => ({ file: by.get(x.id), score: x.score }));
+      return !items.length ? m : items.length === 1 ? { kind: 'one', file: items[0].file, score: items[0].score } : { kind: 'many', items };
+    },
+    /** Search over the account's files on the server (names, tags, kind, keywords, summary AND the extracted text): the same answer on every device. The caller decides what goes to the model
+     *  (see searchResultForModel in file-index.js: names, kinds and short snippets only). */
+    async search(query) {
+      await refresh(); const by = new Map(files.map((f) => [f.id, f]));
+      return (await store.search(query)).filter((x) => by.has(x.id)).map((x) => ({ file: by.get(x.id), score: x.score, where: x.matched || [], kind: x.kind, snippet: x.snippet || '' }));
+    },
     indexOf: (id) => indexes.get(id) || null,
     detail: (items) => choiceDetail(items, indexes, 250),
     get selectedId() { return selectedId; },
@@ -636,16 +734,17 @@ export function initFileView({ approval, store, saveToBrain = null, callAI = nul
     setLastDocument({ name, bytes }) { lastDoc = { name, bytes, at: Date.now() }; lastDocSavedId = null; },
     /** Save that PDF into the library (the 資料 card's button). */
     async saveDocument({ name, bytes }) {
-      await refresh(); const used = files.reduce((s, f) => s + (f.size || 0), 0), n = safeName(name), q = checkQuota({ name: n, size: bytes.length, used, deviceFree: space ? space.free : null });
+      await refresh({ force: true }); const n = safeName(name), q = checkQuota({ name: n, size: bytes.length, used: (usage?.usedBytes || 0) + (usage?.reservedBytes || 0) }, { ...LIMITS, account: true, perFile: usage?.maxFileBytes || LIMITS.perFile, total: usage?.quotaBytes || LIMITS.total });
       if (!q.ok) return { ok: false, message: q.reason };
       const blob = new Blob([bytes], { type: 'application/pdf' });
       let an = null; try { an = await analyse(blob, n, 'application/pdf', { name: n }); } catch { /* saved without a memory; it is read later */ }
-      const meta = { id: uid(), name: n, type: 'application/pdf', kind: 'pdf', size: bytes.length, addedAt: Date.now(), source: 'elvar-doc' };
-      await store.put(meta, blob, an?.index || null, an?.text || '');
+      let meta;
+      try { meta = await store.put({ name: n, type: 'application/pdf', kind: 'pdf', size: bytes.length, addedAt: Date.now(), source: 'elvar-doc' }, blob, an?.index || null, an?.text || ''); }
+      catch (e) { if (e?.code === 'duplicate') { lastDocSavedId = e.duplicate.id; return { ok: true, message: `同じ内容のファイルがすでにあります（${e.duplicate.name}）`, id: e.duplicate.id }; } return { ok: false, message: String(e?.message || e) }; }
       if (lastDoc && lastDoc.name === name) lastDocSavedId = meta.id;
       await refresh(); if (back.classList.contains('on')) await render();
       onActivity({ icon: 'doc', title: '資料をファイルに保存', sub: n });
-      return { ok: true, message: 'ファイルに保存しました（この端末の中だけ）', id: meta.id };
+      return { ok: true, message: 'ファイルに保存しました（あなたのアカウントに。あなただけが見られます）', id: meta.id };
     },
     /** A spoken answer to 「印刷できましたか？」. Ignored while the assistant is talking (its own echo must not answer). */
     hear(text, { modelBusy = false } = {}) {
