@@ -758,3 +758,32 @@ P4 で入ったもの: **第二の脳をユーザーごとの `app.notes` に**�
 検証: `npm test`、`npm run test:db`（postgres:17。契約テストは MemoryDb と実 Postgres で同じ）、`npx vite build web`、public-scrub がすべて通る。開発スタック（`ELVAR_DB=memory ELVAR_DEV_AUTH=1`）に Playwright で2人が入り、それぞれがノートを書き・会話し・通知箱に入れ、ユーザー B の画面と API にユーザー A のノート・会話・通知箱が一切出ないこと、B の操作（消す・ゴミ箱）が A に届かないことを確認した。
 
 未着手: 実際の Supabase（pgroonga）での結合確認、第2段の埋め込み検索、`storage_usage` への記帳と Storage（P5・P6）、ミラーの双方向、通知中継の Android 側の画面確認（サーバーは既存のプロトコルのまま）。
+
+
+---
+
+## 16. P5 実装メモ（設計からの差分・未着手）
+
+P5 で入ったもの: **ファイルをアカウントの保管庫に**（原則4・6）。原本はプライベートな Supabase Storage（bucket `user-files`、`users/<uid>/files/<fileId>/<sha256>`）、メタデータ・読み取った「記憶」（種類の推測・キーワード・タグ・メモ・別版の目印）・抽出テキストは `app.files` / `app.file_texts`（RLS ＋ cascade ＋ `data_registry`）。ブラウザは自分の JWT で署名付きアップロード URL をもらい、**ファイルは関数を通らず Storage に直接**送る（予約 → PUT → finalize）。容量はアップロードの**前に**、DB の1つの関数（`app.reserve_file`）で原子的に確認する（使用中＋予約中＋このファイル＋申告した抽出テキスト）。finalize は Storage の**実物のサイズと SHA-256**を確かめてから記憶を受け取る。`storage_usage` は、ノート・版・会話・ファイル・抽出テキスト・予約中をトリガーで数える（P4 の「ノートと会話だけ」の件を解消）。管理者はユーザーごとの容量を変えられる（`POST /api/elvar/admin/users/:id/quota`、画面は設定 → 管理の「容量」）。サーバー側検索（`GET /api/elvar/files/search`）、署名付きダウンロード、タグ・メモ・名前の編集、削除（Storage の原本も消して容量を空ける）、全削除、エクスポート（`files.json`＝メタデータ・記憶・抽出テキスト・原本の取り出し口 `downloadPath`）、アカウント削除（全 bucket の `users/<uid>/` を一覧して削除し、残り確認は**行と Storage の両方**）。画面は金色で、容量メーター（原本／文字／ノート／会話／アップロード中）、サーバー検索、この端末の古いライブラリの「アカウントに移す」（進捗つき・同じ内容は飛ばす・容量超過で止まる・移し終えたものだけ端末から削除）。IndexedDB は**ユーザー単位のキャッシュ**（`elvar-files-cache@<ns>`、最近使った原本 200MB とオフライン読み取り用の一覧）。印刷の流れと AI 要約／OCR の承認カードはそのまま動く（`docs/files.png`）。
+
+設計との違い:
+
+| 項目 | 設計 | P5 の実装 | 理由 |
+|------|------|-----------|------|
+| bucket | `user-files` / `user-exports` / `user-cache` | `user-files` だけ作る。削除の掃除と残り確認は3つ全部を見る（`USER_BUCKETS`） | exports / cache は P7 以降で使う。使う側が来たときに作る |
+| マイグレーション | 07 に表・bucket・RLS・予約関数・容量トリガー | 07 に加えて、09 の `storage_usage` の台帳行の `fixture_order` を 5 に変更（09 を直接編集） | トリガーが先に行を作るので、台帳の固定データを最初に入れないと2重 insert になる。まだ公開前でマイグレーションを使った実環境がないため、新しい番号を足さずに直した |
+| Storage の書き込みポリシー | `f.object_path = name` | `f.object_path = objects.name` | `exists (select … from app.files f …)` の中の `name` は `app.files.name` になってしまい、**誰も書けなかった**（`test/db/storage.test.mjs` が見つけた）。テストと lint（`objects.name`）で固定 |
+| アップロード URL の期限 | 短命 | Supabase の署名付きアップロード URL は 2 時間固定。こちらの予約は 30 分で、finalize は予約が生きているときだけ通る。超えたものは次の予約時（本人）か毎日の掃除（service key）で Storage の物ごと消える（確認の猶予 5 分） | URL の寿命は Supabase の仕様。予約の期限で締める |
+| `files` の書き込み | RLS の標準4ポリシー | **select だけ**を許し、変更は definer 関数（`reserve_file` / `finalize_file` / `patch_file` / `begin_delete_file` / `finish_delete_file`）だけ | 利用者が `status` や `size_bytes` や `storage_usage` を直接書いて容量をすり抜けないように。テストで確認 |
+| 削除 | 行と物を消す | 2段階（`deleting` にして一覧から消す → Storage の物を消す → 行を消して容量を空ける）。Storage が落ちていれば行は `deleting` で残り、本人の次のリクエストか毎日の掃除が続きを消す | 物が残ったまま行だけ消えて、容量の外に孤児が溜まるのを防ぐ |
+| 容量の照合 | cron で Storage の実サイズと突き合わせ | `app.reconcile_storage()`（表から全員分を数え直して `storage_usage` を直す）を毎日の cron で。Storage の実サイズとの突き合わせは、finalize で実物を確かめているので省略 | finalize で全ファイルの実サイズ・ハッシュを確認済み |
+| 抽出テキストの大きさ | — | 1ファイル 130 万字まで（4MB。日本語は3バイト）。超えた分は切って「先頭の約130万字だけ」と記録 | Vercel の関数は本文 4.5MB まで。DB の check（400万バイト）とも揃える |
+| 検索 | サーバーで pgroonga | ノートと同じ方式: 関数 `app.search_files` が「語を1つでも含む本文」の候補を返し（pgroonga があれば pgroonga、なければ pg_trgm）、順位付けは既存の `searchFiles`（`web/src/file-index.js`）をサーバーで動かす（日付の言い回しの時間帯は既定の Asia/Tokyo） | 画面・AI 道具・別端末で同じ順位にするため。pgroonga の分岐は未検証 |
+| `file_search` / 印刷の名前探し | サーバー検索 | `file_search` はサーバー検索。印刷・表示・読み取りの名前探しは、名前と記憶（端末にある一覧）で探し、見つからないときだけサーバー検索（本文にだけある言葉）に回す（`matchOrSearch`） | 毎回の通信を避けつつ、本文でも見つけられるように |
+| 台帳 `deleteVia` | `cascade+storage` | `files` に付けた。エクスポートの計画（`exportPlan()`）にも `originals: true` が付く | 原本をエクスポートの zip に入れる印（zip 作成は P7） |
+
+そのほかに直したこと（P5 の作業中に見つかった既存の不具合）: ローカルサーバーの JSON 読み取りがチャンクごとに文字列化していて、チャンクの境目にある日本語が壊れていた（Vercel では起きない）。大きな本文を送ると文字数が合わなくなる原因になるので、バイトで集めて最後に1度だけ変換するようにした。抽出（先頭 2MB だけ読む）が UTF-8 の文字の途中で切れると Shift_JIS と誤判定して文字化けしていた（`decodeText` の `cut` ヒント）。
+
+検証: `npm test`、`npm run test:db`（postgres:17。Storage の RLS は `test/db/support/supabase-emulation.sql` に作った `storage.objects`／`storage.foldername()` の上でテスト）、`npx vite build web`、public-scrub がすべて通る。開発スタック（`ELVAR_DB=memory ELVAR_DEV_AUTH=1`。偽の Storage を `/dev-supabase/storage/v1` で配る）に Playwright で 2 人が入り、ファイルをアップロードして（PUT が Storage の署名付き URL に直接行き、API の本文は小さいことを確認）、ユーザー B の画面・API・検索・エクスポートに A のファイルが一切出ないこと、容量メーター、容量超過の拒否（日本語の文言・数値つき、抽出テキストも数える）、管理者による容量変更、ファイル削除で容量が空くこと、印刷の承認カード、AI 要約と OCR の承認カード（承認前は何も送らない）、この端末の古いライブラリの移行を確認した。
+
+未着手・未確認: **本物の Supabase Storage に対する結合確認**（`server/storage/supabase.js` は Storage API の形に合わせたが、実プロジェクトでは動かしていない。署名付きアップロードの PUT が生のバイナリを受け付けるか、`object/info` の返り値の名前、CORS）、TUS（6MB 超の再開可能アップロード）は使わず、1回の PUT（60MB まで。切れたらやり直し）、`pg_cron` ではなく Vercel Cron（1日1回）での掃除、エクスポートの zip（原本のコピー。P7）、容量の上限を超えたユーザーの既存データの扱い（今は新規だけ止める）、Android の WebView での PUT／ダウンロード、署名付きダウンロード URL を `Content-Disposition` なしで `<iframe>` に入れる場合の挙動（今は取得した Blob を自分の MIME で包んで使う）。
