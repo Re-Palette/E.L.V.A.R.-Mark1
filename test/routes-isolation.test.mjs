@@ -7,6 +7,7 @@ import { startHarness } from './helpers/api-harness.mjs';
 import { ROUTES, isUserAuth } from '../server/router.js';
 import { mintVerifiedUid } from '../server/db/verified-uid.js';
 import { getStorage } from '../server/storage/index.js';
+import { browserUpload } from './helpers/upload.mjs';
 
 const A_KEY = 'AIzaSy-USER-A-SECRET-KEY-aaaa1111', B_KEY = 'AIzaSy-USER-B-SECRET-KEY-bbbb2222';
 const A_NAME = 'A-PRIVATE-PERSONA-NAME';
@@ -68,7 +69,7 @@ async function world(h) {
     return { noteId: note.id, trashedId: trashed.id, convId: c.conversationId, msgId: msg.id, inboxId: inbox.id };
   });
   const st = await getStorage();
-  const putTo = (up, bytes) => st.uploadWithToken(new URL(up.url).searchParams.get('token'), bytes, { contentType: up.headers['content-type'] });
+  const putTo = (up, bytes) => browserUpload(st, a, up, bytes);
   const fr = (await h.call('POST', '/api/elvar/files/reserve', A, { name: A_FILE_NAME, size: A_FILE_BYTES.length, sha256: sha256(A_FILE_BYTES), textBytes: Buffer.byteLength(A_FILE_TEXT) })).body; await putTo(fr.upload, A_FILE_BYTES);
   const fin = (await h.call('POST', `/api/elvar/files/${fr.fileId}/finalize`, A, { text: A_FILE_TEXT, title: 'A-PRIVATE-TITLE', keywords: ['A-PRIVATE-KEYWORD'], snippet: 'A-PRIVATE-SNIPPET', analysis: { ext: 'txt' } })); assert.equal(fin.status, 200, JSON.stringify(fin.body));
   await h.call('PATCH', `/api/elvar/files/${fr.fileId}`, A, { memo: A_FILE_MEMO, tags: [A_FILE_TAG] });
@@ -299,8 +300,9 @@ Object.assign(CASES, {
     const before = await w.snapshotA();
     // the same content as A's file: B is not told that it exists elsewhere (no duplicate answer), gets its own reservation under its own prefix
     const r = await h.call('POST', '/api/elvar/files/reserve', w.B, { name: A_FILE_NAME, size: A_FILE_BYTES.length, sha256: sha256(A_FILE_BYTES) }); assert.equal(r.status, 200); assert.ok(r.body.fileId && !r.body.duplicate); assert.notEqual(r.body.fileId, w.files.id);
-    assert.ok(new URL(r.body.upload.url).pathname.includes(`/users/${w.b}/files/${r.body.fileId}/`), 'B\'s upload link is for B\'s own path'); assert.ok(!r.body.upload.url.includes(w.a));
-    await w.st.uploadWithToken(new URL(r.body.upload.url).searchParams.get('token'), Buffer.from('B writes something else'), {});   // the link writes B's path and nothing else
+    assert.ok(new URL(r.body.upload.url).pathname.includes(`/users/${w.b}/files/${r.body.fileId}/`), 'B\'s upload target is for B\'s own path'); assert.ok(!r.body.upload.url.includes(w.a));
+    await browserUpload(w.st, w.b, r.body.upload, Buffer.from('B writes something else'));   // B's own token writes B's path and nothing else
+    await assert.rejects(w.st.uploadAs(w.b, w.files.aPath.find((k) => k.includes(w.files.id)).replace(/^user-files\//, ''), Buffer.from('overwrite'), {}), (e) => e.status === 403, 'B\'s token cannot write A\'s path');
     assert.deepEqual(w.st.testing.list().filter((k) => k.includes(`users/${w.a}/`)).sort(), w.files.aPath.sort(), 'A\'s objects are the same set as before');
     assert.equal(w.st.testing.get(w.files.aPath.find((k) => k.includes(w.files.id)).replace(/^user-files\//, '')).toString(), A_FILE_BYTES.toString(), 'and A\'s original is untouched');
     for (const bad of [{ name: 'x.txt', size: 5, sha256: 'zz' }, { name: 'x.html', size: 5, sha256: 'a'.repeat(64) }, { name: 'x.txt', size: -1, sha256: 'a'.repeat(64) }]) assert.ok((await h.call('POST', '/api/elvar/files/reserve', w.B, bad)).status >= 400);

@@ -1,5 +1,6 @@
 // The ファイル library's storage, since the multi-user platform (docs/ELVAR_MULTIUSER.md 3.3, 8.2; principles 4 and 6): the account's own vault on the server.
-//   originals   Supabase Storage (users/<uid>/...), uploaded straight from this page to a short-lived signed link: reserve -> PUT -> finalize
+//   originals   Supabase Storage (users/<uid>/...), uploaded straight from this page with the user's OWN access token (Storage checks the live reservation on every
+//               write; there is no signed upload link to hold): reserve -> POST -> finalize
 //   the memory  keywords, kind, tags, memo, version mark, the extracted text: the database (read here by the Worker, sent at finalize; searched on the server)
 //   this device IndexedDB `elvar-files-cache` is only a CACHE of what the account already has: the originals used last (200 MB), and the last list for reading
 //               when offline. The shim of web/public/ns.js gives it a per-user name and web/src/elvar/local.js erases it at sign-out / when another person signs in.
@@ -25,14 +26,15 @@ export function apiError(r, fallback = 'サーバーとの通信に失敗しま�
   return e;
 }
 
-/** PUT a Blob to a signed upload link with real progress (fetch cannot report upload progress) and cancel. */
-export function xhrUpload(upload, blob, { onProgress, signal } = {}) {
+/** POST a Blob to Storage with the user's own access token (`headers()` gives the Authorization header), with real progress (fetch cannot report upload progress) and cancel. */
+export function xhrUpload(upload, blob, { onProgress, signal, headers = () => ({}) } = {}) {
   return new Promise((resolve, reject) => {
     const x = new XMLHttpRequest();
-    x.open(upload.method || 'PUT', upload.url);
+    x.open(upload.method || 'POST', upload.url);
     for (const [k, v] of Object.entries(upload.headers || {})) x.setRequestHeader(k, v);
+    if (upload.userToken) for (const [k, v] of Object.entries(headers() || {})) x.setRequestHeader(k, v);
     x.upload.onprogress = (e) => { if (e.lengthComputable) onProgress?.({ stage: 'アップロード中', done: e.loaded, total: e.total }); };
-    x.onload = () => (x.status >= 200 && x.status < 300 ? resolve() : reject(Object.assign(new Error(x.status === 413 ? 'ファイルが大きすぎて、保存先に受け付けられませんでした' : `アップロードできませんでした（${x.status}）`), { code: 'upload_failed', status: x.status })));
+    x.onload = () => (x.status >= 200 && x.status < 300 ? resolve() : reject(Object.assign(new Error(x.status === 403 ? 'アップロードの有効時間が過ぎたか、取り消されました。もう一度取り込んでください' : x.status === 413 ? 'ファイルが大きすぎて、保存先に受け付けられませんでした' : `アップロードできませんでした（${x.status}）`), { code: 'upload_failed', status: x.status })));
     x.onerror = () => reject(Object.assign(new Error('アップロードできませんでした。ネットワークを確認して、もう一度お試しください'), { code: 'upload_failed' }));
     x.onabort = () => reject(Object.assign(new Error('中止しました'), { cancelled: true }));
     if (signal) { if (signal.aborted) { x.abort(); return; } signal.addEventListener('abort', () => x.abort(), { once: true }); }
@@ -41,10 +43,10 @@ export function xhrUpload(upload, blob, { onProgress, signal } = {}) {
 }
 
 /**
- * @param {{ api: (path:string, o?:{method?:string, body?:any}) => Promise<{status:number, body:any}>, idb?: IDBFactory, storage?: Storage,
+ * @param {{ api: (path:string, o?:{method?:string, body?:any}) => Promise<{status:number, body:any}>, idb?: IDBFactory, storage?: Storage, authHeaders?: () => object,
  *           upload?: typeof xhrUpload, download?: (url:string) => Promise<Blob>, now?: () => number }} o
  */
-export function createFileStore({ api, idb = globalThis.indexedDB, storage = globalThis.localStorage, upload = xhrUpload, download = null, now = () => Date.now() }) {
+export function createFileStore({ api, idb = globalThis.indexedDB, storage = globalThis.localStorage, authHeaders = () => ({}), upload = xhrUpload, download = null, now = () => Date.now() }) {
   if (typeof api !== 'function') throw new Error('createFileStore needs api');
   let dbp = null, files = null, usage = null, loadedAt = 0, dirty = true, offline = false, savedSnap = '';
   const texts = new Map();   // id -> extracted text (this page only)
@@ -151,7 +153,7 @@ export function createFileStore({ api, idb = globalThis.indexedDB, storage = glo
       if (r.status !== 200) throw apiError(r, 'アップロードを始められませんでした');
       if (r.body.duplicate) throw Object.assign(new Error('同じ内容のファイルがすでにあります'), { code: 'duplicate', duplicate: r.body.duplicate });
       const id = r.body.fileId, cancelUpload = () => api(`/api/elvar/files/${id}/cancel`, { method: 'POST', body: {} }).catch(() => {});
-      try { await upload(r.body.upload, blob, { onProgress, signal }); }
+      try { await upload(r.body.upload, blob, { onProgress, signal, headers: authHeaders }); }
       catch (e) { await cancelUpload(); throw e; }
       onProgress?.({ stage: '確認中' });
       const cols = toColumns(index || {});

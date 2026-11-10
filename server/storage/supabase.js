@@ -1,8 +1,9 @@
 // Supabase Storage over its REST API. Everything a user may do runs with THEIR access token (Row Level Security of migration 07 decides); the service key is only
-// used through server/db/service.js, for the sweeps. The browser uploads directly to the signed link (nothing of the file passes through our function) and
-// downloads from a signed link; the server only signs, inspects (size, SHA-256) and removes.
+// used through server/db/service.js, for the sweeps. The browser uploads directly to Storage with ITS OWN access token (nothing of the file passes through our
+// function): Row Level Security (policy files_upload) checks the live reservation on EVERY write, so there is no long-lived link to hold. Downloads use a short
+// signed link; the server only inspects (size, SHA-256), signs downloads and removes.
 // NOT verified against a live Supabase project in this repository (no project is available to the build): the request shapes follow the Storage API
-// (POST object/upload/sign, object/info, object/authenticated, POST object/sign, DELETE object/<bucket>) and are covered by test/storage-supabase.test.mjs with a stub.
+// (POST object/<bucket>/<path> by the browser, object/info, object/authenticated, POST object/sign, DELETE object/<bucket>) and are covered by test/storage-supabase.test.mjs with a stub.
 import crypto from 'node:crypto';
 import { dbError } from '../db/errors.js';
 import { storageListUser, storageRemove } from '../db/service.js';
@@ -43,11 +44,10 @@ export function createSupabaseStorage({ env = process.env, fetchImpl = null } = 
   const forUser = ({ uid, token }) => {
     const me = String(uid).toLowerCase(), own = (p) => pathOwner(p) === me;
     return {
-      async createUploadUrl(path) {
+      /** Where (and how) the browser uploads: a plain authenticated POST of the object, which the INSERT policy checks against the live reservation. No signed upload URL exists. */
+      async uploadTarget(path) {
         requireOwnPath(me, path);
-        const r = await call(token, 'POST', `/object/upload/sign/${USER_BUCKET}/${enc(path)}`, {});
-        const rel = r.body?.url; if (typeof rel !== 'string' || !rel.startsWith('/object/upload/sign/')) throw dbError('storage_failed', 502);
-        return { url: `${base()}${rel}`, method: 'PUT', expiresInSec: 7200 };   // Supabase fixes the lifetime of a signed upload link (2 hours); our reservation is shorter
+        return { url: `${base()}/object/${USER_BUCKET}/${enc(path)}`, method: 'POST', userToken: true, headers: { apikey: storageConfig(env).key } };
       },
       async stat(path) {
         if (!own(path)) return null;

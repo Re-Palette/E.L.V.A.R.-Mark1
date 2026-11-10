@@ -1,7 +1,7 @@
 // The caller's own file vault over HTTP (docs/ELVAR_MULTIUSER.md 3.3, 6.2, 8.2; principles 4 and 6). Every call runs as the signed-in user (Row Level Security): another
 // user's file id is simply "not found". The original of a file lives in Supabase Storage (bucket user-files, users/<uid>/files/<id>/<sha256>) and never passes through
-// this server: the browser uploads to a short-lived signed link and downloads from one. What the server does is the part nobody may skip:
-//   reserve    quota check (used + reserved + this file + the extracted text it announced, per-file limit) in ONE database function; only then a signed upload link
+// this server: the browser uploads with its own access token (Storage checks the live reservation on every write) and downloads from a short signed link. What the server does is the part nobody may skip:
+//   reserve    quota check (used + reserved + this file + the extracted text it announced, per-file limit) in ONE database function; only then the upload target
 //   finalize   looks at the REAL object (size and SHA-256 must equal the reservation), then takes the memory the browser worker built and releases the reservation
 //   delete     removes the Storage object and the row: the bytes are free again
 //   search     the user's own files, ranked on the server (the same answer on every device and for the sub-agents)
@@ -120,9 +120,10 @@ export const reserveFile = guard(async ({ user, body }) => {
   }
   if (res.duplicate) return ok({ duplicate: res.duplicate });
   let upload;
-  try { upload = await (await userStorage(user)).createUploadUrl(res.objectPath); }
-  catch (e) { await user.db((r) => r.files.beginDelete(res.fileId).then(() => r.files.finishDelete(res.fileId))).catch(() => {}); throw e; }   // no link, no reservation
-  return ok({ fileId: res.fileId, name, expiresAt: res.reservedUntil, upload: { url: upload.url, method: upload.method, headers: { 'content-type': type[1], 'x-upsert': 'false' } } });
+  try { upload = await (await userStorage(user)).uploadTarget(res.objectPath); }
+  catch (e) { await user.db((r) => r.files.beginDelete(res.fileId).then(() => r.files.finishDelete(res.fileId))).catch(() => {}); throw e; }   // no target, no reservation
+  // The browser POSTs the bytes with its OWN access token (userToken): Storage checks the live reservation on every write, so a deleted or finished reservation can never be written again.
+  return ok({ fileId: res.fileId, name, expiresAt: res.reservedUntil, upload: { url: upload.url, method: upload.method, userToken: true, headers: { ...(upload.headers || {}), 'content-type': type[1], 'x-upsert': 'false' } } });
 });
 
 const text = (v, max) => (typeof v === 'string' ? v.slice(0, max) : undefined);

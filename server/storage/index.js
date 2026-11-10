@@ -5,7 +5,7 @@
 //                no overwrite, 60 MB per object), for `npm test` and the local dev stack (ELVAR_DB=memory)
 //
 //   getStorage()                         -> the storage
-//   storage.forUser({ uid, token })       -> { createUploadUrl(path), stat(path), hash(path, {maxBytes}), createDownloadUrl(path, {name, expiresInSec}), remove(paths) }
+//   storage.forUser({ uid, token })       -> { uploadTarget(path), stat(path), hash(path, {maxBytes}), createDownloadUrl(path, {name, expiresInSec}), remove(paths) }
 //   storage.service                      -> { list(prefix, {bucket}), remove(paths, {bucket}), count(prefix, {bucket}) }
 //   userStorage(ctx)                     -> storage.forUser for a signed-in request (the user's own token)
 // Object paths are always users/<uid>/...: built by the database (app.reserve_file) and re-checked here before any call.

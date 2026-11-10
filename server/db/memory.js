@@ -51,7 +51,7 @@ export function createMemoryDb({ now = null } = {}) {
   const sumOf = (list, f) => list.reduce((x, r) => x + f(r), 0);
   const usageOf = (uid) => {
     const fl = rows('files', uid);
-    return { filesBytes: sumOf(fl.filter((f) => f.status === 'ready' || f.status === 'deleting'), (f) => f.size_bytes), reservedBytes: sumOf(fl.filter((f) => f.status === 'pending'), (f) => f.reserved_bytes),
+    return { filesBytes: sumOf(fl.filter((f) => f.status !== 'pending'), (f) => f.size_bytes), reservedBytes: sumOf(fl.filter((f) => f.status === 'pending'), (f) => f.reserved_bytes),
       textBytes: sumOf(rows('file_texts', uid), (t) => size(t.text)), notesBytes: sumOf(rows('notes', uid), (n) => size(n.content)) + sumOf(rows('note_revisions', uid), (n) => size(n.content)),
       messagesBytes: sumOf(rows('messages', uid), (m) => size(m.text)) };
   };
@@ -74,8 +74,7 @@ export function createMemoryDb({ now = null } = {}) {
     related: f.related === null ? null : clone(f.related), reservedUntil: f.reserved_until === null ? null : iso(f.reserved_until), createdAt: iso(f.created_at),
     finalizedAt: f.finalized_at === null ? null : iso(f.finalized_at), updatedAt: iso(f.updated_at),
   });
-  const STALE_GRACE_MS = 5 * 60_000, LINK_LIFE_MS = 130 * 60_000;   // a signed upload link lives 2 hours: a tombstone (status gone) is kept until it cannot be used any more (migration 07)
-  const old = (f) => f.created_at < clock() - LINK_LIFE_MS;
+  const STALE_GRACE_MS = 5 * 60_000;
 
   function repos(uid, hooks = []) {
     return {
@@ -435,7 +434,6 @@ export function createMemoryDb({ now = null } = {}) {
           if (v.size > maxf) throw dbError('file_too_large', 413);
           if (!v.allowDuplicate) { const d = rows('files', uid).filter((f) => f.sha256 === v.sha256 && f.status === 'ready').sort((p, q) => p.created_at - q.created_at)[0]; if (d) return { duplicate: { id: d.id, name: d.name } }; }
           if (rows('files', uid).filter((f) => f.status === 'pending' && f.reserved_until > clock()).length >= 20) throw dbError('conflict', 409);
-          if (rows('files', uid).filter((f) => ['pending', 'deleting', 'gone'].includes(f.status) && !old(f)).length >= 40) throw dbError('conflict', 409);   // what a held signed link could smuggle in is bounded
           if (usedTotal(usageOf(uid)) + v.size + v.textBytes > a.storage_quota_bytes) throw dbError('storage_quota_exceeded', 413);
           const id = crypto.randomUUID(), objectPath = `users/${uid}/files/${id}/${v.sha256}`, until = clock() + V.FILE_RESERVE_MINUTES * 60_000;
           tables.files.push({ user_id: uid, id, name: v.name, mime: v.mime, kind: v.kind, size_bytes: v.size, sha256: v.sha256, object_path: objectPath, status: 'pending', reserved_bytes: v.size + v.textBytes,
@@ -473,7 +471,7 @@ export function createMemoryDb({ now = null } = {}) {
           if (p.analysis !== undefined) f.analysis = { ...f.analysis, ...clone(p.analysis) };
           f.updated_at = clock();
         },
-        async get(id) { V.need(V.FILE_ID_RE.test(String(id))); const f = find('files', uid, (r) => r.id === id && r.status !== 'gone'); return f ? fileRow(f) : null; },
+        async get(id) { V.need(V.FILE_ID_RE.test(String(id))); const f = find('files', uid, (r) => r.id === id); return f ? fileRow(f) : null; },
         async list({ limit = 5000 } = {}) { V.need(Number.isInteger(limit) && limit >= 1 && limit <= 20000); return rows('files', uid).filter((f) => f.status === 'ready').sort((a, b) => b.created_at - a.created_at || (a.id < b.id ? -1 : 1)).slice(0, limit).map(fileRow); },
         async findBySha(sha) { V.need(V.isSha256(sha)); const f = rows('files', uid).filter((r) => r.sha256 === sha && r.status === 'ready').sort((a, b) => a.created_at - b.created_at)[0]; return f ? fileRow(f) : null; },
         async text(id) { V.need(V.FILE_ID_RE.test(String(id))); const f = find('files', uid, (r) => r.id === id && r.status === 'ready'); const t = f && find('file_texts', uid, (x) => x.file_id === id); return t ? t.text : null; },
@@ -484,18 +482,13 @@ export function createMemoryDb({ now = null } = {}) {
           return out;
         },
         async count() { return rows('files', uid).filter((f) => f.status === 'ready').length; },
-        async beginDelete(id) { V.need(V.FILE_ID_RE.test(String(id))); const f = find('files', uid, (r) => r.id === id && r.status !== 'gone'); if (!f) return null; f.status = 'deleting'; f.reserved_until = null; f.updated_at = clock(); return f.object_path; },
+        async beginDelete(id) { V.need(V.FILE_ID_RE.test(String(id))); const f = find('files', uid, (r) => r.id === id); if (!f) return null; f.status = 'deleting'; f.reserved_until = null; f.updated_at = clock(); return f.object_path; },
         async finishDelete(id) {
           V.need(V.FILE_ID_RE.test(String(id)));
-          const f = find('files', uid, (r) => r.id === id); if (!f) return false;
-          const dueUp = f.status === 'deleting' || f.status === 'gone' || (f.status === 'pending' && (f.reserved_until === null || f.reserved_until < clock()));
-          if (!dueUp) return false;
-          if (old(f)) { remove('files', (r) => r.user_id === uid && r.id === id); remove('file_texts', (t) => t.user_id === uid && t.file_id === id); return true; }   // no signed link can be used any more
-          if (f.status === 'gone') return false;
-          f.status = 'gone'; f.reserved_until = null; f.updated_at = clock(); remove('file_texts', (t) => t.user_id === uid && t.file_id === id); return true;   // young: a tombstone, hidden, counting nothing
+          return remove('files', (f) => f.user_id === uid && f.id === id && (f.status === 'deleting' || (f.status === 'pending' && (f.reserved_until === null || f.reserved_until < clock())))) > 0 && (remove('file_texts', (t) => t.user_id === uid && t.file_id === id), true);   // the text cascades
         },
-        async stale() { return rows('files', uid).filter((f) => f.status === 'deleting' || (f.status === 'pending' && f.reserved_until < clock()) || (f.status === 'gone' && old(f))).map((f) => ({ id: f.id, objectPath: f.object_path })); },
-        async allPaths() { return rows('files', uid).filter((f) => f.status !== 'gone').map((f) => ({ id: f.id, objectPath: f.object_path })); },
+        async stale() { return rows('files', uid).filter((f) => f.status === 'deleting' || (f.status === 'pending' && f.reserved_until < clock())).map((f) => ({ id: f.id, objectPath: f.object_path })); },
+        async allPaths() { return rows('files', uid).map((f) => ({ id: f.id, objectPath: f.object_path })); },
       },
 
       usage: {
@@ -532,16 +525,13 @@ export function createMemoryDb({ now = null } = {}) {
     },
     async staleFiles(limit = 200) {
       V.need(Number.isInteger(limit) && limit >= 1 && limit <= 1000);
-      return tables.files.filter((f) => f.status === 'deleting' || (f.status === 'pending' && f.reserved_until < clock() - STALE_GRACE_MS) || (f.status === 'gone' && old(f))).sort((a, b) => a.updated_at - b.updated_at).slice(0, limit).map((f) => ({ userId: f.user_id, id: f.id, objectPath: f.object_path }));
+      return tables.files.filter((f) => f.status === 'deleting' || (f.status === 'pending' && f.reserved_until < clock() - STALE_GRACE_MS)).sort((a, b) => a.updated_at - b.updated_at).slice(0, limit).map((f) => ({ userId: f.user_id, id: f.id, objectPath: f.object_path }));
     },
     async dropStaleFile(userId, id) {
       V.need(UUID_RE.test(userId) && UUID_RE.test(id));
-      const f = tables.files.find((r) => r.user_id === userId && r.id === id); if (!f) return false;
-      const due = f.status === 'deleting' || f.status === 'gone' || (f.status === 'pending' && f.reserved_until < clock() - STALE_GRACE_MS);
-      if (!due) return false;
-      if (old(f)) { remove('files', (r) => r.user_id === userId && r.id === id); remove('file_texts', (t) => t.user_id === userId && t.file_id === id); syncUsage(userId); return true; }
-      if (f.status === 'gone') return false;
-      f.status = 'gone'; f.reserved_until = null; f.updated_at = clock(); remove('file_texts', (t) => t.user_id === userId && t.file_id === id); syncUsage(userId); return true;   // the trigger of the real database
+      const n = remove('files', (f) => f.user_id === userId && f.id === id && (f.status === 'deleting' || (f.status === 'pending' && f.reserved_until < clock() - STALE_GRACE_MS)));
+      if (n) { remove('file_texts', (t) => t.user_id === userId && t.file_id === id); syncUsage(userId); }   // the trigger of the real database
+      return n > 0;
     },
     async reconcileStorage() { let n = 0; for (const r of [...tables.storage_usage]) if (syncUsage(r.user_id)) n++; return n; },
     async purgeExpired() {

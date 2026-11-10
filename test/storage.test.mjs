@@ -18,18 +18,21 @@ test('pathOwner: only users/<uuid>/<segments> is an owner path; traversal, empty
   const mine = path(A); assert.throws(() => requireOwnPath(A, path(B)), /storage_forbidden/); assert.equal(requireOwnPath(A, mine), mine);
 });
 
-test('the fake: a user can write only a path that has a live reservation and only inside their own prefix; no overwrite; the link is bound to its path', async () => {
+test('the fake: every write is checked against the live reservation at that moment, only inside the caller\'s own prefix; no overwrite; no link exists that could be held', async () => {
   let reserved = new Set();
   const s = createMemoryStorage({ canInsert: (uid, p) => reserved.has(`${uid}|${p}`), baseUrl: () => 'https://x.supabase.test' });
   const a = s.forUser({ uid: A }), b = s.forUser({ uid: B }), p = path(A);
-  await assert.rejects(a.createUploadUrl(p), (e) => e.status === 403, 'no reservation, no upload');
+  await assert.rejects(a.uploadTarget(path(B)), (e) => e.status === 403, 'a target outside the caller\'s prefix is refused');
+  const up = await a.uploadTarget(p); assert.deepEqual(up, { url: `https://x.supabase.test/storage/v1/object/user-files/${p}`, method: 'POST', userToken: true }); assert.ok(!/token=/.test(up.url), 'no signed upload link');
+  await assert.rejects(s.uploadAs(A, p, bytes), (e) => e.status === 403, 'no reservation, no write');
   reserved.add(`${A}|${p}`);
-  await assert.rejects(b.createUploadUrl(p), (e) => e.status === 403, 'B cannot get a link for A\'s path even if A has a reservation');
-  reserved.add(`${B}|${p}`); await assert.rejects(b.createUploadUrl(p), (e) => e.status === 403, 'nor with a reservation of their own for it: the path is not in B\'s prefix');
-  const up = await a.createUploadUrl(p); assert.match(up.url, /^https:\/\/x\.supabase\.test\/storage\/v1\/object\/upload\/sign\/user-files\/users\//); assert.equal(up.method, 'PUT');
-  await s.uploadWithToken(tokenOf(up.url), bytes, { contentType: 'text/plain' });
-  await assert.rejects(s.uploadWithToken(tokenOf(up.url), bytes), (e) => e.status === 401, 'a link is used once');
-  await assert.rejects(a.createUploadUrl(p), (e) => e.status === 409, 'an object is never overwritten');
+  await assert.rejects(s.uploadAs(B, p, bytes), (e) => e.status === 403, 'B\'s token cannot write A\'s path even though A has a reservation');
+  reserved.add(`${B}|${p}`); await assert.rejects(s.uploadAs(B, p, bytes), (e) => e.status === 403, 'nor with a reservation of their own for it: the path is not in B\'s prefix');
+  await s.uploadAs(A, p, bytes, { contentType: 'text/plain' });
+  await assert.rejects(s.uploadAs(A, p, bytes), (e) => e.status === 409, 'an object is never overwritten');
+  reserved.delete(`${A}|${p}`); assert.equal(await a.remove([p]), 1);
+  await assert.rejects(s.uploadAs(A, p, bytes), (e) => e.status === 403, 'the reservation is gone (deleted / finished / expired): the same target refuses the bytes - the point of dropping signed upload links');
+  reserved.add(`${A}|${p}`); await s.uploadAs(A, p, bytes, { contentType: 'text/plain' });
   assert.deepEqual(await a.stat(p), { size: bytes.length, contentType: 'text/plain' });
   assert.deepEqual(await a.hash(p), { size: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') });
   assert.deepEqual(await a.hash(p, { maxBytes: 3 }), { size: bytes.length, sha256: null, tooLarge: true });
@@ -41,12 +44,11 @@ test('the fake: a user can write only a path that has a live reservation and onl
   assert.equal(await a.remove([p, path(B)]), 1, 'a delete only ever touches the caller\'s own paths'); assert.equal(s.testing.has(p), false);
 });
 
-test('the fake: 60 MB per object, expiring links, buckets are private (no public URL exists), the sweeps see everything', async () => {
+test('the fake: 60 MB per object, expiring download links, buckets are private (no public URL exists), the sweeps see everything', async () => {
   let t = 1_000_000; const s = createMemoryStorage({ now: () => t, maxObjectBytes: 10, baseUrl: () => 'https://x.supabase.test' });
-  const a = s.forUser({ uid: A }), p = path(A), up = await a.createUploadUrl(p);
-  await assert.rejects(s.uploadWithToken(tokenOf(up.url), Buffer.alloc(11)), (e) => e.status === 413);
-  t += 121 * 60_000; await assert.rejects(s.uploadWithToken(tokenOf(up.url), bytes), (e) => e.status === 401, 'the link expired (2 hours, like Supabase)');
-  const up2 = await a.createUploadUrl(p); await s.uploadWithToken(tokenOf(up2.url), Buffer.alloc(10));
+  const a = s.forUser({ uid: A }), p = path(A);
+  await assert.rejects(s.uploadAs(A, p, Buffer.alloc(11)), (e) => e.status === 413);
+  await s.uploadAs(A, p, Buffer.alloc(10));
   const dl = await a.createDownloadUrl(p, { expiresInSec: 5 }); t += 6000; await assert.rejects(s.downloadWithToken(tokenOf(dl)), (e) => e.status === 401);
   s.testing.put(`users/${A}/exports/j/part-1.zip`, Buffer.from('z'), { bucket: 'user-exports' }); s.testing.put(path(B), Buffer.from('b'));
   assert.equal((await s.service.list(`users/${A}/`)).length, 1); assert.equal(await s.service.count(`users/${A}/`, { bucket: 'user-exports' }), 1);
@@ -76,44 +78,44 @@ test('storageConfig: https only (plain http only to this computer), and both val
   assert.equal(storageConfig({ ...ENV, SUPABASE_URL: 'http://127.0.0.1:54321/' }).url, 'http://127.0.0.1:54321');
 });
 
-test('REST client, as the user: signed upload / info / signed download / remove carry the USER\'S token and the publishable key, never the service key; a foreign path never reaches the network', async () => {
+test('REST client, as the user: the upload target / info / signed download / remove carry the USER\'S token and the publishable key, never the service key; a foreign path never reaches the network', async () => {
   const p = path(A), enc = p.split('/').map(encodeURIComponent).join('/');
   const { calls, fetchImpl } = stub((url) => {
-    if (url.includes('/object/upload/sign/')) return json(200, { url: `/object/upload/sign/user-files/${enc}?token=UP` });
     if (url.includes('/object/info/')) return json(200, { size: 13, content_type: 'text/plain' });
     if (url.includes('/object/sign/')) return json(200, { signedURL: `/object/sign/user-files/${enc}?token=DL` });
     if (url.includes('/object/user-files')) return json(200, [{ name: p }]);
     throw new Error('unexpected ' + url);
   });
   const u = createSupabaseStorage({ env: ENV, fetchImpl }).forUser({ uid: A, token: 'USER-JWT' });
-  const up = await u.createUploadUrl(p); assert.deepEqual(up, { url: `https://proj.supabase.test/storage/v1/object/upload/sign/user-files/${enc}?token=UP`, method: 'PUT', expiresInSec: 7200 });
+  const up = await u.uploadTarget(p); assert.deepEqual(up, { url: `https://proj.supabase.test/storage/v1/object/user-files/${enc}`, method: 'POST', userToken: true, headers: { apikey: 'sb-publishable-key' } }, 'a plain authenticated POST of the object: the INSERT policy checks the live reservation on every write');
+  assert.equal(calls.length, 0, 'no request is made to get an upload target (there is no signed upload URL)');
   assert.deepEqual(await u.stat(p), { size: 13, contentType: 'text/plain' });
   assert.equal(await u.createDownloadUrl(p, { name: 'a b.txt', expiresInSec: 120 }), `https://proj.supabase.test/storage/v1/object/sign/user-files/${enc}?token=DL&download=a%20b.txt`);
   assert.equal(await u.remove([p]), 1);
   assert.deepEqual(calls.map((c) => [c.method, c.url.replace('https://proj.supabase.test/storage/v1', '').split('?')[0].replace(enc, '<path>')]),
-    [['POST', '/object/upload/sign/user-files/<path>'], ['GET', '/object/info/user-files/<path>'], ['POST', '/object/sign/user-files/<path>'], ['DELETE', '/object/user-files']]);
+    [['GET', '/object/info/user-files/<path>'], ['POST', '/object/sign/user-files/<path>'], ['DELETE', '/object/user-files']]);
   for (const c of calls) { assert.equal(c.headers.authorization, 'Bearer USER-JWT'); assert.equal(c.headers.apikey, 'sb-publishable-key'); assert.equal(c.redirect, 'error'); assert.ok(!JSON.stringify(c).includes('SERVICE')); }
-  assert.deepEqual(calls[2].body, { expiresIn: 120 }); assert.deepEqual(calls[3].body, { prefixes: [p] });
+  assert.deepEqual(calls[1].body, { expiresIn: 120 }); assert.deepEqual(calls[2].body, { prefixes: [p] });
   const n = calls.length;
-  await assert.rejects(u.createUploadUrl(path(B)), /storage_forbidden/); await assert.rejects(u.createDownloadUrl(path(B)), /storage_forbidden/); await assert.rejects(u.remove([path(B)]), /storage_forbidden/);
+  await assert.rejects(u.uploadTarget(path(B)), /storage_forbidden/); await assert.rejects(u.createDownloadUrl(path(B)), /storage_forbidden/); await assert.rejects(u.remove([path(B)]), /storage_forbidden/);
   assert.equal(await u.stat(path(B)), null); assert.equal(await u.hash(path(B)), null); assert.equal(calls.length, n, 'no request was made for another user\'s path');
 });
 
 test('REST client: errors map (401/403 -> forbidden, 409 -> conflict, 5xx -> storage_failed, network -> unreachable); a missing object is null; a download that is too big stops early', async () => {
   const p = path(A);
   const mk = (handler) => createSupabaseStorage({ env: ENV, fetchImpl: stub(handler).fetchImpl }).forUser({ uid: A, token: 'T' });
-  await assert.rejects(mk(() => json(403, {})).createUploadUrl(p), (e) => e.code === 'storage_forbidden' && e.status === 403);
-  await assert.rejects(mk(() => json(409, {})).createUploadUrl(p), (e) => e.code === 'storage_conflict' && e.status === 409);
-  await assert.rejects(mk(() => json(500, {})).createUploadUrl(p), (e) => e.code === 'storage_failed' && e.status === 502);
-  await assert.rejects(mk(() => json(200, { nope: 1 })).createUploadUrl(p), (e) => e.code === 'storage_failed');
-  await assert.rejects(mk(() => { throw new Error('net'); }).createUploadUrl(p), (e) => e.code === 'storage_unreachable' && e.status === 502);
+  await assert.rejects(mk(() => json(403, {})).createDownloadUrl(p), (e) => e.code === 'storage_forbidden' && e.status === 403);
+  await assert.rejects(mk(() => json(409, {})).createDownloadUrl(p), (e) => e.code === 'storage_conflict' && e.status === 409);
+  await assert.rejects(mk(() => json(500, {})).createDownloadUrl(p), (e) => e.code === 'storage_failed' && e.status === 502);
+  await assert.rejects(mk(() => json(200, { nope: 1 })).createDownloadUrl(p), (e) => e.code === 'storage_failed');
+  await assert.rejects(mk(() => { throw new Error('net'); }).createDownloadUrl(p), (e) => e.code === 'storage_unreachable' && e.status === 502);
   assert.equal(await mk(() => json(404, {})).stat(p), null);
   const body = (chunks) => ({ status: 200, ok: true, body: (async function* () { for (const c of chunks) yield c; })() });
   const real = Buffer.from('some object content'), h = await mk(() => body([real.subarray(0, 5), real.subarray(5)])).hash(p, { maxBytes: 100 });
   assert.deepEqual(h, { size: real.length, sha256: crypto.createHash('sha256').update(real).digest('hex') });
   assert.deepEqual(await mk(() => body([real.subarray(0, 5), real.subarray(5)])).hash(p, { maxBytes: 8 }), { size: real.length, sha256: null, tooLarge: true }, 'it stops as soon as the running size passes the limit');
   assert.equal(await mk(() => ({ status: 404, ok: false, body: null })).hash(p), null);
-  await assert.rejects(createSupabaseStorage({ env: {}, fetchImpl: () => {} }).forUser({ uid: A, token: 'T' }).createUploadUrl(p), (e) => e.code === 'storage_unconfigured', 'unconfigured is an error, never a silent no-op');
+  await assert.rejects(createSupabaseStorage({ env: {}, fetchImpl: () => {} }).forUser({ uid: A, token: 'T' }).uploadTarget(p), (e) => e.code === 'storage_unconfigured', 'unconfigured is an error, never a silent no-op');
 });
 
 test('REST client, the sweeps: the SERVICE key, only under users/<uuid>/, folders are walked, 1000 per request, a missing bucket is empty', async () => {

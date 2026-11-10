@@ -2,38 +2,37 @@
 // local dev stack (ELVAR_DB=memory ELVAR_DEV_AUTH=1); it refuses to run in production. Objects live in this process only.
 //   private bucket              nothing is public: every read goes through a signed link made for the owner
 //   own prefix only             an identity reaches only users/<its uid>/... (other people's objects look absent, like Row Level Security makes them)
-//   writes need a reservation   createUploadUrl asks `canInsert(uid, path)` (the database: a live pending app.files row for exactly this path)
+//   writes need a reservation   EVERY write asks `canInsert(uid, path)` at the moment of the write (the database: a live pending app.files row for exactly this path),
+//                               exactly like the policy files_upload does on every insert. The browser uploads with the user's own JWT; there is no signed upload link
+//                               that could be held and used after the reservation is gone (docs/ELVAR_MULTIUSER.md 3.3)
 //   no overwrite                an object is never replaced (no update policy; the upload fails with 409)
 //   60 MB per object            the bucket's file_size_limit
-// The "HTTP" side (what the browser's PUT / GET reach) is uploadWithToken / downloadWithToken; the dev server exposes them under /dev-supabase/storage/v1 and tests call them.
+// The "HTTP" side (what the browser's POST / GET reach) is uploadAs / downloadWithToken; the dev server exposes them under /dev-supabase/storage/v1 and tests call them.
 import crypto from 'node:crypto';
 import { dbError } from '../db/errors.js';
 import { pathOwner, requireOwnPath, USER_BUCKET, USER_BUCKETS, MAX_OBJECT_BYTES } from './index.js';
 
 if (process.env.VERCEL || process.env.NODE_ENV === 'production') throw new Error('server/storage/memory.js must never run in production');
 
-const UPLOAD_TTL_MS = 2 * 3600_000;   // Supabase fixes the life of a signed upload link at 2 hours (and it is not single-use); the database keeps a tombstone for 130 minutes because of that
+const UPLOAD_TTL_MS = 30 * 60_000;
 const enc = (p) => p.split('/').map(encodeURIComponent).join('/');
 
 export function createMemoryStorage({ canInsert = () => true, baseUrl = () => '', now = () => Date.now(), maxObjectBytes = MAX_OBJECT_BYTES } = {}) {
   const objects = new Map();    // `${bucket}/${path}` -> { bytes: Buffer, contentType, createdAt }
-  const uploads = new Map();    // token -> { bucket, path, exp }
   const downloads = new Map();  // token -> { bucket, path, exp, name }
   const key = (bucket, path) => `${bucket}/${path}`;
   const token = () => crypto.randomBytes(24).toString('base64url');
   const url = (kind, bucket, path, tok) => `${baseUrl()}/storage/v1/object/${kind}/${bucket}/${enc(path)}?token=${tok}`;
-  const sweepTokens = () => { for (const m of [uploads, downloads]) for (const [k, v] of m) if (v.exp <= now()) m.delete(k); };
+  const sweepTokens = () => { for (const [k, v] of downloads) if (v.exp <= now()) downloads.delete(k); };
 
   const forUser = ({ uid }) => {
     const me = String(uid).toLowerCase();
     const own = (path) => pathOwner(path) === me;
     return {
-      /** Needs the same things the policy files_upload needs: the caller's own path, a live reservation, and nothing there yet. */
-      async createUploadUrl(path) {
-        if (!own(path) || !canInsert(me, path)) throw dbError('storage_forbidden', 403);
-        if (objects.has(key(USER_BUCKET, path))) throw dbError('storage_conflict', 409);
-        sweepTokens(); const t = token(); uploads.set(t, { bucket: USER_BUCKET, path, exp: now() + UPLOAD_TTL_MS });
-        return { url: url('upload/sign', USER_BUCKET, path, t), method: 'PUT', expiresInSec: UPLOAD_TTL_MS / 1000 };
+      /** Where the browser POSTs the bytes (with the user's own access token; every write is checked against the live reservation at that moment). Nothing here can be held and reused. */
+      async uploadTarget(path) {
+        if (!own(path)) throw dbError('storage_forbidden', 403);
+        return { url: `${baseUrl()}/storage/v1/object/${USER_BUCKET}/${enc(path)}`, method: 'POST', userToken: true };
       },
       /** The real object's size, or null (another user's object is "not there", exactly like Row Level Security makes it). */
       async stat(path) {
@@ -65,15 +64,17 @@ export function createMemoryStorage({ canInsert = () => true, baseUrl = () => ''
 
   return {
     kind: 'memory', forUser, service,
-    /** The browser's PUT to a signed upload link. */
-    async uploadWithToken(tok, bytes, { contentType = 'application/octet-stream' } = {}) {
-      const u = uploads.get(tok);
-      if (!u || u.exp <= now()) throw Object.assign(new Error('invalid_token'), { status: 401, code: 'invalid_token' });
+    /**
+     * The browser's POST of the bytes, as the user the access token belongs to (the HTTP layer verified it). The same rules as the policy files_upload: the caller's own
+     * prefix, a live reservation for exactly this path RIGHT NOW (so a deleted, given-up, finished or expired reservation can never be written again), and no overwrite.
+     */
+    async uploadAs(uid, path, bytes, { contentType = 'application/octet-stream' } = {}) {
+      const me = String(uid).toLowerCase();
+      if (pathOwner(path) !== me || !canInsert(me, path)) throw Object.assign(new Error('new row violates row-level security policy'), { status: 403, code: 'storage_forbidden' });
       if (bytes.length > maxObjectBytes) throw Object.assign(new Error('too_large'), { status: 413, code: 'too_large' });
-      if (objects.has(key(u.bucket, u.path))) throw Object.assign(new Error('exists'), { status: 409, code: 'exists' });
-      objects.set(key(u.bucket, u.path), { bytes: Buffer.from(bytes), contentType, createdAt: now() });
-      uploads.delete(tok);
-      return { path: u.path };
+      if (objects.has(key(USER_BUCKET, path))) throw Object.assign(new Error('exists'), { status: 409, code: 'exists' });
+      objects.set(key(USER_BUCKET, path), { bytes: Buffer.from(bytes), contentType, createdAt: now() });
+      return { path };
     },
     /** The browser's GET of a signed download link. */
     async downloadWithToken(tok) {

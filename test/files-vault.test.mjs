@@ -5,9 +5,10 @@ import test from 'node:test';
 import crypto from 'node:crypto';
 import assert from 'node:assert/strict';
 import { startHarness } from './helpers/api-harness.mjs';
-import { getStorage } from '../server/storage/index.js';
+import { getStorage, pathOwner } from '../server/storage/index.js';
 import { mintVerifiedUid } from '../server/db/verified-uid.js';
 import { sweepFiles } from '../server/admin/cron.js';
+import { browserUpload, pathOfUpload } from './helpers/upload.mjs';
 
 const MB = 1024 * 1024;
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
@@ -20,12 +21,8 @@ test.before(async () => {
 });
 test.after(() => h.stop());
 
-/** What the browser does with the answer of /files/reserve: PUT the bytes to the signed link. */
-async function putTo(upload, bytes) {
-  const tok = new URL(upload.url).searchParams.get('token');
-  assert.equal(upload.method, 'PUT');
-  return st.uploadWithToken(tok, bytes, { contentType: upload.headers['content-type'] });
-}
+/** What the browser does with the answer of /files/reserve: POST the bytes to Storage with the user's own token (the live reservation is checked at that moment). */
+async function putTo(upload, bytes, uid = pathOwner(pathOfUpload(upload))) { return browserUpload(st, uid, upload, bytes); }
 const reserve = (who, bytes, name = 'メモ.txt', extra = {}) => h.call('POST', '/api/elvar/files/reserve', who, { name, size: bytes.length, sha256: sha(bytes), ...extra });
 /** reserve + upload + finalize */
 async function addFile(who, bytes, { name = 'メモ.txt', text = '', analysis = {}, extra = {}, ...rest } = {}) {
@@ -35,10 +32,10 @@ async function addFile(who, bytes, { name = 'メモ.txt', text = '', analysis = 
   return h.call('POST', `/api/elvar/files/${r.body.fileId}/finalize`, who, { text, analysis, ...rest });
 }
 
-test('upload: reserve -> PUT to the signed link -> finalize; the file is listed with its memory, text, download link, and the quota meter moves', async () => {
+test('upload: reserve -> upload with the user own token -> finalize; the file is listed with its memory, text, download link, and the quota meter moves', async () => {
   const bytes = Buffer.from('領収書 合計 12,000円 2026年11月3日'), text = '領収書 合計 12,000円 2026年11月3日';
   const r = await reserve(A, bytes, '領収書.txt', { textBytes: Buffer.byteLength(text), source: 'drop' });
-  assert.equal(r.status, 200); assert.ok(r.body.fileId); assert.match(r.body.upload.url, /\/storage\/v1\/object\/upload\/sign\/user-files\/users\/[0-9a-f-]{36}\/files\//);
+  assert.equal(r.status, 200); assert.ok(r.body.fileId); assert.match(r.body.upload.url, /\/storage\/v1\/object\/user-files\/users\/[0-9a-f-]{36}\/files\//);
   const mid = (await h.call('GET', '/api/elvar/files', A)).body;
   assert.deepEqual(mid.files, [], 'a pending upload is not in the library'); assert.equal(mid.usage.reservedBytes, bytes.length + Buffer.byteLength(text), 'but its room is reserved');
   await putTo(r.body.upload, bytes);
@@ -226,21 +223,24 @@ test('the purge does not finish while a Storage object is left behind (the resid
   assert.equal((await residualCheck(h.db, mintVerifiedUid(c, 'purge'), { storage: st })).clean, true);
 });
 
-test('a signed upload link outlives the reservation (2 hours): bytes written through it after the file was deleted are removed by the sweep once the link is dead, and a user cannot pile up reservations to hold links', async () => {
-  const c = h.mkUser(), C = await h.bearer(c); await h.call('GET', '/api/elvar/session', C);
-  const bytes = Buffer.from('late write ' + crypto.randomUUID()), r = await reserve(C, bytes, 'late.txt'), path = st.testing.list().length; void path;
-  const cancel = await h.call('POST', `/api/elvar/files/${r.body.fileId}/cancel`, C, {}); assert.equal(cancel.status, 200);
-  assert.equal((await h.call('GET', '/api/elvar/files', C)).body.usage.reservedBytes, 0, 'the room is free at once');
-  await putTo(r.body.upload, Buffer.alloc(5000, 1));   // the link still works: the object appears, and nobody counts it
-  assert.ok(st.testing.list().some((k) => k.includes(r.body.fileId)), 'the late write landed');
-  assert.equal((await h.call('GET', '/api/elvar/files', C)).body.usage.breakdown.files, 0);
-  assert.ok(st.testing.list().some((k) => k.includes(r.body.fileId)), 'a young tombstone is not swept: the link could still be used');
-  h.db.testing.advance(131 * 60_000);   // the link is dead now
-  await h.call('GET', '/api/elvar/files', C);   // the owner's next request (or the daily sweep) removes it for good
-  assert.equal(st.testing.list().some((k) => k.includes(r.body.fileId)), false, 'the late object is gone');
-  assert.equal(h.db.testing.usage(c).filesBytes, 0);
-  // the cap on recent rows: 40 reservations that were given up, the 41st is refused with a plain message
-  const d = h.mkUser(), D = await h.bearer(d); await h.call('GET', '/api/elvar/session', D);
-  for (let i = 0; i < 40; i++) { const x = await reserve(D, Buffer.from('cap ' + i + crypto.randomUUID()), `cap${i}.txt`); assert.equal(x.status, 200); await h.call('POST', `/api/elvar/files/${x.body.fileId}/cancel`, D, {}); }
-  const over = await reserve(D, Buffer.from('cap over ' + crypto.randomUUID()), 'over.txt'); assert.equal(over.status, 409); assert.equal(over.body.error, 'too_many_uploads');
+test('no link to hold: every write is checked against the live reservation - after finalize, delete, cancel or expiry the same target refuses the bytes (403) and nothing is stored', async () => {
+  const bytes = Buffer.from('held-target ' + crypto.randomUUID());
+  // a finished upload cannot be written again (no overwrite) and neither can a different object under a finished path
+  let r = await reserve(A, bytes, 'held1.txt'); assert.equal(r.status, 200); await putTo(r.body.upload, bytes);
+  assert.equal((await h.call('POST', `/api/elvar/files/${r.body.fileId}/finalize`, A, { text: '' })).status, 200);
+  await assert.rejects(putTo(r.body.upload, Buffer.from('again')), (e) => e.status === 403, 'finished: the reservation is used up');
+  // deleted: the same target now refuses
+  assert.equal((await h.call('DELETE', `/api/elvar/files/${r.body.fileId}`, A)).status, 200);
+  await assert.rejects(putTo(r.body.upload, Buffer.from('after delete')), (e) => e.status === 403, 'deleted: nothing can be written to that path again');
+  assert.equal(st.testing.has(pathOfUpload(r.body.upload)), false);
+  // cancelled before any byte went up
+  const b2 = Buffer.from('held-cancel ' + crypto.randomUUID()); r = await reserve(A, b2, 'held2.txt');
+  assert.equal((await h.call('POST', `/api/elvar/files/${r.body.fileId}/cancel`, A, {})).status, 200);
+  await assert.rejects(putTo(r.body.upload, b2), (e) => e.status === 403, 'cancelled');
+  // somebody else's token never writes my reserved path, with or without a reservation of their own
+  const b3 = Buffer.from('held-cross ' + crypto.randomUUID()); r = await reserve(A, b3, 'held3.txt');
+  await assert.rejects(putTo(r.body.upload, b3, b), (e) => e.status === 403, 'B cannot write into A\'s reserved path');
+  await putTo(r.body.upload, b3); assert.equal((await h.call('POST', `/api/elvar/files/${r.body.fileId}/cancel`, A, {})).status, 200);
+  // the room is free again at once and nothing of it lingers: no recent-upload cap, no hidden rows
+  const used = (await h.call('GET', '/api/elvar/files', A)).body.usage; assert.equal(used.reservedBytes, 0);
 });
