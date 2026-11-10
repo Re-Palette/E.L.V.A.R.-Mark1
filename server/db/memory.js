@@ -9,6 +9,7 @@ import { dbError } from './errors.js';
 import * as V from './validate.js';
 import { requireVerifiedUid } from './verified-uid.js';
 import { REGISTRY } from '../rights/registry.js';
+import { envMaxFileBytes } from '../config/platform-limits.js';
 
 const DEFAULT_QUOTA = 524288000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -41,6 +42,7 @@ export function createMemoryDb({ now = null } = {}) {
   const users = new Set();
   const profilesOfUsers = new Map();   // uid -> { email, confirmed, createdAt, lastSignInAt } (what auth.users holds)
   const receipts = [];
+  let platformMaxFile = envMaxFileBytes() ?? V.FILE_MAX_BYTES;   // app.platform_config max_file_bytes (migration 20)
   const ownerOf = (t) => REGISTRY.find((e) => e.table === t).ownerColumn;
 
   const rows = (t, uid) => tables[t].filter((r) => r[ownerOf(t)] === uid);
@@ -461,7 +463,7 @@ export function createMemoryDb({ now = null } = {}) {
           let a = find('accounts', uid);
           if (!a) { a = { user_id: uid, status: 'active', storage_quota_bytes: DEFAULT_QUOTA, hard_limits: {}, suspended_reason: null, created_at: clock() }; tables.accounts.push(a); }
           if (a.status !== 'active') throw dbError('conflict', 409);
-          const hl = a.hard_limits?.maxFileBytes, maxf = Math.min(V.FILE_MAX_BYTES, typeof hl === 'number' && hl >= 0 ? hl : V.FILE_MAX_BYTES);
+          const hl = a.hard_limits?.maxFileBytes, maxf = Math.min(platformMaxFile, typeof hl === 'number' && hl >= 0 ? hl : platformMaxFile);
           if (v.size > maxf) throw dbError('file_too_large', 413);
           if (!v.allowDuplicate) { const d = rows('files', uid).filter((f) => f.sha256 === v.sha256 && f.status === 'ready').sort((p, q) => p.created_at - q.created_at)[0]; if (d) return { duplicate: { id: d.id, name: d.name } }; }
           if (rows('files', uid).filter((f) => f.status === 'pending' && f.reserved_until > clock()).length >= 20) throw dbError('conflict', 409);
@@ -617,6 +619,8 @@ export function createMemoryDb({ now = null } = {}) {
     async oauthPendingOwner(stateHash, provider) { V.need(V.isBytes(stateHash, 32) && V.OAUTH_FLOW_KINDS.includes(provider)); const r = tables.oauth_pending.find((x) => sameBytes(x.state_hash, stateHash) && x.provider === provider && live(x)); return r ? r.user_id : null; },
     async signupMode() { return signupMode; },
     async accountCount() { return tables.accounts.length; },
+    async maxFileBytes() { return platformMaxFile; },
+    async setMaxFileBytes(n) { V.need(Number.isInteger(n) && n >= 1048576 && n <= 5368709120); platformMaxFile = n; return n; },
     async deviceLookup(hash) { V.need(V.isBytes(hash, 32)); const r = tables.devices.find((x) => sameBytes(x.token_hash, hash)); return r ? { userId: r.user_id, deviceId: r.id, scopes: [...r.scopes] } : null; },
   };
 
@@ -654,7 +658,9 @@ export function createMemoryDb({ now = null } = {}) {
       makeAdmin(uid) { if (!find('admins', uid)) tables.admins.push({ user_id: uid, granted_by: null, granted_at: clock() }); },
       advance(ms) { offset += ms; },
       /** What the Storage policy files_upload asks the database: does this user have a live reservation for exactly this path? */
-      hasReservation: (uid, path) => tables.files.some((f) => f.user_id === uid && f.object_path === path && f.status === 'pending' && f.reserved_until > clock()),
+      hasReservation: (uid, path) => find('accounts', uid)?.status === 'active' && tables.files.some((f) => f.user_id === uid && f.object_path === path && f.status === 'pending' && f.reserved_until > clock()),
+      /** What the Storage policies files_read / files_delete ask the database about an object path of this user: the status of its row, and whether the reservation has run out. */
+      fileState: (uid, path) => { const f = tables.files.find((x) => x.user_id === uid && x.object_path === path); return f ? { status: f.status, expired: f.reserved_until === null || f.reserved_until < clock() } : null; },
       usage: (uid) => usageOf(uid),
       now: () => clock(),
       setSignupMode(m) { signupMode = m; },

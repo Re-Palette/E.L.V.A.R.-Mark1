@@ -8,6 +8,7 @@ import { setAppMetadata } from '../db/service.js';
 import { purgeDue } from '../rights/purge.js';
 import { getStorage, USER_BUCKET } from '../storage/index.js';
 import { sweepExports } from '../rights/export-job.js';
+import { envMaxFileBytes } from '../config/platform-limits.js';
 
 export async function dailyCron({ user: ctx }, { env = process.env, setClaim = setAppMetadata, purge = purgeDue } = {}) {
   const out = { swept: null, admin: null, purge: null, errors: [] };
@@ -22,6 +23,7 @@ export async function dailyCron({ user: ctx }, { env = process.env, setClaim = s
   });
   out.purge = await step('purge', async () => purge(await (await import('../db/index.js')).getDb()));
   out.files = await step('files-sweep', () => sweepFiles(ctx.system));
+  out.limits = await step('limits-sync', async () => { const n = envMaxFileBytes(env); if (n === null) return { synced: false }; return { synced: true, maxFileBytes: await ctx.system.setMaxFileBytes(n) }; });
   out.exports = await step('exports-sweep', async () => sweepExports({ system: ctx.system, storage: await getStorage() }));
   out.reconciled = await step('storage-reconcile', () => ctx.system.reconcileStorage());
   return { status: 200, body: out };

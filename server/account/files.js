@@ -6,7 +6,7 @@
 //   delete     removes the Storage object and the row: the bytes are free again
 //   search     the user's own files, ranked on the server (the same answer on every device and for the sub-agents)
 // Text is read in the browser (a Worker); the server only receives the result and checks its shape and size.
-import { userStorage } from '../storage/index.js';
+import { userStorage, getStorage, USER_BUCKET } from '../storage/index.js';
 import { searchFiles as rankFiles, queryTerms, parseDateQuery, searchResultForModel } from '../../web/src/file-index.js';
 import { indexOf, metaOf } from '../../shared/file-record.js';
 
@@ -41,9 +41,17 @@ export function cleanName(name) {
 /** A file row without its Storage path (that never leaves the server). */
 const publicFile = ({ objectPath, status, reservedUntil, ...f }) => { void objectPath; void status; void reservedUntil; return f; };
 
+// the platform's per-file limit (app.platform_config; refreshed at most every 30 s per instance)
+let platformMax = 62914560, platformMaxAt = 0;
+async function loadPlatformMax(user) {
+  if (Date.now() - platformMaxAt < 30_000) return platformMax;
+  try { platformMax = await user.system.maxFileBytes(); platformMaxAt = Date.now(); } catch { /* keep the last known value */ }
+  return platformMax;
+}
+export const _resetPlatformMax = () => { platformMax = 62914560; platformMaxAt = 0; };
 const usageView = (u, acct) => ({
   usedBytes: u.filesBytes + u.textBytes + u.notesBytes + u.messagesBytes, reservedBytes: u.reservedBytes, quotaBytes: acct?.storageQuotaBytes ?? 524288000,
-  breakdown: { files: u.filesBytes, text: u.textBytes, notes: u.notesBytes, messages: u.messagesBytes }, maxFileBytes: Math.min(62914560, Number(acct?.hardLimits?.maxFileBytes) >= 0 && acct?.hardLimits?.maxFileBytes !== undefined ? Number(acct.hardLimits.maxFileBytes) : 62914560),
+  breakdown: { files: u.filesBytes, text: u.textBytes, notes: u.notesBytes, messages: u.messagesBytes }, maxFileBytes: Math.min(platformMax, Number(acct?.hardLimits?.maxFileBytes) >= 0 && acct?.hardLimits?.maxFileBytes !== undefined ? Number(acct.hardLimits.maxFileBytes) : platformMax),
 });
 
 /** Remove what the caller left behind: deleted files whose object is still there, and uploads that ran out of time. Best effort; the daily sweep does the same for everybody. */
@@ -51,8 +59,7 @@ async function sweepOwn(user) {
   try {
     const stale = await user.db((r) => r.files.stale());
     if (!stale.length) return 0;
-    const st = await userStorage(user);
-    await st.remove(stale.map((s) => s.objectPath));
+    await (await getStorage()).service.remove(stale.map((s) => s.objectPath), { bucket: USER_BUCKET });   // the server's own cleanup of this user's dead rows (an expired reservation's object is not the owner's to touch)
     let n = 0; for (const s of stale) if (await user.db((r) => r.files.finishDelete(s.id))) n++;
     return n;
   } catch (e) { console.error('[elvar] files: sweep of stale uploads failed:', e?.code || e?.message); return 0; }
@@ -60,6 +67,7 @@ async function sweepOwn(user) {
 
 // ---------------------------------------------------------------- the library
 export const listFiles = guard(async ({ user }) => {
+  await loadPlatformMax(user);
   await sweepOwn(user);
   return user.db(async (r) => ok({ files: (await r.files.list()).map(publicFile), usage: usageView(await r.usage.storage(), await r.accounts.get()) }));
 });
@@ -107,7 +115,8 @@ export const reserveFile = guard(async ({ user, body }) => {
   const size = body?.size, textBytes = body?.textBytes ?? 0, sha256 = body?.sha256;
   if (!Number.isInteger(size) || size < 1) return bad(400, 'bad_size', '空のファイルは取り込めません');
   if (!Number.isInteger(textBytes) || textBytes < 0 || textBytes > 4000000 || !/^[0-9a-f]{64}$/.test(String(sha256 || ''))) return bad(400, 'bad_request', '内容の確認情報が正しくありません');
-  if (size > 62914560) return bad(413, 'file_too_large', `1ファイルは ${mb(62914560)} までです。このファイルは大きすぎるため、保存できません`, { maxFileBytes: 62914560 });
+  const maxFile = await loadPlatformMax(user);
+  if (size > maxFile) return bad(413, 'file_too_large', `1ファイルは ${mb(maxFile)} までです。このファイルは大きすぎるため、保存できません`, { maxFileBytes: maxFile });
   if (!(await user.cfg.hit('files-reserve', 3600, 600))) return bad(429, 'rate_limited', '取り込みの回数が多すぎます。しばらくしてからにしてください');
   await sweepOwn(user);   // an upload that ran out of time gives its reservation back
   const source = SOURCES.has(body?.source) ? body.source : 'picker';
@@ -144,10 +153,11 @@ export const finalizeFile = guard(async ({ user, params, body }) => {
   if (!(await user.cfg.hit('files-finalize', 3600, 600))) return bad(429, 'rate_limited', '取り込みの回数が多すぎます。しばらくしてからにしてください');
   const file = await user.db((r) => r.files.get(params.id)); if (!file || file.status === 'deleting') return nf();
   if (file.status === 'ready') return ok({ file: publicFile(file) });
-  const st = await userStorage(user);
-  const discard = async () => { try { await st.remove([file.objectPath]); await user.db(async (r) => { await r.files.beginDelete(file.id); await r.files.finishDelete(file.id); }); } catch (e) { console.error('[elvar] files: could not discard a rejected upload:', e?.code || e?.message); } };
+  // The owner's token cannot read an unverified object (policy files_read, migration 20): the bytes are measured with the service key, and a rejected object is removed with it.
+  const svc = (await getStorage()).service;
+  const discard = async () => { try { await svc.remove([file.objectPath], { bucket: USER_BUCKET }); await user.db(async (r) => { await r.files.beginDelete(file.id); await r.files.finishDelete(file.id); }); } catch (e) { console.error('[elvar] files: could not discard a rejected upload:', e?.code || e?.message); } };
   // the REAL object, not what the browser says about it: its size and SHA-256 must be what was reserved
-  const real = await st.hash(file.objectPath, { maxBytes: file.size });
+  const real = await svc.hash(file.objectPath, { bucket: USER_BUCKET, maxBytes: file.size });
   if (!real) return bad(409, 'upload_missing', 'アップロードされたファイルが見つかりません。もう一度取り込んでください');
   if (real.tooLarge || real.size !== file.size || real.sha256 !== file.sha256) { await discard(); return bad(422, 'upload_mismatch', 'アップロードされたファイルの中身が、申告と一致しませんでした。保存していません。もう一度取り込んでください'); }
   const t = typeof body?.text === 'string' ? body.text : '';

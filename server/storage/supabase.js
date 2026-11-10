@@ -6,7 +6,7 @@
 // (POST object/<bucket>/<path> by the browser, object/info, object/authenticated, POST object/sign, DELETE object/<bucket>) and are covered by test/storage-supabase.test.mjs with a stub.
 import crypto from 'node:crypto';
 import { dbError } from '../db/errors.js';
-import { storageListUser, storageRemove, storagePut, storageGet, storageSign } from '../db/service.js';
+import { storageListUser, storageRemove, storagePut, storageGet, storageSign, storageHash } from '../db/service.js';
 import { USER_BUCKET, MAX_OBJECT_BYTES, pathOwner, requireOwnPath } from './index.js';
 
 const TIMEOUT_MS = 15_000, HASH_TIMEOUT_MS = 60_000;
@@ -99,6 +99,8 @@ export function createSupabaseStorage({ env = process.env, fetchImpl = null } = 
     async get(path, { bucket = USER_BUCKET } = {}) { return storageGet(bucket, path, { env, fetchImpl: fetchImpl || undefined }); },
     async sign(path, { bucket = USER_BUCKET, expiresInSec = 3600, name = '' } = {}) { return storageSign(bucket, path, expiresInSec, { name, env, fetchImpl: fetchImpl || undefined }); },
     async count(prefix, { bucket = USER_BUCKET } = {}) { return (await this.list(prefix, { bucket })).length; },
+    /** Size + SHA-256 of an object with the service key (finalize): the owner's token cannot read an unverified object (policy files_read). */
+    async hash(path, { bucket = USER_BUCKET, maxBytes = MAX_OBJECT_BYTES } = {}) { return storageHash(bucket, path, { maxBytes, env, fetchImpl: fetchImpl || undefined }); },
   };
   return { kind: 'supabase', forUser, service };
 }

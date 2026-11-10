@@ -127,7 +127,7 @@ export const FILE_KINDS = Object.freeze(['pdf', 'image', 'text', 'office', 'othe
 export const HARD_LIMIT_KEYS = Object.freeze(['maxFileBytes', 'requestsPerMinute', 'liveTokensPerHour', 'connectorCallsPerDay', 'exportsPerDay', 'maxConnectors', 'maxNotes', 'geminiCallsPerDay', 'groqCallsPerDay', 'exaCallsPerDay', 'newsdataCallsPerDay', 'sarashinaCallsPerDay', 'googleCallsPerDay']);   // the catalog of app.admin_set_limits (migration 18)
 export const FILE_MAX_BYTES = 62914560;          // O1: 60 MB per file (accounts.hard_limits.maxFileBytes can only lower it)
 export const FILE_TEXT_MAX_BYTES = 4000000;      // the extracted text of one file
-export const FILE_RESERVE_MINUTES = 30;
+export const FILE_RESERVE_MINUTES = 15;   // migration 20: an unverified object may sit in the bucket for at most this long
 export const FILE_ANALYSIS_MAX = 90000;          // characters of the JSON "memory" (the column check is 100000 bytes)
 const SHA_RE = /^[0-9a-f]{64}$/;
 export const isSha256 = (s) => typeof s === 'string' && SHA_RE.test(s);

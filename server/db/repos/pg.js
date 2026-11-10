@@ -629,6 +629,9 @@ export function pgSystem(sql) {
     /** The sign-up policy (open | invite | closed) the Auth hook enforces: the single source. */
     async signupMode() { const [r] = await sql`select app.platform_signup_mode() as m`; return r.m; },
     async accountCount() { const [r] = await sql`select app.account_count() as n`; return Number(r.n); },
+    /** The per-file limit of the platform (app.platform_config max_file_bytes; the bucket's file_size_limit follows it by trigger). */
+    async maxFileBytes() { const [r] = await sql`select app.platform_max_file_bytes() as n`; return Number(r.n); },
+    async setMaxFileBytes(n) { V.need(Number.isInteger(n) && n >= 1048576 && n <= 5368709120); const [r] = await sql`select app.set_max_file_bytes(${n}) as n`; return Number(r.n); },
     async deviceLookup(hash) {
       V.need(V.isBytes(hash, 32));
       const [r] = await sql`select user_id, device_id, scopes from app.device_lookup(${V.toBuf(hash)})`;

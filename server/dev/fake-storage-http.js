@@ -8,7 +8,7 @@ import { getVerifier, bearerFrom } from '../auth/jwt.js';
 if (process.env.VERCEL || process.env.NODE_ENV === 'production') throw new Error('server/dev/fake-storage-http.js must never run in production');
 
 const MAX_BODY = 62914560 + 1024 * 1024;   // the bucket limit (60 MB) plus a little: anything bigger is refused by the storage itself
-const UPLOAD = /^\/storage\/v1\/object\/user-files\/(.+)$/, DOWNLOAD = /^\/storage\/v1\/object\/sign\/(?:user-files|user-exports)\/(.+)$/;
+const UPLOAD = /^\/storage\/v1\/object\/user-files\/(.+)$/, DOWNLOAD = /^\/storage\/v1\/object\/sign\/(user-files|user-exports)\/(.+)$/;
 
 function readBody(req, max) {
   return new Promise((resolve, reject) => {
@@ -38,8 +38,8 @@ export function createFakeStorageHttp({ storage, base = '/dev-supabase', env = p
           const r = await storage.uploadAs(who.uid.uid, p, bytes, { contentType: String(req.headers['content-type'] || 'application/octet-stream').split(';')[0] });
           json(200, { Key: `user-files/${p}`, path: r.path }); return true;
         }
-        if (req.method === 'GET' && DOWNLOAD.exec(rel)) {
-          const d = await storage.downloadWithToken(String(query.token || ''));
+        if (req.method === 'GET' && (m = DOWNLOAD.exec(rel))) {
+          const d = await storage.downloadWithToken(String(query.token || ''), { bucket: m[1], path: m[2].split('/').map(decodeURIComponent).join('/') });
           send(res, 200, d.bytes, { 'content-type': 'application/octet-stream', ...(query.download ? { 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(String(query.download))}` } : {}) }); return true;
         }
         json(404, { error: 'not_found' });

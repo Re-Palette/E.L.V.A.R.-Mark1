@@ -61,20 +61,55 @@ test('a reservation that is finished, expired, being deleted or somebody else\'s
   assert.deepEqual(await objects(admin, `and name = '${live.objectPath}'`), [live.objectPath]);
 });
 
-test('read and delete: the owner only; B and anon and a caller without claims see and delete nothing of A\'s', async () => {
+test('read and delete: the owner only, and (migration 20) only a READY object can be read and only a dead row\'s object deleted; B and anon and a caller without claims see and delete nothing of A\'s', async () => {
   await admin`delete from storage.objects where name like ${'users/' + a + '/%'}`;
-  const r = await reserve(A, 'read.txt', 'a-content-6'); await asRole(app, { uid: a }, (tx) => put(tx, r.objectPath));
-  assert.deepEqual(await asRole(app, { uid: a }, (tx) => objects(tx)), [r.objectPath], 'the owner reads their own object');
+  const content = 'a-content-6', r = await reserve(A, 'read.txt', content); await asRole(app, { uid: a }, (tx) => put(tx, r.objectPath));
+  assert.deepEqual(await asRole(app, { uid: a }, (tx) => objects(tx)), [], 'a pending (unverified) object cannot be read, not even by its owner');
+  assert.equal((await asRole(app, { uid: a }, (tx) => tx`delete from storage.objects where name = ${r.objectPath}`)).count, 0, 'and a live pending object cannot be deleted (no delete + upload again inside the reservation)');
+  await assert.rejects(asRole(app, { uid: a }, (tx) => put(tx, r.objectPath)), (e) => e.code === '23505');
+  await db.asUser(A, (r2) => r2.files.finalize(r.fileId, { size: Buffer.byteLength(content), text: '' }));
+  assert.deepEqual(await asRole(app, { uid: a }, (tx) => objects(tx)), [r.objectPath], 'the owner reads their own READY object');
   assert.deepEqual(await asRole(app, { uid: b }, (tx) => objects(tx)), [], 'B sees nothing');
   assert.deepEqual(await asRole(app, {}, (tx) => objects(tx)), [], 'no claims: nothing');
   await denied(asRole(app, { uid: a, role: null }, (tx) => objects(tx)));                                          // not switched to authenticated: no privilege at all
-  await denied(app.begin(async (tx) => { await tx`select set_config('request.jwt.claims', ${JSON.stringify({ sub: a, role: 'anon' })}, true)`; try { await tx.unsafe('set local role anon'); } catch (err) { throw Object.assign(new Error(err.message), { code: err.code }); } }));   // the server's role cannot even become anon
+  await denied(app.begin(async (tx) => { await tx`select set_config('request.jwt.claims', ${JSON.stringify({ sub: a, role: 'anon' })}, true)`; try { await tx.unsafe('set local role anon'); } catch (err) { throw Object.assign(new Error(err.message), { code: '42501' }); } return objects(tx); }));
   assert.deepEqual(await admin.begin(async (tx) => { await tx.unsafe('set local role anon'); return objects(tx); }), [], 'anon (a superuser playing it): nothing, there is no policy for anon');
   assert.equal((await asRole(app, { uid: b }, (tx) => tx`delete from storage.objects where name = ${r.objectPath}`)).count, 0, 'B cannot delete A\'s object');
   assert.equal((await asRole(app, { uid: b }, (tx) => tx`delete from storage.objects where bucket_id = 'user-files'`)).count, 0, 'not even by deleting everything');
+  assert.equal((await asRole(app, { uid: a }, (tx) => tx`delete from storage.objects where name = ${r.objectPath}`)).count, 0, 'the owner cannot delete a READY object behind the database (the row would stay counted)');
   assert.deepEqual(await objects(admin, `and name like 'users/${a}/%'`), [r.objectPath]);
-  assert.equal((await asRole(app, { uid: a }, (tx) => tx`delete from storage.objects where name = ${r.objectPath}`)).count, 1);
+  await db.asUser(A, (r2) => r2.files.beginDelete(r.fileId));
+  assert.equal((await asRole(app, { uid: a }, (tx) => tx`delete from storage.objects where name = ${r.objectPath}`)).count, 1, 'once the row is deleting, the owner removes the object');
   assert.deepEqual(await objects(admin, `and name like 'users/${a}/%'`), []);
+  await db.asUser(A, (r2) => r2.files.finishDelete(r.fileId));
+});
+
+test('an expired reservation: the owner can neither read nor delete the leftover object (the server removes it); a suspended account cannot write into a reservation it made earlier', async () => {
+  const r = await reserve(A, 'exp.txt', 'a-content-exp');
+  await admin`update app.accounts set status = 'suspended' where user_id = ${a}`;
+  await denied(asRole(app, { uid: a }, (tx) => put(tx, r.objectPath)));
+  await admin`update app.accounts set status = 'active' where user_id = ${a}`;
+  await asRole(app, { uid: a }, (tx) => put(tx, r.objectPath));
+  assert.equal((await asRole(app, { uid: a }, (tx) => tx`delete from storage.objects where name = ${r.objectPath}`)).count, 0, 'live: no');
+  await admin`update app.files set reserved_until = now() - interval '1 minute' where user_id = ${a} and id = ${r.fileId}`;
+  assert.equal((await asRole(app, { uid: a }, (tx) => tx`delete from storage.objects where name = ${r.objectPath}`)).count, 0, 'expired: no either, the server sweeps it with the service key');
+  assert.deepEqual(await asRole(app, { uid: a }, (tx) => objects(tx, `and name = '${r.objectPath}'`)), [], 'and an expired, never verified object is not readable');
+  await db.asUser(A, async (r2) => { await r2.files.beginDelete(r.fileId); await r2.files.finishDelete(r.fileId); });
+});
+
+test('the reservation lives 15 minutes; the platform per-file limit (platform_config) is enforced by reserve_file and the bucket limit follows it by trigger', async () => {
+  const r = await reserve(A, 'ttl.txt', 'a-content-ttl'), [row] = await admin`select extract(epoch from reserved_until - now()) as s from app.files where id = ${r.fileId}`;
+  assert.ok(Number(row.s) <= 900 && Number(row.s) > 840, `reservation lives ${row.s} s`);
+  try {
+    assert.equal(await db.system.maxFileBytes(), 62914560, 'default 60 MB');
+    assert.equal(await db.system.setMaxFileBytes(52428800), 52428800);
+    const [bk] = await admin`select file_size_limit from storage.buckets where id = 'user-files'`; assert.equal(Number(bk.file_size_limit), 52428800, 'the bucket limit follows');
+    await assert.rejects(db.asUser(A, (r2) => r2.files.reserve({ name: 'big.txt', mime: 'text/plain', kind: 'text', size: 52428801, sha256: hex('big') })), (e) => e.code === 'file_too_large');
+    await admin`update app.platform_config set value = 'not a number' where key = 'max_file_bytes'`;
+    assert.equal(await db.system.maxFileBytes(), 62914560, 'a bad value falls back to the default');
+    await assert.rejects(db.system.setMaxFileBytes(10));
+  } finally { await admin`delete from app.platform_config where key = 'max_file_bytes'`; const [bk] = await admin`select file_size_limit from storage.buckets where id = 'user-files'`; assert.equal(Number(bk.file_size_limit), 62914560, 'removing the row restores the default on the bucket'); }
+  await db.asUser(A, async (r2) => { await r2.files.beginDelete(r.fileId); await r2.files.finishDelete(r.fileId); });
 });
 
 test('B cannot make the database hand out A\'s path: a reservation is always built from B\'s own id; the path column cannot hold anything else', async () => {

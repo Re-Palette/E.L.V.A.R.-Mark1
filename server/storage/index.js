@@ -40,7 +40,9 @@ export async function getStorage(env = process.env) {
     const db = await getDb(env);
     if (cached && cachedKey === 'memory' && cached.db === db) return cached.storage;
     const { createMemoryStorage } = await import('./memory.js');
-    const storage = createMemoryStorage({ canInsert: db.testing.hasReservation, baseUrl: () => String(process.env.SUPABASE_URL || '').replace(/\/+$/, '') });
+    const storage = createMemoryStorage({ canInsert: db.testing.hasReservation,
+      canRead: (uid, p) => ['ready', 'deleting'].includes(db.testing.fileState(uid, p)?.status),
+      canDelete: (uid, p) => db.testing.fileState(uid, p)?.status === 'deleting', baseUrl: () => String(process.env.SUPABASE_URL || '').replace(/\/+$/, '') });
     cached = { db, storage }; cachedKey = 'memory';
     return storage;
   }

@@ -108,3 +108,14 @@ export async function storageSign(bucket, path, expiresInSec, { name = '', ...op
   if (typeof rel !== 'string' || !rel.startsWith('/object/sign/')) throw dbError('storage_admin_failed', 502);
   return `${serviceConfig(opts.env || process.env).url}/storage/v1${rel}${name ? `${rel.includes('?') ? '&' : '?'}download=${encodeURIComponent(name)}` : ''}`;
 }
+
+/** Size and SHA-256 of one object, streamed with the service key (never more than one chunk in memory); stops as soon as it is larger than maxBytes. null when it is not there. */
+export async function storageHash(bucket, path, { maxBytes = 62914560, ...opts } = {}) {
+  if (!STORAGE_BUCKET_RE.test(String(bucket)) || !okPath(path)) throw dbError('bad_path', 500);
+  const r = await storageRaw('GET', `/object/${bucket}/${encPath(path)}`, { ...opts, timeoutMs: 120_000 });
+  if (r.status === 404 || r.status === 400) return null;
+  if (!r.ok || !r.body) throw dbError('storage_admin_failed', 502);
+  const { createHash } = await import('node:crypto'), h = createHash('sha256'); let size = 0;
+  for await (const chunk of r.body) { size += chunk.length; if (size > maxBytes) { try { await r.body.cancel?.(); } catch { /* ignore */ } return { size, sha256: null, tooLarge: true }; } h.update(chunk); }
+  return { size, sha256: h.digest('hex') };
+}
