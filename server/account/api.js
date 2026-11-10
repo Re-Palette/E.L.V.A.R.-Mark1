@@ -147,14 +147,6 @@ export async function removeDevice({ user, params }) {
   return (await user.db((r) => r.devices.revoke(params.id))) ? { status: 200, body: { ok: true } } : bad(404, 'not_found');
 }
 
-// ---- usage (the caller's own numbers)
-export async function getUsage({ user }) {
-  const to = new Date(), from = new Date(to.getTime() - 29 * 86400_000), d = (x) => x.toISOString().slice(0, 10);
-  return { status: 200, body: await user.db(async (r) => ({
-    from: d(from), to: d(to), daily: await r.usage.daily({ from: d(from), to: d(to) }), limits: await r.usageLimits.list(), storage: await r.usage.storage(), quotaBytes: user.account.storageQuotaBytes,
-  })) };
-}
-
 // ---- the account: export and delete (principle 7)
 export async function getDeletion({ user }) { return { status: 200, body: { status: user.account.status, deletion: await user.db((r) => r.accounts.deletion()) } }; }
 

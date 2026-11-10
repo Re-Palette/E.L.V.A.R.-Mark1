@@ -8,7 +8,7 @@ import { passwordProblem } from '../auth/screens.js';
 const when = (v) => { try { return new Date(v).toLocaleString('ja-JP', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }); } catch { return ''; } };
 const mb = (b) => `${(Number(b || 0) / 1048576).toFixed(1)} MB`;
 
-export function mountAccount(root) {
+export function mountAccount(root, { openUsage = () => {} } = {}) {
   const msg = (t, cls = '') => { const m = root.querySelector('#ea-msg'); if (m) { m.textContent = t; m.className = 'ev-msg ' + cls; } };
   const $ = (id) => root.querySelector('#' + id);
   async function fresh() { try { await authClient().refresh(); } catch { /* the call below reports a problem */ } }
@@ -22,6 +22,7 @@ export function mountAccount(root) {
       <section class="ev-sec"><h3>ログイン中のアカウント</h3>
         <div class="ev-kv"><span>メールアドレス</span><span>${esc(s?.user?.email || me?.email || '')}</span><span>ログイン方法</span><span>${google ? 'Google' : 'メールとパスワード'}</span>
           <span>保存容量</span><span>${esc(mb(used))} / ${esc(mb(u?.quotaBytes ?? s?.account?.storageQuotaBytes))}</span><span>直近30日のAI呼び出し</span><span>${esc(calls)} 回</span></div>
+        <div class="ev-btns"><button class="ev-btn" id="ea-usage" type="button">利用状況を見る・上限を設定する</button></div>
         <div class="ev-btns"><button class="ev-btn" id="ea-out" type="button">この端末からログアウト</button><button class="ev-btn" id="ea-out-all" type="button">すべての端末からログアウト</button></div>
         <p class="ev-note">ログアウトすると、この端末に保存したあなたの履歴やファイルのキャッシュも消えます（サーバーのデータは残ります）。</p>
       </section>
@@ -49,6 +50,7 @@ export function mountAccount(root) {
   root.addEventListener('click', async (e) => {
     const rm = e.target.closest('[data-rm]');
     if (rm) { const r = await api(`/api/elvar/devices/${encodeURIComponent(rm.dataset.rm)}`, { method: 'DELETE' }); if (r.status === 200) { await refresh(); msg('使えなくしました', 'ok'); } else msg('できませんでした', 'warn'); return; }
+    if (e.target.closest('#ea-usage')) return openUsage();
     if (e.target.closest('#ea-out')) return logout({});
     if (e.target.closest('#ea-out-all')) return logout({ everywhere: true });
     if (e.target.closest('#ea-pw')) {

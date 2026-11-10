@@ -228,7 +228,7 @@ export class GeminiLiveSession {
     if (r.status === 401) { await requireLogin(); r = await post(); }   // the sign-in screen (no window.prompt)
     if (!r.ok) {
       const body = await r.json().catch(() => ({}));
-      throw new Error(body.error || `token request failed (${r.status})`);
+      throw Object.assign(new Error(body.message || body.error || `token request failed (${r.status})`), body.error === 'soft_limit' || body.error === 'hard_limit' ? { code: body.error, limitMessage: body.message } : {});   // a usage limit: the server's Japanese sentence says which and why
     }
     const data = await r.json();
     if (data.cacheKey) { this.cacheKey = data.cacheKey; try { localStorage.setItem('elvar_greet_key', data.cacheKey); } catch {} }
@@ -249,7 +249,7 @@ export class GeminiLiveSession {
     }
     try { return await this.connectLive({}); }
     catch (e) {
-      if (!flagActive('elvar_plain_asr') && !QUOTA_RE.test(e?.message || '') && !/unauthorized|アクセストークン/.test(e?.message || '')) {   // maybe the language hints were rejected: retry once without them
+      if (!e?.code && !flagActive('elvar_plain_asr') && !QUOTA_RE.test(e?.message || '') && !/unauthorized|アクセストークン/.test(e?.message || '')) {   // maybe the language hints were rejected: retry once without them
         lsSet('elvar_plain_asr', String(Date.now() + 6 * 3600_000));   // 6 h, then the language hints are tried again
         try { return await this.connectLive({}); } catch (e2) { lsSet('elvar_plain_asr', '0'); e = e2; }
       }

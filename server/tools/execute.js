@@ -9,6 +9,7 @@ import { findConnectorTool } from '../connectors/index.js';
 import { ConnectorError } from '../connectors/errors.js';
 import { cleanMessage } from '../connectors/manifest.js';
 import { validateArgs, coerceArgs } from './validate.js';
+import { UsageLimitError } from '../usage-limits.js';
 
 export { coerceArgs };
 const audit = (o) => console.log('[audit] ' + JSON.stringify({ at: new Date().toISOString(), ...o }));
@@ -31,7 +32,7 @@ export async function executeTool({ tool, args = {}, ticket }) {
     if (!googleToolAllowed(t)) return { status: 403, body: { ok: false, error: `${serviceLabel(tool)}は、Googleの連携で許可されていません。設定の「Google」でサービスを選んで、もう一度連携してください` } };
   }
   else if (t.enabled && !t.enabled()) return { status: 503, body: { ok: false, error: `${tool} は使えません（必要な設定が未完了です）` } };
-  else if (!t.enabled && !googleConfigured() && !['current_datetime', 'weather', 'news', 'deep_think', 'jp_text', 'web_search', 'web_sources', 'briefing_data'].includes(tool)) return { status: 503, body: { ok: false, error: NOT_SET } };
+  else if (!t.enabled && !googleConfigured() && !['current_datetime', 'weather', 'news', 'deep_think', 'jp_text', 'web_search', 'web_sources', 'briefing_data', 'usage_report'].includes(tool)) return { status: 503, body: { ok: false, error: NOT_SET } };
   args = coerceArgs(t.schema, args);
   const bad = validateArgs(t.schema, args);
   if (bad) return { status: 400, body: { ok: false, error: bad } };
@@ -66,6 +67,7 @@ export async function executeTool({ tool, args = {}, ticket }) {
   } catch (e) {
     audit({ tool, outcome: 'error', ...(ext || {}), message: cleanMessage(e?.message || e, 200) });
     if (e instanceof ConnectorError) return { status: e.status >= 400 && e.status < 600 ? e.status : 502, body: { ok: false, error: cleanMessage(e.message, 300) } };
+    if (e instanceof UsageLimitError) return { status: 429, body: { ok: false, error: e.message, code: e.code } };   // the user's own or the administrator's limit: the Japanese message says which
     const status = e instanceof GoogleError ? (e.status === 401 ? 401 : e.status === 404 ? 404 : 502) : 400;
     return { status, body: { ok: false, error: String(e?.message || e) } };
   }

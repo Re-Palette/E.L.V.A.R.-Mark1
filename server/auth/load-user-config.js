@@ -71,7 +71,7 @@ export function buildConfig(ctx, data) {
     // the user's own database access and per-user counters, for code that runs deep inside a request
     uid: ctx.uid.uid, db: ctx.db,
     hit: async (bucket, windowSec, limit) => (await ctx.system.rlHit({ bucket, who: ctx.uid.uid, windowSec, userId: ctx.uid })) <= limit,
-    record: (provider, metric, amount = 1, src = 'server') => ctx.db((r) => r.usage.record({ provider, metric, amount, source: src })),
+    record: (provider, metric, amount = 1, src = 'server', day = null) => ctx.db((r) => r.usage.record({ provider, metric, amount, source: src, day })),
   });
 }
 

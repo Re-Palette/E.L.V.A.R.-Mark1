@@ -19,6 +19,7 @@ import { deviceTokenFrom, parseDeviceToken } from './device-token.js';
 import { userConfigShell, cronConfig } from './user-config.js';
 import { loadUserConfig } from './load-user-config.js';
 import { setMultiAccount } from '../net/safe-fetch.js';
+import { effectiveHardLimits, rateMessage } from '../usage-limits.js';
 
 // The account status (active / suspended / pending_deletion) is cached per warm instance for 30 seconds. That is the documented bound on how long a
 // suspension or a deletion request made on ANOTHER instance can go unnoticed by ordinary requests. The instance that makes the change calls
@@ -38,7 +39,19 @@ async function checkSingleUser(db, now) {
 }
 export const _resetSingleUserCheck = () => { countAt = 0; setMultiAccount(false); };
 
-const fail = (status, error) => ({ ok: false, status, error });
+const fail = (status, error, message) => ({ ok: false, status, error, ...(message ? { message } : {}) });
+
+// The administrator's hard limit on requests per minute (default 120; docs 6.3): a per-instance counter keyed by user (no database trip on every request). A user whose
+// requests are spread over several warm instances is counted by each of them separately, so this is a brake against runaway loops and abuse, not an exact meter.
+const REQ_MAX_USERS = 2000, reqWin = new Map();   // uid -> { start, n }
+export function requestAllowed(uid, limit, now = Date.now()) {
+  if (limit === null || limit === undefined) return true;
+  let w = reqWin.get(uid);
+  if (!w || now - w.start >= 60_000) { w = { start: now, n: 0 }; reqWin.delete(uid); reqWin.set(uid, w); while (reqWin.size > REQ_MAX_USERS) reqWin.delete(reqWin.keys().next().value); }
+  w.n++;
+  return w.n <= limit;
+}
+export const _clearRequestWindows = () => reqWin.clear();
 const STATUS_ERROR = { suspended: 'account_suspended', pending_deletion: 'account_pending_deletion' };
 
 async function loadAccount(db, uid, now, { fresh = false } = {}) {
@@ -108,6 +121,7 @@ export async function authenticate(kind, req, opts = {}) {
       const jwt = await getVerifier()(token);
       const account = await loadAccount(db, jwt.uid, now, { fresh: opts.freshAccount });
       if (STATUS_ERROR[account.status] && !(account.status === 'pending_deletion' && opts.allowPendingDeletion)) return fail(403, STATUS_ERROR[account.status]);
+      if (!requestAllowed(jwt.uid.uid, effectiveHardLimits(account).requestsPerMinute, now)) return fail(429, 'rate_limited', rateMessage('リクエスト', '1分あたり'));
       if (kind === 'admin') {
         // two independent checks: the signed claim and a row in app.admins (read through a definer function)
         if (jwt.role !== 'admin' || !(await db.asUser(jwt.uid, (r) => r.accounts.isAdmin()))) return fail(403, 'forbidden');
@@ -176,7 +190,7 @@ function wrap(kind, handler, opts) {
   return async (req, res) => {
     try {
       const a = await authenticate(kind, req, opts);
-      if (!a.ok) return sendJson(res, { status: a.status, body: { error: a.error } });
+      if (!a.ok) return sendJson(res, { status: a.status, body: { error: a.error, ...(a.message ? { message: a.message } : {}) } });
       if (a.ctx.loadConfig) await a.ctx.loadConfig();
       return await runWithConfig(a.ctx.cfg || undefined, () => handler(req, res, a.ctx));
     } catch (e) { return sendJson(res, guard(e)); }

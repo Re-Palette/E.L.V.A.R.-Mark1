@@ -50,14 +50,29 @@ export function initHudLive({ hud, live, authHeaders, usage }) {
       phoneAgents: PHONE_ORDER.map((id) => ({ icon: { research: 'mSearch', document: 'mCode', mail: 'mMail', schedule: 'mHome', memory: 'mShield' }[id], label: `${NAMES[id]}（${status(id)}）`, busy: !!agentState[id]?.busy })),
     });
   };
+  // The meters of the HUD's system status are the account's own numbers from the server (all devices together): LIVE = today's Live time against the user's Live limit
+  // (60 minutes when there is none), API = the busiest limit (or today's calls), STORAGE = the account's storage quota.
+  const announced = new Set();
+  function warnFrom(s) {   // a limit at 80 % / 100 %: a line in the activity log, and one spoken sentence while a conversation is open (once per level)
+    for (const m of s?.meters || []) {
+      if (m.level === 'ok') continue;
+      const k = `${s.day}|${m.provider}|${m.metric}|${m.period}|${m.level}`; if (announced.has(k)) continue; announced.add(k);
+      const t = m.level === 'over' ? `${m.text}：上限に達しました${m.softAction === 'block' ? '（この項目は止まっています）' : ''}` : `${m.text}：上限の80%を超えました`;
+      logActivity({ icon: 'gear', title: m.level === 'over' ? '利用の上限に達しました' : '利用の上限が近づいています', sub: t });
+      try { if (live.session && typeof live.sendText === 'function') live.sendText(`（システムからのお知らせ：${t}。短く一言だけ伝えてください）`); } catch { /* the line in the log is enough */ }
+    }
+  }
+  usage.onSummary?.(warnFrom);
   const renderSystem = async () => {
-    const day = localDate(Date.now(), timeZone()), u = usage.raw().days?.[day] || { liveSeconds: 0, tools: {} };
-    const budget = server?.budgets?.geminiLiveMinutesPerDay || 60, livePct = Math.min(100, Math.round(u.liveSeconds / 60 / budget * 100));
-    const calls = Object.values(u.tools || {}).reduce((a, c) => a + c, 0);
-    let st = null; try { const e = await navigator.storage?.estimate?.(); if (e?.quota) st = Math.min(100, Math.round(e.usage / e.quota * 100)); } catch {}
+    const s = await usage.summary?.().catch(() => null);
+    const live_ = s?.today?.gemini?.live_seconds || 0, liveMeter = (s?.meters || []).find((m) => m.provider === 'gemini' && m.metric === 'live_seconds' && m.period === 'day');
+    const liveLimitMin = liveMeter ? liveMeter.soft / 60 : (server?.budgets?.geminiLiveMinutesPerDay || 60), livePct = Math.min(100, Math.round(live_ / 60 / liveLimitMin * 100));
+    const calls = Object.entries(s?.today || {}).reduce((a, [p, m]) => a + (p === 'connector' ? 0 : (m.calls || 0)), 0);
+    const worst = Math.max(0, ...(s?.meters || []).filter((m) => m.metric === 'calls').map((m) => m.pct), ...(s?.hardMeters || []).map((m) => m.pct));
+    let st = s ? Math.min(100, Math.round(s.storage.usedBytes / Math.max(1, s.storage.quotaBytes) * 100)) : null;
     hud.setData({ system: [
       { label: 'LIVE', value: String(livePct), unit: '%', pct: livePct / 100 },
-      { label: 'API', value: String(calls), unit: 'calls', pct: Math.min(1, calls / 100) },
+      { label: 'API', value: String(calls), unit: 'calls', pct: worst ? Math.min(1, worst / 100) : Math.min(1, calls / 100) },
       { label: 'STORAGE', value: st == null ? '--' : String(st), unit: '%', pct: (st || 0) / 100 },
       { label: 'NETWORK', value: rtt == null ? '--' : String(rtt), unit: 'ms', pct: rtt == null ? 0 : Math.max(0.03, 1 - Math.min(rtt, 1000) / 1000) },
     ] });

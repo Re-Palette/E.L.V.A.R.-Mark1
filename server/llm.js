@@ -4,12 +4,13 @@ import { withGeminiModel } from './gemini-models.js';
 import { sarashinaChat, sarashinaConfigured } from './sarashina.js';
 import { isUp, noteFailure, noteSuccess, retryAfterSec } from './llm-health.js';
 import { env } from './config/resolve.js';
+import { meteredFetch, UsageLimitError } from './usage.js';
 
 const trunc = (s, n) => String(s ?? '').slice(0, n);
 async function openaiCompat(url, key, body, timeoutMs, label) {
   let r;
-  try { r = await fetch(url, { method: 'POST', signal: AbortSignal.timeout(timeoutMs), headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' }, body: JSON.stringify(body) }); }
-  catch (e) { throw Object.assign(new Error(`${label}に接続できません: ${e?.cause?.code || e?.message || e}`), { status: 502 }); }
+  try { r = await meteredFetch(label.toLowerCase(), url, { method: 'POST', signal: AbortSignal.timeout(timeoutMs), headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' }, body: JSON.stringify(body) }); }
+  catch (e) { if (e instanceof UsageLimitError) throw e; throw Object.assign(new Error(`${label}に接続できません: ${e?.cause?.code || e?.message || e}`), { status: 502 }); }
   const j = await r.json().catch(() => ({}));
   const text = j?.choices?.[0]?.message?.content;
   if (!r.ok || !text) { const apiMsg = (Array.isArray(j) ? j[0] : j)?.error?.message || ''; throw Object.assign(new Error(`${label}のエラー (${r.status}, モデル ${body.model}): ${trunc(apiMsg, 140)}`), { status: r.status || 502, apiMessage: apiMsg, retryAfter: retryAfterSec(r.headers) }); }
@@ -40,11 +41,13 @@ export function usable(prefer = ['gemini', 'groq', 'sarashina']) {
 
 /** @returns {Promise<{text:string, via:string, note?:string}>} */
 export async function completeText({ messages, prefer, temperature = 0.3, timeoutMs = 25000 }) {
-  const order = usable(prefer), first = (prefer || ['gemini', 'groq', 'sarashina']).find((n) => PROVIDERS[n]?.key()), errs = [];
+  const order = usable(prefer), first = (prefer || ['gemini', 'groq', 'sarashina']).find((n) => PROVIDERS[n]?.key()), errs = []; let limitErr = null, otherErr = false;
   if (!order.length) throw new Error('使える文章生成のAPIがありません（GEMINI_API_KEY / GROQ_API_KEY / SARASHINA_API_KEY のどれかを設定してください）');
   for (const n of order) {
     try { const text = await PROVIDERS[n].call({ messages, temperature, timeoutMs }); noteSuccess(n); return { text, via: n, ...(n !== first ? { note: `${PROVIDERS[first]?.label || first}が使えなかったため、${PROVIDERS[n].label}で処理しました（${errs.map((x) => x.slice(0, 70)).join(' / ')}）` } : {}) }; }
-    catch (e) { noteFailure(n, e?.status, e?.retryAfter ?? null); errs.push(`${PROVIDERS[n].label}: ${String(e?.message || e)}`); }
+    catch (e) { if (e instanceof UsageLimitError) { limitErr ||= e; errs.push(`${PROVIDERS[n].label}: ${e.message}`); continue; }   // the user's own (or an administrator's) limit: not an outage, the next provider answers
+      otherErr = true; noteFailure(n, e?.status, e?.retryAfter ?? null); errs.push(`${PROVIDERS[n].label}: ${String(e?.message || e)}`); }
   }
+  if (limitErr && !otherErr) throw limitErr;   // every provider was stopped by a limit: say so (the Japanese message names it) instead of "all failed"
   throw new Error(`すべての文章生成APIで失敗しました。${errs.join(' ／ ')}`);
 }

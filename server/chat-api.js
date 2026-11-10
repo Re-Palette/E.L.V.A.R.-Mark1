@@ -9,7 +9,7 @@ import { completeText, usable } from './llm.js';
 import { A, AS, U, currentProfile } from './profile/index.js';
 import { env, currentConfig } from './config/resolve.js';
 import { listConnectorDeclarations } from './connectors/index.js';
-import { recordGemini } from './usage.js';
+import { meteredFetch, UsageLimitError } from './usage.js';
 
 const API = 'https://generativelanguage.googleapis.com/v1beta/models';
 const model = (k, d) => env(k) || d;
@@ -21,10 +21,9 @@ export const STD_NOTE = '\n\n## 通常の音声モード\nいまは、音声認�
 async function gen(m, body, timeoutMs = 25000) {
   const key = env('GEMINI_API_KEY'); if (!key) throw Object.assign(new Error('GEMINI_API_KEY が未設定です'), { status: 503 });
   let r;
-  try { r = await fetch(`${API}/${encodeURIComponent(m)}:generateContent`, { method: 'POST', signal: AbortSignal.timeout(timeoutMs), headers: { 'x-goog-api-key': key, 'content-type': 'application/json' }, body: JSON.stringify(body) }); }
-  catch (e) { throw Object.assign(new Error(`Geminiに接続できません: ${e?.cause?.code || e?.message || e}`), { status: 502 }); }
+  try { r = await meteredFetch('gemini', `${API}/${encodeURIComponent(m)}:generateContent`, { method: 'POST', signal: AbortSignal.timeout(timeoutMs), headers: { 'x-goog-api-key': key, 'content-type': 'application/json' }, body: JSON.stringify(body) }); }
+  catch (e) { if (e instanceof UsageLimitError) throw e; throw Object.assign(new Error(`Geminiに接続できません: ${e?.cause?.code || e?.message || e}`), { status: 502 }); }
   const j = await r.json().catch(() => ({}));
-  if (r.ok) await recordGemini(j);
   if (!r.ok) throw Object.assign(new Error(`Geminiのエラー (${r.status}): ${String(j?.error?.message || '').slice(0, 160)}`), { status: r.status === 429 ? 429 : 502, quota: r.status === 429, modelGone: r.status === 404 || (r.status === 400 && /not (found|supported)|no longer|deprecated|unsupported|invalid model/i.test(String(j?.error?.message || ''))) });
   return j;
 }
@@ -150,5 +149,5 @@ export async function handleChat({ method, body = {} }) {
       case 'file_ocr': return { status: 200, body: await readImage(body) };
       default: return { status: 400, body: { error: 'unknown action' } };
     }
-  } catch (e) { return { status: e.status || 500, body: { error: String(e.message || e).slice(0, 200), ...(e.quota ? { quota: true } : {}) } }; }
+  } catch (e) { return { status: e.status || 500, body: { error: String(e.message || e).slice(0, 400), ...(e.quota ? { quota: true } : {}), ...(e instanceof UsageLimitError ? { code: e.code, limit: e.limit } : {}) } }; }
 }

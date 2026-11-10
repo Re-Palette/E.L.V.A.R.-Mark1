@@ -139,7 +139,7 @@ test('definer functions: fixed search_path, never executable by public or anon, 
     oauth_pending_owner: ['elvar_app'],   // migration 04: the OAuth callback finds whose flow a single-use state belongs to
     // migration 12: the Auth hook (supabase_auth_admin only, none of the roles listed here), the caller-scoped ones, the admin ones (they check is_admin themselves), the cron / purge helpers
     before_user_created: [], record_usage: ['authenticated'], request_deletion: ['authenticated'], cancel_deletion: ['authenticated'],
-    admin_users: ['authenticated'], admin_set_status: ['authenticated'], due_deletions: ['elvar_app'], record_deletion_receipt: ['elvar_app'], bootstrap_admin: ['elvar_app'],
+    admin_users: ['authenticated'], admin_set_limits: ['authenticated'], admin_user_usage: ['authenticated'], admin_set_status: ['authenticated'], due_deletions: ['elvar_app'], record_deletion_receipt: ['elvar_app'], bootstrap_admin: ['elvar_app'],
     // migration 07 (the file vault): the storage trigger (nobody calls it), the caller-scoped reservation / finalize / edit / delete steps, the search (SECURITY INVOKER),
     // the admin quota change (checks is_admin itself), and the daily sweep / reconciliation helpers (elvar_app only)
     _storage_track: [], reserve_file: ['authenticated'], finalize_file: ['authenticated'], patch_file: ['authenticated'], begin_delete_file: ['authenticated'], finish_delete_file: ['authenticated'],

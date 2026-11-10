@@ -516,6 +516,8 @@ initSettingsPanel({
   hud, live, bgm, standby, store, qs,
   openBrain: () => brainViewer.open(),
   openConversations: () => brainViewer.openConversations(),
+  openUsage: () => googleTools.openUsage(),
+  openFiles: () => googleTools.openFiles(),
   openCheck: () => systemCheck.run(false),
   notifications,
   keys: { STANDBY_KEY, SENS_KEY },

@@ -8,6 +8,7 @@ export const sarashinaKey = () => String(env('SARASHINA_API_KEY') || '').trim().
 export const sarashinaKeyInfo = () => { const raw = String(env('SARASHINA_API_KEY') || ''), k = sarashinaKey(); return { length: k.length, hadSpaceOrQuote: raw !== k, hasInnerSpace: /\s/.test(k), nonAscii: /[^\x21-\x7e]/.test(k) }; };
 import { noteFailure, noteSuccess } from './llm-health.js';
 import { env } from './config/resolve.js';
+import { meteredFetch, UsageLimitError } from './usage.js';
 /** Sarashina is OFF unless SARASHINA_ENABLED=1 (the key can stay saved): the other APIs do its work. */
 export const sarashinaEnabled = () => /^(1|true|on|yes)$/i.test(String(env('SARASHINA_ENABLED') || '').trim());
 export const sarashinaConfigured = () => !!sarashinaKey() && sarashinaEnabled();
@@ -24,8 +25,8 @@ export async function sarashinaChat({ messages, fast = false, temperature = 0.3,
   const post = async (m, withTemp) => {
     let r;
     try {
-      r = await fetch(`${sarashinaBaseUrl()}/chat/completions`, { method: 'POST', signal: AbortSignal.timeout(timeoutMs), headers: { authorization: `Bearer ${sarashinaKey()}`, 'content-type': 'application/json', accept: 'application/json', 'user-agent': 'elvar/1.0' }, body: JSON.stringify({ model: m, messages, ...(withTemp ? { temperature } : {}) }) });
-    } catch (e) { throw Object.assign(new Error(`Sarashinaに接続できません: ${e?.cause?.code || e?.message || e}`), { status: 502 }); }
+      r = await meteredFetch('sarashina', `${sarashinaBaseUrl()}/chat/completions`, { method: 'POST', signal: AbortSignal.timeout(timeoutMs), headers: { authorization: `Bearer ${sarashinaKey()}`, 'content-type': 'application/json', accept: 'application/json', 'user-agent': 'elvar/1.0' }, body: JSON.stringify({ model: m, messages, ...(withTemp ? { temperature } : {}) }) });
+    } catch (e) { if (e instanceof UsageLimitError) throw e; throw Object.assign(new Error(`Sarashinaに接続できません: ${e?.cause?.code || e?.message || e}`), { status: 502 }); }
     let j = {};
     if (typeof r.json === 'function') j = await r.json().catch(() => ({}));
     if (!r.ok) {
@@ -38,9 +39,10 @@ export async function sarashinaChat({ messages, fast = false, temperature = 0.3,
     return String(text).trim();
   };
   const first = model || sarashinaModel(fast), other = first === sarashinaModel(true) ? sarashinaModel(false) : sarashinaModel(true);
-  const attempt = async (m) => { try { return await post(m, true); } catch (e) { if (e.status === 400) return post(m, false); throw e; } };   // 400: maybe the parameter is not accepted
+  const attempt = async (m) => { try { return await post(m, true); } catch (e) { if (!(e instanceof UsageLimitError) && e.status === 400) return post(m, false); throw e; } };   // 400: maybe the parameter is not accepted
   try { const t = await attempt(first); noteSuccess('sarashina'); return t; }
   catch (e) {
+    if (e instanceof UsageLimitError) throw e;   // a limit of the user's own (or the administrator's) is not an outage of Sarashina
     if (e.status === 429 && !model) { try { const t = await attempt(other); noteSuccess('sarashina'); return t; } catch (e2) { noteFailure('sarashina', e2.status); throw e2; } }   // each model has its own per-minute limit
     noteFailure('sarashina', e.status); throw e;
   }

@@ -9,6 +9,7 @@ import { HONESTY_FOOTER, nameFooter } from '../honesty.js';
 import { currentProfile, currentVars } from '../profile/index.js';
 import { markGone, modelIsGone } from '../gemini-models.js';
 import { noteFailure, noteSuccess, retryAfterSec } from '../llm-health.js';
+import { meteredFetch, UsageLimitError } from '../usage.js';
 
 const trunc = (s, n) => { s = String(s ?? ''); return s.length > n ? s.slice(0, n) + '…' : s; };
 
@@ -16,8 +17,9 @@ async function chat(provider, body, signal) {
   const P = PROVIDERS[provider];
   let r;
   try {
-    r = await fetch(P.url, { method: 'POST', signal, headers: { authorization: `Bearer ${P.key()}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
-  } catch (e) { const er = new Error(`${provider}に接続できません: ${e?.cause?.code || e?.message || e}`); er.failover = true; throw er; }
+    r = await meteredFetch(provider, P.url, { method: 'POST', signal, headers: { authorization: `Bearer ${P.key()}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  } catch (e) { if (e instanceof UsageLimitError) { e.failover = true; throw e; }   // limited: the next provider of the route carries on
+    const er = new Error(`${provider}に接続できません: ${e?.cause?.code || e?.message || e}`); er.failover = true; throw er; }
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { const apiMsg = j?.error?.message || (Array.isArray(j) ? j[0]?.error?.message : '') || ''; const er = new Error(`${provider}のエラー (${r.status}, モデル ${body.model}): ${trunc(apiMsg, 160)}`); er.status = r.status; if (provider === 'sarashina' && (r.status === 400 || r.status === 404 || r.status === 422)) { if (/tool|function/i.test(apiMsg)) providerState.sarashinaNoTools = true; er.failover = true; } if (provider === 'gemini' && modelIsGone(r.status, apiMsg)) { markGone(body.model); er.modelGone = true; } else noteFailure(provider, r.status, retryAfterSec(r.headers)); er.failover = er.failover || r.status === 413 || r.status === 429 || r.status >= 500 || r.status === 401 || r.status === 403; throw er; }
   const m = j?.choices?.[0]?.message;

@@ -2,13 +2,14 @@
 // delete notes and messages one by one, see the older versions of a note, search, and the bell panel. Every call runs as the signed-in user (Row Level
 // Security): another user's ids are simply "not found". The AI tools use the same notes through server/brain.js but cannot delete.
 import { brainSearch, brainGraph, brainProjects, brainAppendConversation, cleanPath } from '../brain.js';
+import { assertRoomForNote } from '../usage.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const bad = (status, error, message) => ({ status, body: { error, ...(message ? { message } : {}) } });
 const nf = () => bad(404, 'not_found');
 const ok = (body = { ok: true }) => ({ status: 200, body });
 const id404 = (id) => !UUID.test(String(id));
-const fail = (e) => (e?.status && e.status < 500 ? bad(e.status, e.code || 'error') : (() => { throw e; })());
+const fail = (e) => (e?.name === 'UsageLimitError' ? bad(429, e.code, e.message) : e?.status && e.status < 500 ? bad(e.status, e.code || 'error') : (() => { throw e; })());
 const guard = (fn) => async (a) => { try { return await fn(a); } catch (e) { return fail(e); } };
 
 // ---------------------------------------------------------------- notes
@@ -29,6 +30,7 @@ export const createNote = guard(async ({ user, body }) => {
   if (body.content.length > 200000) return bad(400, 'too_long', 'ノートが大きすぎます（20万字まで）');
   return user.db(async (r) => {
     if (await r.notes.get(path, { withTrashed: true })) return bad(409, 'exists', `すでに同じ名前のノートがあります: ${path}`);
+    await assertRoomForNote(r);
     const w = await r.notes.put({ path, content: body.content.replace(/\s+$/, '') + '\n' });
     return ok({ note: await r.notes.getById(w.id) });
   });

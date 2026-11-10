@@ -171,7 +171,7 @@ function validateHttpTool(t, i, errs, seen) {
  * the HTTP connector's tools are defined by the owner and validated here.
  * @returns {{ok:true, manifest:object}|{ok:false, errors:{path:string, message:string}[]}}
  */
-export function validateManifest(input, { existing = [], id = null } = {}) {
+export function validateManifest(input, { existing = [], id = null, max = MAX_CONNECTORS } = {}) {
   const errs = [], e = (path, message) => errs.push({ path, message });
   const src = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
   const type = src.type === 'http' ? 'http' : src.type === 'mcp' ? 'mcp' : null;
@@ -182,7 +182,7 @@ export function validateManifest(input, { existing = [], id = null } = {}) {
   if (!SLUG_RE.test(slug)) e('slug', '識別名は英小文字と数字の2〜16字です');
   else if (!src.slug) { let n = 2; const base = slug.slice(0, 14); while (others.some((c) => c.slug === slug)) slug = base + n++; }
   if (others.some((c) => c.slug === slug)) e('slug', 'この識別名は、すでに使われています');
-  if (!id && others.length >= MAX_CONNECTORS) e('name', `連携アプリは${MAX_CONNECTORS}個までです`);
+  if (!id && others.length >= max) e('name', `連携アプリは${max}個までです`);
   const allowPrivate = Boolean(src.network?.allowPrivate);
   if (allowPrivate && !privateAllowed(true)) e('network.allowPrivate', 'このサービスでは、社内・自宅のネットワークのアドレスにはつなげません');
   const out = { id: id || randomId(), slug, name, type, enabled: src.enabled !== false, mcp: null, http: null, auth: { type: 'none' }, network: { allowPrivate: allowPrivate && privateAllowed(true) },

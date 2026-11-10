@@ -75,7 +75,18 @@ export function pgRepos(tx, uid, afterCommit = () => {}) {
         V.need(Number.isInteger(limit) && limit >= 1 && limit <= 500 && Number.isInteger(offset) && offset >= 0);
         return (await tx`select * from app.admin_users(${limit}, ${offset})`).map((r) => ({
           userId: r.user_id, email: r.email, createdAt: iso(r.created_at), lastSignInAt: iso(r.last_sign_in_at), status: r.status, isAdmin: r.is_admin,
-          storageQuotaBytes: num(r.storage_quota_bytes), storageUsedBytes: num(r.storage_used_bytes), callsToday: num(r.calls_today), liveSecondsToday: num(r.live_seconds_today), calls30d: num(r.calls_30d) }));
+          storageQuotaBytes: num(r.storage_quota_bytes), storageUsedBytes: num(r.storage_used_bytes), callsToday: num(r.calls_today), liveSecondsToday: num(r.live_seconds_today), calls30d: num(r.calls_30d),
+          hardLimits: r.hard_limits || {}, suspendedReason: r.suspended_reason ?? null }));
+      },
+      /** The hard limits of one user (numbers only; null removes a key). @returns {Promise<object>} the limits after the change */
+      async setLimits(userId, limits) {
+        V.need(requireUuid(userId) && limits && typeof limits === 'object' && !Array.isArray(limits));
+        const [r] = await guarded((sp) => sp`select app.admin_set_limits(${userId}::uuid, ${tx.json(limits)}::jsonb) as l`); return r.l;
+      },
+      /** One user's usage per day / provider / metric (numbers only; no per-tool counts). */
+      async userUsage(userId, days = 14) {
+        V.need(requireUuid(userId) && Number.isInteger(days) && days >= 1 && days <= 60);
+        return (await guarded((sp) => sp`select day::text as day, provider, metric, amount from app.admin_user_usage(${userId}::uuid, ${days})`)).map((r) => ({ day: r.day, provider: r.provider, metric: r.metric, amount: num(r.amount) }));
       },
       /** The storage quota of one user (bytes). A number, never content (M11). */
       async setQuota(userId, bytes) {
@@ -535,10 +546,11 @@ export function pgRepos(tx, uid, afterCommit = () => {}) {
 
     /** The numbers are written only through app.record_usage (the caller's own account). */
     usage: {
-      async record({ provider, metric, amount = 1, source = 'server' }) {
+      /** `day` (YYYY-MM-DD) is the user's own day; omitted = the database date. Only today and yesterday of the database clock (+-1) are accepted. */
+      async record({ provider, metric, amount = 1, source = 'server', day = null }) {
         V.need(typeof provider === 'string' && provider.length >= 1 && provider.length <= 40 && typeof metric === 'string' && metric.length >= 1 && metric.length <= 40
-          && Number.isFinite(amount) && amount >= 0 && amount <= 1e9 && ['server', 'client'].includes(source));
-        await tx`select app.record_usage(${provider}, ${metric}, ${amount}, ${source})`;
+          && Number.isFinite(amount) && amount >= 0 && amount <= 1e9 && ['server', 'client'].includes(source) && (day === null || /^\d{4}-\d{2}-\d{2}$/.test(day)));
+        await guarded((sp) => sp`select app.record_usage(${provider}, ${metric}, ${amount}, ${source}, ${day}::date)`);   // the function refuses a day far from the database date (22023 -> invalid_value)
       },
       async daily({ from, to }) {
         return (await tx`select day::text as day, provider, metric, amount from app.usage_daily where user_id = ${uid} and day >= ${from}::date and day <= ${to}::date order by day, provider, metric`)

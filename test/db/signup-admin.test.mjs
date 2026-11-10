@@ -71,7 +71,7 @@ test('admin functions: a non-admin is refused; an admin sees metadata only and c
   await denied(asRole(app, { uid: alice }, (tx) => tx`select app.admin_set_status(${bob}, 'suspended')`));
   const rows = await asRole(app, { uid: boss }, (tx) => tx`select * from app.admin_users(500, 0)`);
   const a = rows.find((r) => r.user_id === alice);
-  assert.deepEqual(Object.keys(a).sort(), ['calls_30d', 'calls_today', 'created_at', 'email', 'is_admin', 'last_sign_in_at', 'live_seconds_today', 'status', 'storage_quota_bytes', 'storage_used_bytes', 'user_id']);
+  assert.deepEqual(Object.keys(a).sort(), ['calls_30d', 'calls_today', 'created_at', 'email', 'hard_limits', 'is_admin', 'last_sign_in_at', 'live_seconds_today', 'status', 'storage_quota_bytes', 'storage_used_bytes', 'suspended_reason', 'user_id']);
   assert.equal(a.email, 'alice@example.test'); assert.equal(a.status, 'active'); assert.equal(a.is_admin, false); assert.equal(Number(a.storage_quota_bytes), 524288000);
   await assert.rejects(asRole(app, { uid: boss }, (tx) => tx`select * from app.admin_users(0, 0)`), (e) => e.code === '22023');
   assert.equal((await asRole(app, { uid: boss }, (tx) => tx`select app.admin_set_status(${bob}, 'suspended', 'spam') as s`))[0].s, 'suspended');

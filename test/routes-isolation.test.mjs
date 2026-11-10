@@ -355,6 +355,60 @@ Object.assign(CASES, {
     assert.equal((await h.call('POST', `/api/elvar/admin/users/${w.a}/quota`, adminB, { bytes: 1234 })).status, 200, 'an admin can');
     assert.equal(await quota(), 1234);
   },
+  // ---- P6: usage and limits
+  'PUT /api/elvar/usage/limits': async (h, w) => {
+    const aUid = mintVerifiedUid(w.a, 'test');
+    await h.db.asUser(aUid, (r) => r.usageLimits.put({ provider: 'groq', metric: 'calls', period: 'day', soft: 3, softAction: 'block' }));   // A's own limit
+    const before = await w.snapshotA();
+    // B sets limits on B's own account; the body has no user id, nothing B sends can name A
+    const r = await h.call('PUT', '/api/elvar/usage/limits', w.B, { provider: 'groq', metric: 'calls', period: 'day', soft: 9, softAction: 'warn', userId: w.a, user_id: w.a });
+    assert.equal(r.status, 200); assert.deepEqual(r.body.limits.map((l) => [l.provider, l.soft, l.softAction]), [['groq', 9, 'warn']], 'B sees only B\'s own limit'); noA(r.body, w);
+    assert.deepEqual((await h.call('GET', '/api/elvar/usage', w.A)).body.limits.map((l) => [l.provider, l.soft, l.softAction]), [['groq', 3, 'block']], 'A\'s limit is still A\'s');
+    for (const bad of [{ provider: 'nope', metric: 'calls', period: 'day', soft: 1 }, { provider: 'groq', metric: 'live_seconds', period: 'day', soft: 1 }, { provider: 'groq', metric: 'calls', period: 'week', soft: 1 }, { provider: 'groq', metric: 'calls', period: 'day', soft: -1 }, { provider: 'groq', metric: 'calls', period: 'day', soft: 1, softAction: 'ban' }]) assert.equal((await h.call('PUT', '/api/elvar/usage/limits', w.B, bad)).status, 422, JSON.stringify(bad));
+    assert.equal(await w.snapshotA(), before, 'nothing of A changed');
+    assert.equal((await h.call('DELETE', '/api/elvar/usage/limits/groq/calls/day', w.B)).status, 200);
+    await h.db.asUser(aUid, (r) => r.usageLimits.del({ provider: 'groq', metric: 'calls', period: 'day' }));
+  },
+  'DELETE /api/elvar/usage/limits/:provider/:metric/:period': async (h, w) => {
+    const aUid = mintVerifiedUid(w.a, 'test');
+    await h.db.asUser(aUid, (r) => r.usageLimits.put({ provider: 'exa', metric: 'calls', period: 'month', soft: 50, softAction: 'warn' }));
+    const before = await w.snapshotA();
+    assert.equal((await h.call('DELETE', '/api/elvar/usage/limits/exa/calls/month', w.B)).status, 404, 'B has no such limit: A\'s is not reachable');
+    assert.equal((await h.call('DELETE', '/api/elvar/usage/limits/nope/calls/month', w.B)).status, 404);
+    assert.equal(await w.snapshotA(), before); assert.equal((await h.call('GET', '/api/elvar/usage', w.A)).body.limits.length, 1);
+    assert.equal((await h.call('DELETE', '/api/elvar/usage/limits/exa/calls/month', w.A)).status, 200, 'A can remove their own');
+  },
+  'POST /api/elvar/usage/report': async (h, w) => {
+    const before = await w.snapshotA();
+    const r = await h.call('POST', '/api/elvar/usage/report', w.B, { liveSeconds: 30, tools: { weather: 2 } }); assert.equal(r.status, 200); assert.ok(r.body.credited > 0 && r.body.credited <= 30);
+    const bUse = (await h.call('GET', '/api/elvar/usage', w.B)).body; assert.ok(bUse.today.gemini.live_seconds > 0, 'B\'s own numbers moved'); assert.deepEqual(bUse.tools.map((t) => [t.name, t.count]), [['weather', 2]]);
+    assert.equal(await w.snapshotA(), before, 'A\'s numbers did not');
+    assert.equal((await h.call('POST', '/api/elvar/usage/report', w.B, { liveSeconds: 99999 })).status, 422); assert.equal((await h.call('POST', '/api/elvar/usage/report', w.B, { tools: { 'x y': 1 } })).status, 422);
+  },
+  'POST /api/elvar/admin/users/:id/limits': async (h, w) => {
+    const before = await w.snapshotA(), limitsOf = () => h.db.asUser(mintVerifiedUid(w.a, 'test'), (r) => r.accounts.get()).then((x) => x.hardLimits);
+    const c = h.mkUser('c-plain@example.test'), C = await h.bearer(c, { email: 'c-plain@example.test' });
+    assert.equal((await h.call('POST', `/api/elvar/admin/users/${w.a}/limits`, C, { limits: { geminiCallsPerDay: 5 } })).status, 403, 'a user cannot set limits, not even a token with the admin claim but no admin row');
+    const claimOnly = await h.bearer(c, { app_metadata: { elvar_role: 'admin' } }); assert.equal((await h.call('POST', `/api/elvar/admin/users/${w.a}/limits`, claimOnly, { limits: { geminiCallsPerDay: 5 } })).status, 403);
+    assert.deepEqual(await limitsOf(), {}); assert.equal(await w.snapshotA(), before);
+    const boss = await h.bearer(w.b, { app_metadata: { elvar_role: 'admin' } }); h.db.testing.makeAdmin(w.b);
+    for (const bad of [{}, { nope: 1 }, { geminiCallsPerDay: -1 }, { geminiCallsPerDay: 1.5 }, { geminiCallsPerDay: '5' }, { maxFileBytes: 62914561 }]) assert.equal((await h.call('POST', `/api/elvar/admin/users/${w.a}/limits`, boss, { limits: bad })).status, 422, JSON.stringify(bad));
+    assert.equal((await h.call('POST', `/api/elvar/admin/users/${crypto.randomUUID()}/limits`, boss, { limits: { maxNotes: 5 } })).status, 404);
+    const ok = await h.call('POST', `/api/elvar/admin/users/${w.a}/limits`, boss, { limits: { geminiCallsPerDay: 5, requestsPerMinute: 50 } }); assert.equal(ok.status, 200); assert.deepEqual(ok.body.hardLimits, { geminiCallsPerDay: 5, requestsPerMinute: 50 });
+    assert.deepEqual(await limitsOf(), { geminiCallsPerDay: 5, requestsPerMinute: 50 }, 'only A\'s row changed'); assert.deepEqual(await h.db.asUser(mintVerifiedUid(w.b, 'test'), (r) => r.accounts.get()).then((x) => x.hardLimits), {}, 'the admin\'s own limits did not');
+    assert.equal((await h.call('GET', '/api/elvar/usage', w.A)).body.hard.geminiCallsPerDay, 5, 'A sees the limit an administrator set for A');
+    assert.equal((await h.call('POST', `/api/elvar/admin/users/${w.a}/limits`, boss, { limits: { geminiCallsPerDay: null, requestsPerMinute: null } })).status, 200);
+    assert.deepEqual(await limitsOf(), {});
+  },
+  'GET /api/elvar/admin/users/:id/usage': async (h, w) => {
+    const C = await h.bearer(h.mkUser('c-plain2@example.test'), { email: 'c-plain2@example.test' });
+    const r = await h.call('GET', `/api/elvar/admin/users/${w.a}/usage`, C); assert.equal(r.status, 403, 'a user cannot read another user\'s numbers'); noA(r.body, w);
+    const boss = await h.bearer(w.b, { app_metadata: { elvar_role: 'admin' } }); h.db.testing.makeAdmin(w.b);
+    const a = await h.call('GET', `/api/elvar/admin/users/${w.a}/usage`, boss); assert.equal(a.status, 200);
+    assert.ok(a.body.usage.length > 0 && a.body.usage.every((x) => Object.keys(x).sort().join() === 'amount,day,metric,provider'), 'numbers only');
+    assert.ok(!JSON.stringify(a.body).includes(A_KEY) && !JSON.stringify(a.body).includes(A_NAME), 'no content, no secrets');
+    assert.equal((await h.call('GET', `/api/elvar/admin/users/${crypto.randomUUID()}/usage`, boss)).status, 404); assert.equal((await h.call('GET', '/api/elvar/admin/users/zzz/usage', boss)).status, 404);
+  },
 });
 
 

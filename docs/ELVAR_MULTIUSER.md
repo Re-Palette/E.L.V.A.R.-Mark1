@@ -787,3 +787,27 @@ P5 で入ったもの: **ファイルをアカウントの保管庫に**（原�
 検証: `npm test`、`npm run test:db`（postgres:17。Storage の RLS は `test/db/support/supabase-emulation.sql` に作った `storage.objects`／`storage.foldername()` の上でテスト）、`npx vite build web`、public-scrub がすべて通る。開発スタック（`ELVAR_DB=memory ELVAR_DEV_AUTH=1`。偽の Storage を `/dev-supabase/storage/v1` で配る）に Playwright で 2 人が入り、ファイルをアップロードして（PUT が Storage の署名付き URL に直接行き、API の本文は小さいことを確認）、ユーザー B の画面・API・検索・エクスポートに A のファイルが一切出ないこと、容量メーター、容量超過の拒否（日本語の文言・数値つき、抽出テキストも数える）、管理者による容量変更、ファイル削除で容量が空くこと、印刷の承認カード、AI 要約と OCR の承認カード（承認前は何も送らない）、この端末の古いライブラリの移行を確認した。
 
 未着手・未確認: **本物の Supabase Storage に対する結合確認**（`server/storage/supabase.js` は Storage API の形に合わせたが、実プロジェクトでは動かしていない。JWT 付きの `POST /object/<bucket>/<path>` が生のバイナリ（`x-upsert: false`）を受け付けるか、`object/info` の返り値の名前、CORS）、TUS（6MB 超の再開可能アップロード）は使わず、1回の POST（60MB まで。切れたらやり直し）、`pg_cron` ではなく Vercel Cron（1日1回）での掃除、エクスポートの zip（原本のコピー。P7）、容量の上限を超えたユーザーの既存データの扱い（今は新規だけ止める）、Android の WebView での PUT／ダウンロード、署名付きダウンロード URL を `Content-Disposition` なしで `<iframe>` に入れる場合の挙動（今は取得した Blob を自分の MIME で包んで使う）。
+
+
+---
+
+## 17. P6 実装メモ（設計からの差分・未着手）
+
+P6 で入ったもの: **利用量の計測と上限**（原則6）。サーバーが呼び出し口で数える（`server/usage.js` の `meteredFetch`）: Gemini（文章・検索・通常の音声・ファイル要約）・Groq・Exa・NewsData・Sarashina・Google API は「呼び出し回数」と、答えに載っていれば「入力／出力トークン」（Gemini の `usageMetadata`、OpenAI 互換の `usage`）、連携アプリ（コネクタ）の呼び出し、Gemini Live の開始（トークン発行時）。数えるのは**本人の `usage_daily`**（日付は本人のタイムゾーンの日。`record_usage` に `p_day` を追加、DB の日付 ±1 日だけ受け付ける）。ブラウザだけが知っているもの（Live の時間、使った道具）は `POST /api/elvar/usage/report` の心拍（30 秒ごと）で **「端末からの報告」と明示**して記録し、サーバーが前回の報告からの経過時間で上限をかける（水増しできない）。
+**上限**: 本人の**ソフト上限**（項目×指標×1日/1か月、`知らせる`＝メーター 80%/100% と HUD の活動記録・会話中の一言、`止める`＝その項目の呼び出しを呼び出しの**前に**断る。429 `soft_limit`、日本語の文。`PUT/DELETE /api/elvar/usage/limits`）と、管理者の**ハード上限**（`accounts.hard_limits`、`admin_set_limits`: 1分のリクエスト数 120、Live 開始/時 30、コネクタ呼び出し/日 2000、書き出し/日 1、コネクタ数 10、ノート数 20000、1ファイルの最大、各プロバイダの1日の呼び出し。`ELVAR_DEFAULT_LIMITS` で運営者が既定を変えられる。429 `hard_limit`）。画面は設定 → アカウントの「利用状況を見る」（`web/src/usage-view.js`: 今日・今月、直近14日、よく使った道具、保存容量の内訳、上限の編集）、HUD の SYSTEM（LIVE・API・STORAGE はサーバーの数字）、管理（一覧に上限の件数、「上限」「利用」の編集パネル。数字だけ、ツール名別の回数も管理者には出さない）。`usage_report` 音声ツールもサーバーの数字を読み上げる（`scope` は「すべての端末の合計」）。
+
+設計との違い:
+
+| 項目 | 設計 | P6 の実装 | 理由 |
+|------|------|-----------|------|
+| マイグレーション | 09 に `record_usage` 等 | **18**（`record_usage` の再定義、`admin_set_limits`、`admin_user_usage`、`admin_users` に上限と停止理由、`purge_expired` に生イベント90日・日次2年） | 公開前だが 09/12 は P1/P2 のもの。新番号で足した |
+| `record_usage` の呼び出し | 応答後に await | 呼び出しの**直後に await**（ALS が切れる前）。失敗しても呼び出しは壊さない（ログだけ） | 設計どおり |
+| ゲートの読み取り | — | 上限・今日・今月を **5 秒だけ**インスタンス内にキャッシュ（記録のたびに加算、本人の上限変更・管理者の変更で即破棄）。読めないときは通す（上限は「ブレーキ」で「鍵」ではない） | 呼び出しごとに DB を3回読まないため |
+| リクエスト/分（ハード上限） | ルーターのミドルウェア | `authenticate()` 内の**インスタンスごとの**カウンタ（DB を叩かない）。複数インスタンスに散ると各インスタンスで数える | 暴走ループ・悪用へのブレーキ。厳密なメーターではない（文書化）。毎日・毎時の上限は DB の数字で厳密 |
+| Gemini Live の時間 | サーバー計測 | 発行（開始）はサーバー計測。**時間はクライアント報告**をサーバーが経過時間で検算（`source:'client'`）。Live はブラウザから Google へ直接つながるため、サーバーは秒数を見られない | 画面に「端末からの報告」と表示 |
+| 道具の回数 | `executeTool` で計測 | **ページの報告**（既存の `usage.tool` 呼び出しを流用。サーバーの `executeTool` では数えない） | サーバー実行の道具とブラウザ実行の道具が混ざり、二重計上になるため |
+| Live の止め方 | — | Live の時間／開始の「止める」上限は Live トークンの発行を断る（日本語の文）。通常の音声モード（文章・音声の Gemini 呼び出し）は別の指標なので続く | 指標ごとに止める |
+| Groq の残量 | `kv_ephemeral` に保存 | 端末のブラウザに残す（レスポンスヘッダーの読み取り）。使用量ではないので計測表には入れない | 必要な画面は端末のもの |
+| 失敗する日付 | — | `p_day` が DB の日付から ±1 日を超えると 22023（`invalid_value`） | 古い日・遠い未来へ書けない |
+
+未着手・要確認: 実際の Supabase での `admin_set_limits` / `admin_user_usage`、`system_check` / `api_status` の疎通確認呼び出しは計測しない（診断用）、天気（met.no / Open-Meteo）の呼び出しは計測しない（プラットフォームの無料API）、GitHub への呼び出し（ビルド依頼・ミラー）は計測しない、ハード上限の `exportsPerDay` は P7 の書き出しで使う。

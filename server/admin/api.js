@@ -4,8 +4,10 @@
 // own audit log (actor 'admin'), so the user can see it.
 import { requireFresh, invalidateAccount } from '../auth/with-user.js';
 import { invalidateUserConfig } from '../auth/load-user-config.js';
+import { invalidateUsage } from '../usage.js';
 import { setBan } from '../db/service.js';
 import { isUuid } from '../db/verified-uid.js';
+import { HARD_LIMITS, effectiveHardLimits, isHardLimitKey } from '../usage-limits.js';
 
 const bad = (status, error, message) => ({ status, body: { error, ...(message ? { message } : {}) } });
 const audit = (event, extra) => console.log('[audit] ' + JSON.stringify({ at: new Date().toISOString(), event, ...extra }));
@@ -13,8 +15,8 @@ const int = (v, d, lo, hi) => { const n = Number.parseInt(v, 10); return Number.
 
 export async function listUsers({ user, query }) {
   const limit = int(query?.limit, 100, 1, 500), offset = int(query?.offset, 0, 0, 1_000_000);
-  const users = await user.db((r) => r.admin.listUsers({ limit, offset }));
-  return { status: 200, body: { users, limit, offset } };
+  const users = (await user.db((r) => r.admin.listUsers({ limit, offset }))).map((u) => ({ ...u, appliedLimits: effectiveHardLimits({ hardLimits: u.hardLimits }) }));
+  return { status: 200, body: { users, limit, offset, limitCatalog: HARD_LIMITS } };
 }
 
 async function setStatus(user, params, status, reason) {
@@ -47,4 +49,32 @@ export async function setQuota({ user, params, body }) {
   invalidateAccount(id);
   audit('admin-set-quota', { by: user.uid.uid, target: id, bytes });
   return { status: 200, body: { storageQuotaBytes: bytes } };
+}
+
+/**
+ * The hard limits of one user (docs 6.3): { limits: { key: whole number | null } }, null removes the account's own value (the platform default applies again).
+ * Numbers only; the keys are the catalog of server/usage-limits.js. Written to the target's own audit log (actor admin), so the user can see it.
+ */
+export async function setLimits({ user, params, body }) {
+  if (!isUuid(params.id)) return bad(404, 'not_found');
+  const id = params.id.toLowerCase(), limits = body?.limits;
+  if (!limits || typeof limits !== 'object' || Array.isArray(limits) || !Object.keys(limits).length || Object.keys(limits).length > 20) return bad(422, 'bad_limits', '変更する上限を指定してください');
+  for (const [k, v] of Object.entries(limits)) {
+    if (!isHardLimitKey(k)) return bad(422, 'bad_limits', `知らない上限です: ${String(k).slice(0, 40)}`);
+    if (v !== null && !(Number.isInteger(v) && v >= 0 && v <= 2_000_000_000)) return bad(422, 'bad_limits', `${HARD_LIMITS[k].label}は、0 以上の整数（または空で既定に戻す）で指定してください`);
+    if (k === 'maxFileBytes' && v !== null && v > 62914560) return bad(422, 'bad_limits', '1ファイルの最大サイズは 60 MB（62914560）までです');
+  }
+  await requireFresh(user);
+  const after = await user.db((r) => r.admin.setLimits(id, limits));   // forbidden for a non-admin, not_found for an unknown user
+  invalidateAccount(id); invalidateUsage(id);
+  audit('admin-set-limits', { by: user.uid.uid, target: id, keys: Object.keys(limits) });
+  return { status: 200, body: { hardLimits: after, appliedLimits: effectiveHardLimits({ hardLimits: after }) } };
+}
+
+/** One user's usage numbers per day, provider and metric (numbers only: no content, no secrets, no per-tool counts). */
+export async function userUsage({ user, params, query }) {
+  if (!isUuid(params.id)) return bad(404, 'not_found');
+  const days = int(query?.days, 14, 1, 60);
+  const rows = await user.db((r) => r.admin.userUsage(params.id.toLowerCase(), days));
+  return { status: 200, body: { userId: params.id.toLowerCase(), days, usage: rows } };
 }

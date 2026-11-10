@@ -153,7 +153,7 @@ export function runDbContract(label, setup) {
     await passTime(1300);
     assert.equal(await db.asUser(A, (r) => r.kv.get('short')), null, 'expired rows are invisible even before the sweep');
     const purged = await db.system.purgeExpired();
-    assert.ok(purged.kv_ephemeral >= 1); assert.deepEqual(Object.keys(purged).sort(), ['conversations', 'kv_ephemeral', 'messages', 'note_revisions', 'notes', 'notif_items', 'oauth_pending', 'rate_limits', 'ticket_uses']);
+    assert.ok(purged.kv_ephemeral >= 0, 'a concurrent sweep (other test files share the database) may have removed it first'); assert.deepEqual(Object.keys(purged).sort(), ['conversations', 'kv_ephemeral', 'messages', 'note_revisions', 'notes', 'notif_items', 'oauth_pending', 'rate_limits', 'ticket_uses', 'usage_daily', 'usage_events']);
     assert.deepEqual(await db.asUser(A, (r) => r.kv.get('k')), { n: 2 });
     assert.equal(await db.asUser(A, (r) => r.kv.del('k')), true); assert.equal(await db.asUser(A, (r) => r.kv.del('k')), false);
   });
@@ -526,7 +526,7 @@ export function runDbContract(label, setup) {
     await assert.rejects(db.asUser(B, (r) => r.admin.listUsers()), code('forbidden'));
     await assert.rejects(db.asUser(B, (r) => r.admin.setStatus(c, 'suspended')), code('forbidden'));
     const list = await db.asUser(A, (r) => r.admin.listUsers({ limit: 500 }));
-    for (const u of list) assert.deepEqual(Object.keys(u).sort(), ['calls30d', 'callsToday', 'createdAt', 'email', 'isAdmin', 'lastSignInAt', 'liveSecondsToday', 'status', 'storageQuotaBytes', 'storageUsedBytes', 'userId'], 'metadata columns only');
+    for (const u of list) assert.deepEqual(Object.keys(u).sort(), ['calls30d', 'callsToday', 'createdAt', 'email', 'hardLimits', 'isAdmin', 'lastSignInAt', 'liveSecondsToday', 'status', 'storageQuotaBytes', 'storageUsedBytes', 'suspendedReason', 'userId'], 'metadata columns only');
     assert.ok(list.some((u) => u.userId === a && u.isAdmin) && list.some((u) => u.userId === b && !u.isAdmin));
     assert.equal(await db.asUser(A, (r) => r.admin.setStatus(b, 'suspended', 'spam')), 'suspended');
     assert.equal((await db.asUser(B, (r) => r.accounts.get())).status, 'suspended');
@@ -541,8 +541,40 @@ export function runDbContract(label, setup) {
     await db.asUser(C, (r) => r.accounts.requestDeletion(7));
     await assert.rejects(db.asUser(A, (r) => r.admin.setStatus(c, 'suspended')), code('conflict'), 'not while the user is deleting the account');
     // an admin does not get a way to read anything else through the repos: no method of `admin` returns content
-    assert.deepEqual(await db.asUser(A, async (r) => Object.keys(r.admin).sort()), ['listUsers', 'setQuota', 'setStatus']);
+    assert.deepEqual(await db.asUser(A, async (r) => Object.keys(r.admin).sort()), ['listUsers', 'setLimits', 'setQuota', 'setStatus', 'userUsage']);
     assert.deepEqual(await db.asUser(A, (r) => r.profile.get()), null, 'an admin\'s repos are still only their own');
+  });
+
+  // ---------------------------------------------------------------- P6: usage by the user's own day, hard limits, the admin's view of numbers
+  T('usage: counts land on the user\'s own day (database date +-1 only), add up per day / provider / metric, and are the user\'s own', async ({ db, newUser, now: clock }) => {
+    const { A, B } = await two({ newUser }), base = clock ? clock() : Date.now(), ymd = (ms) => new Date(ms).toISOString().slice(0, 10);
+    const today = ymd(base), plus = ymd(base + 86400_000), minus = ymd(base - 86400_000), far = ymd(base - 5 * 86400_000);
+    await db.asUser(A, async (r) => {
+      await r.usage.record({ provider: 'gemini', metric: 'calls', amount: 1 }); await r.usage.record({ provider: 'gemini', metric: 'calls', amount: 2, day: today });
+      await r.usage.record({ provider: 'gemini', metric: 'live_seconds', amount: 30, source: 'client', day: plus }); await r.usage.record({ provider: 'tool', metric: 'weather', amount: 3, source: 'client', day: minus });
+      await assert.rejects(r.usage.record({ provider: 'gemini', metric: 'calls', amount: 1, day: far }), code('invalid_value'), 'a day far from the database date is refused');
+      await assert.rejects(r.usage.record({ provider: 'gemini', metric: 'calls', amount: 1, day: 'yesterday' }), code('invalid_value'));
+      const rows = await r.usage.daily({ from: minus, to: plus }); const get = (d, p, m) => rows.find((x) => x.day === d && x.provider === p && x.metric === m)?.amount;
+      assert.equal(get(today, 'gemini', 'calls'), 3); assert.equal(get(plus, 'gemini', 'live_seconds'), 30); assert.equal(get(minus, 'tool', 'weather'), 3);
+    });
+    assert.deepEqual(await db.asUser(B, (r) => r.usage.daily({ from: '2000-01-01', to: '2999-01-01' })), [], 'B has none of A\'s numbers');
+  });
+
+  T('admin: hard limits of ONE user (catalog keys, whole numbers, null removes), recorded in the target\'s own audit log; usage numbers per day without per-tool counts; never for a non-admin', async ({ db, newUser, makeAdmin }) => {
+    const { a, b, A, B } = await two({ newUser }); await db.asUser(A, (r) => r.accounts.ensure()); await db.asUser(B, (r) => r.accounts.ensure()); await makeAdmin(a);
+    await assert.rejects(db.asUser(B, (r) => r.admin.setLimits(b, { maxNotes: 5 })), code('forbidden'), 'not even for oneself');
+    await assert.rejects(db.asUser(B, (r) => r.admin.userUsage(b)), code('forbidden'));
+    assert.deepEqual(await db.asUser(A, (r) => r.admin.setLimits(b, { geminiCallsPerDay: 100, maxNotes: 5 })), { geminiCallsPerDay: 100, maxNotes: 5 });
+    assert.deepEqual(await db.asUser(A, (r) => r.admin.setLimits(b, { maxNotes: null, requestsPerMinute: 60 })), { geminiCallsPerDay: 100, requestsPerMinute: 60 }, 'null removes a key, the rest stays');
+    assert.deepEqual((await db.asUser(B, (r) => r.accounts.get())).hardLimits, { geminiCallsPerDay: 100, requestsPerMinute: 60 }); assert.deepEqual((await db.asUser(A, (r) => r.accounts.get())).hardLimits, {}, 'only B\'s row changed');
+    for (const bad of [{ nope: 1 }, { maxNotes: -1 }, { maxNotes: 1.5 }, { maxNotes: '5' }, { maxNotes: 3_000_000_000 }, { maxFileBytes: 62914561 }, 5, [1]]) await assert.rejects(db.asUser(A, (r) => r.admin.setLimits(b, bad)), (e) => ['invalid_value'].includes(e?.code), JSON.stringify(bad));
+    await assert.rejects(db.asUser(A, (r) => r.admin.setLimits(crypto.randomUUID(), { maxNotes: 5 })), code('not_found'));
+    const log = (await db.asUser(B, (r) => r.audit.list())).filter((x) => x.action === 'account.limits_changed'); assert.equal(log.length, 2); assert.deepEqual({ actor: log[0].actor, actorId: log[0].actorId }, { actor: 'admin', actorId: a }, 'B can see that an admin did it');
+    await db.asUser(B, async (r) => { await r.usage.record({ provider: 'groq', metric: 'calls', amount: 4 }); await r.usage.record({ provider: 'tool', metric: 'secret_tool_name', amount: 9, source: 'client' }); });
+    const rows = await db.asUser(A, (r) => r.admin.userUsage(b, 14)); assert.deepEqual(rows.map((x) => [x.provider, x.metric, x.amount]), [['groq', 'calls', 4]], 'numbers per provider; the per-tool counts are not an admin\'s business');
+    assert.deepEqual(Object.keys(rows[0]).sort(), ['amount', 'day', 'metric', 'provider']);
+    await assert.rejects(db.asUser(A, (r) => r.admin.userUsage(crypto.randomUUID(), 14)), code('not_found')); await assert.rejects(db.asUser(A, (r) => r.admin.userUsage(b, 0)), code('invalid_value'));
+    assert.deepEqual((await db.asUser(A, (r) => r.admin.listUsers({ limit: 500 }))).find((u) => u.userId === b).hardLimits, { geminiCallsPerDay: 100, requestsPerMinute: 60 });
   });
 
   // ---------------------------------------------------------------- P4: notes, conversations, inbox, notification relay

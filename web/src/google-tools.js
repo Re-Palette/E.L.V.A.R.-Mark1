@@ -1,5 +1,5 @@
 // Bridges the voice model's function calls to the server's /api/google/execute, with the owner's approval for every write.
-import { usage, buildReport } from './usage.js';
+import { usage } from './usage.js';
 import { createDocCard, toBase64 } from './doc-card.js';
 import { createChoiceCard } from './choice-card.js';
 import { initFinanceView } from './finance-view.js';
@@ -60,7 +60,7 @@ export function initGoogleTools({ live, approval, authHeaders, agents, systemChe
   }
 
   const financeView = initFinanceView({ call: async (tool, args) => { const r = await post({ tool, args }); if (!r.ok) throw new Error(r.error || '家計を読み込めませんでした'); return r.result; } });
-  const usageView = initUsageView({ call: async (tool, args) => { const r = await post({ tool, args }); if (!r.ok) throw new Error(r.error || '使用状況を読み込めませんでした'); return r.result; } });
+  const usageView = initUsageView();
   const shiftView = initShiftView({ call: async (tool, args) => { const r = await post({ tool, args }); if (!r.ok) throw new Error(r.error || 'シフトを読み込めませんでした'); return r.result; } });
   const courseView = initCourseView({ call: async (tool, args) => { const r = await post({ tool, args }); if (!r.ok) throw new Error(r.error || '履修を読み込めませんでした'); return r.result; } });
   const buildView = initBuildView({ call: async (tool, args) => { const r = await post({ tool, args }); if (!r.ok) throw new Error(r.error || '製作の進捗を読み込めませんでした'); return r.result; } });   // after finance-view: it reuses the .vf-* styles
@@ -381,7 +381,7 @@ export function initGoogleTools({ live, approval, authHeaders, agents, systemChe
         const note = ACTIVITY[tool]; if (note && hudLive) { try { const d = note(args, r.result) || {}; hudLive.logActivity(d); if (tool.startsWith('calendar_') || tool.startsWith('tasks_')) hudLive.refresh(); } catch {} }
         usage.tool(tool);
         if (r.result?._quota) { usage.quota(tool === 'deep_think' ? 'groq' : tool, r.result._quota); delete r.result._quota; }
-        if (tool === 'usage_report') { try { usageView.show(r.result); autoClose.arm({ close: usageView.close, el: usageView.el }); } catch (e) { console.warn('[usage] show', e?.message ?? e); } return { output: { ...buildReport(r.result), shown: '使用状況の画面（図とグラフ）を表示しました。要点を短く伝えてください' } }; }
+        if (tool === 'usage_report') { try { usageView.show(r.result); autoClose.arm({ close: usageView.close, el: usageView.el }); } catch (e) { console.warn('[usage] show', e?.message ?? e); } return { output: { ...r.result.report, shown: '利用状況の画面（図とグラフ）を表示しました。要点を短く伝えてください' } }; }
         if (SHIFT_WRITES.has(tool)) {   // shifts / wages / goals recorded by voice: the screen shows it right away
           const m = (r.result?.added?.[0]?.date || r.result?.after?.date || r.result?.removed?.date || '').slice(0, 7) || undefined;
           try { shiftView.open(m); autoClose.arm({ close: shiftView.close, el: shiftView.el }); } catch (e) { console.warn('[shift] open', e?.message ?? e); }
@@ -412,5 +412,5 @@ export function initGoogleTools({ live, approval, authHeaders, agents, systemChe
   live.onToolCancel = (ids) => approval.cancel(ids);
   /** Run a read-only server tool without the model (used to prefetch the briefing while the greeting plays). */
   async function runServerTool(tool, args = {}) { const r = await post({ tool, args }); return r.ok ? r.result : null; }
-  return { presentArtifact, runServerTool, hearFiles: (t, o) => fileView.hear(t, o), files: fileView, handleTool };
+  return { openUsage: () => usageView.open(), openFiles: () => fileView.open(), presentArtifact, runServerTool, hearFiles: (t, o) => fileView.hear(t, o), files: fileView, handleTool };
 }

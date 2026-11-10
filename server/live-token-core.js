@@ -7,7 +7,7 @@ import { promptVars } from './profile/vars.js';
 import { currentVars, currentProfile } from './profile/index.js';
 import { cfgEnv, currentConfig } from './config/resolve.js';
 import { listConnectorDeclarations } from './connectors/index.js';
-import { recordUsage } from './usage.js';
+import { recordUsage, gate, hardLimit } from './usage.js';
 export { sendHtml, sendJson } from './http.js';
 import { VERSION } from './version.js';
 import { brainProfileSummary, profileBlock, brainCatalog, catalogBlock } from './brain.js';
@@ -44,13 +44,17 @@ export function readConfig(env = cfgEnv) {
   };
 }
 
-// Abuse protection: at most 30 session tokens an hour PER USER (counted in the database, the same on every serverless instance). Outside a request
-// (scripts) there is no user and a per-process counter is used.
+// Abuse protection: at most `liveTokensPerHour` session tokens an hour PER USER (an administrator can change it per account; default 30), counted in the database, the
+// same on every serverless instance. Outside a request (scripts) there is no user and a per-process counter is used.
 const MAX_TOKENS_PER_HOUR = 30;
 const mintLog = [];
 async function mintAllowed(now) {
   const c = currentConfig();
-  if (typeof c.hit === 'function') return c.hit('mint', 3600, MAX_TOKENS_PER_HOUR);
+  if (typeof c.hit === 'function') {
+    const lim = await hardLimit('liveTokensPerHour');
+    if (lim === null) return true;   // unlimited for this account
+    return c.hit('mint', 3600, lim ?? MAX_TOKENS_PER_HOUR);
+  }
   while (mintLog.length && now - mintLog[0] > 3600_000) mintLog.shift();
   if (mintLog.length >= MAX_TOKENS_PER_HOUR) return false;
   mintLog.push(now); return true;
@@ -58,6 +62,8 @@ async function mintAllowed(now) {
 
 export async function mintLiveToken(cfg, { useFallback = false, plain = false } = {}) {
   const now = Date.now();
+  // the user's own stop limit on Live time / starts ("warn" never stops anything); the administrator's hourly limit on starts is mintAllowed below
+  await gate('gemini', { metrics: ['live_sessions', 'live_seconds'] });
   if (!(await mintAllowed(now))) throw Object.assign(new Error('rate_limited'), { status: 429 });
   const ai = new GoogleGenAI({ apiKey: cfg.apiKey, httpOptions: { apiVersion: 'v1alpha' } });
   const [profile, catalog] = await Promise.all([brainProfileSummary().catch(() => null), brainCatalog().catch(() => null)]);
@@ -112,6 +118,7 @@ export async function handleLiveToken(req, cfg) {
     return { status: 200, body: await mintLiveToken(cfg, { useFallback, plain }) };
   } catch (e) {
     if (e?.message === 'no_fallback') return { status: 404, body: { error: 'no_fallback' } };
+    if (e?.name === 'UsageLimitError') return { status: 429, body: { error: e.code, message: e.message, limit: e.limit } };   // a limit of the user's own (or the administrator's), in Japanese
     console.error('[live-token]', e?.status || '', e?.message || e);
     return { status: e?.status === 429 ? 429 : 500, body: { error: e?.status === 429 ? 'rate_limited' : 'internal_error' } };
   }

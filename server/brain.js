@@ -7,6 +7,7 @@ import { U, AS, TZ } from './profile/index.js';
 import { localDate, localHM } from '../shared/tz.js';
 import { currentConfig } from './config/resolve.js';
 import { userState } from './auth/user-state.js';
+import { assertRoomForNote } from './usage.js';
 const trunc = (s, n) => { s = String(s ?? ''); return s.length > n ? s.slice(0, n) + '…' : s; };
 
 /** The second brain exists for every signed-in user (their rows); outside a user's request (scripts) there is none. */
@@ -134,6 +135,7 @@ export async function brainWrite({ path, content, mode = 'append' }) {
     if (mode === 'create' && cur) throw new Error(`すでに存在します: ${rel}（追記は append）`);
     const next = mode === 'append' && cur ? cur.content.replace(/\s+$/, '') + '\n\n' + text.replace(/^\s+/, '') + '\n' : text.replace(/\s+$/, '') + '\n';
     if (next.length > 200000) throw new Error('ノートが大きくなりすぎます。別のノートに分けてください');
+    if (!cur) await assertRoomForNote(r);   // a new note: the administrator's cap on the number of notes
     const w = await r.notes.put({ path: rel, content: next });
     return { path: rel, action: cur ? mode : 'create', rev: w.rev };
   });

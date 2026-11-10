@@ -16,6 +16,7 @@ import * as CX from './connectors/api.js';
 import * as BUILDS from './account/builds.js';
 import * as MEM from './account/notes.js';
 import * as FILES from './account/files.js';
+import * as USAGE from './account/usage.js';
 import * as SYNC from './brain-sync.js';
 import * as ADMIN from './admin/api.js';
 import { dailyCron } from './admin/cron.js';
@@ -37,7 +38,11 @@ export const ROUTES = [
   { method: 'GET', path: '/api/elvar/devices', auth: 'user', handler: API.listDevices },
   { method: 'POST', path: '/api/elvar/devices', auth: 'user', authOpts: FRESH, handler: API.createDevice },
   { method: 'DELETE', path: '/api/elvar/devices/:id', auth: 'user', handler: API.removeDevice },
-  { method: 'GET', path: '/api/elvar/usage', auth: 'user', handler: API.getUsage },
+  // ---- usage (P6): what was used, the user's own soft limits (warn / stop), the page's heartbeat (Live time, tools used)
+  { method: 'GET', path: '/api/elvar/usage', auth: 'user', handler: USAGE.getUsage },
+  { method: 'PUT', path: '/api/elvar/usage/limits', auth: 'user', handler: USAGE.putLimit },
+  { method: 'DELETE', path: '/api/elvar/usage/limits/:provider/:metric/:period', auth: 'user', handler: USAGE.deleteLimit },
+  { method: 'POST', path: '/api/elvar/usage/report', auth: 'user', handler: USAGE.postReport },
   // ---- the account itself (principle 7)
   { method: 'GET', path: '/api/elvar/account/deletion', auth: 'user', authOpts: { allowPendingDeletion: true }, handler: API.getDeletion },
   { method: 'GET', path: '/api/elvar/account/export', auth: 'user', authOpts: FRESH, handler: API.exportData },
@@ -48,6 +53,8 @@ export const ROUTES = [
   { method: 'POST', path: '/api/elvar/admin/users/:id/suspend', auth: 'admin', authOpts: FRESH, handler: ADMIN.suspendUser },
   { method: 'POST', path: '/api/elvar/admin/users/:id/unsuspend', auth: 'admin', authOpts: FRESH, handler: ADMIN.unsuspendUser },
   { method: 'POST', path: '/api/elvar/admin/users/:id/quota', auth: 'admin', authOpts: FRESH, handler: ADMIN.setQuota },
+  { method: 'POST', path: '/api/elvar/admin/users/:id/limits', auth: 'admin', authOpts: FRESH, handler: ADMIN.setLimits },
+  { method: 'GET', path: '/api/elvar/admin/users/:id/usage', auth: 'admin', handler: ADMIN.userUsage },
   // ---- cron
   { method: 'GET', path: '/api/elvar/cron/daily', auth: 'cron', handler: dailyCron },
   { method: 'POST', path: '/api/elvar/cron/daily', auth: 'cron', handler: dailyCron },
@@ -102,7 +109,8 @@ export const ROUTES = [
   { method: 'POST', path: '/api/elvar/brain-sync/import', auth: 'user', handler: SYNC.syncImportRoute },
   { method: 'POST', path: '/api/elvar/brain-sync/push', auth: 'user', handler: SYNC.syncPushRoute },
   // ---- the file vault (P5): originals in Supabase Storage under users/<uid>/, metadata + memory + extracted text in the database, quota enforced before the upload starts.
-  //      The browser uploads straight to a signed Storage link (reserve -> PUT -> finalize) and downloads from a signed link; no file passes through these functions.
+  //      The browser uploads straight to Storage with its own access token (reserve -> POST -> finalize; the live reservation is checked on every write) and downloads from a
+  //      short signed link; no file passes through these functions.
   { method: 'GET', path: '/api/elvar/files', auth: 'user', handler: FILES.listFiles },
   { method: 'GET', path: '/api/elvar/files/search', auth: 'user', handler: FILES.searchFiles },
   { method: 'POST', path: '/api/elvar/files/reserve', auth: 'user', handler: FILES.reserveFile },
@@ -166,7 +174,7 @@ async function dispatch(compiled, req, { pathname, query = {}, body = {} }) {
   try {
     if (isUserAuth(hit.r.auth)) {
       const a = await authenticate(hit.r.auth, req, hit.r.authOpts);
-      if (!a.ok) return bad(a.status, a.error);
+      if (!a.ok) return { status: a.status, body: { error: a.error, ...(a.message ? { message: a.message } : {}) } };
       if (a.ctx.loadConfig) await a.ctx.loadConfig();   // the user's own settings, secrets and profile
       const cfg = a.ctx.cfg;                            // strict: a user's (or cron's) request never reads the owner-mode environment
       return await runWithConfig(cfg, () => hit.r.handler({ req, body, query, params: hit.params, cfg, auth: { mode: a.ctx.kind }, user: a.ctx }));
@@ -175,6 +183,7 @@ async function dispatch(compiled, req, { pathname, query = {}, body = {} }) {
     const cfg = strictConfig({ mode: 'none' });
     return await runWithConfig(cfg, () => hit.r.handler({ req, body, query, params: hit.params, cfg, auth: { mode: 'none' } }));
   } catch (e) {
+    if (e?.name === 'UsageLimitError') return { status: 429, body: { error: e.code, message: e.message, limit: e.limit } };   // a limit hit inside a handler: the Japanese sentence says which and why
     if (e?.code === 'kek_missing' || e?.code === 'auth_unconfigured') { console.error('[elvar] platform is not configured:', e.code); return bad(503, 'platform_unconfigured'); }
     console.error('[elvar]', e?.code || e?.message || e);
     if (e?.status === 502 || e?.status === 503) return bad(e.status, e.code === 'db_unavailable' ? 'db_unavailable' : 'store_unavailable');

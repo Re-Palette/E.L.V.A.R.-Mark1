@@ -1,19 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dayRows, toolBreakdown, barsSvg, toolLabel } from '../web/src/usage-view.js';
+import { dayRows, toolBreakdown, usageRows, barsSvg, toolLabel } from '../web/src/usage-view.js';
 
-const NOW = Date.parse('2026-05-20T03:00:00Z');   // 2026-05-20 12:00 JST
-test('dayRows: n days oldest first, missing days are zeros, JST days', () => {
-  const raw = { days: { '2026-05-20': { liveSeconds: 600, liveSessions: 2, tools: { news: 3, weather: 1 } }, '2026-05-18': { liveSeconds: 90, liveSessions: 1, tools: { deep_think: 2 } } } };
-  const r = dayRows(raw, 4, NOW);
+test('dayRows: n days oldest first ending today, missing days are zeros, live seconds -> minutes, tokens summed', () => {
+  const daily = [{ day: '2026-05-20', provider: 'gemini', metric: 'live_seconds', amount: 600 }, { day: '2026-05-20', provider: 'gemini', metric: 'calls', amount: 4 }, { day: '2026-05-18', provider: 'gemini', metric: 'live_seconds', amount: 90 }, { day: '2026-05-18', provider: 'groq', metric: 'input_tokens', amount: 50 }, { day: '2026-05-18', provider: 'groq', metric: 'output_tokens', amount: 5 }];
+  const r = dayRows(daily, '2026-05-20', 4);
   assert.deepEqual(r.map((x) => x.day), ['2026-05-17', '2026-05-18', '2026-05-19', '2026-05-20']);
-  assert.equal(r[3].liveMinutes, 10); assert.equal(r[3].calls, 4); assert.equal(r[2].calls, 0); assert.equal(r[1].liveMinutes, 1.5);
-  assert.equal(dayRows({}, 3, NOW).length, 3);
+  assert.equal(r[3].liveMinutes, 10); assert.equal(r[3].calls, 4); assert.equal(r[2].calls, 0); assert.equal(r[1].liveMinutes, 1.5); assert.equal(r[1].tokens, 55); assert.equal(dayRows([], '2026-05-20', 3).length, 3);
 });
-test('toolBreakdown: sums over days, most used first, top N', () => {
-  const t = toolBreakdown([{ tools: { a: 2, b: 5 } }, { tools: { a: 4, c: 1 } }], 2);
-  assert.deepEqual(t, [{ name: 'a', count: 6 }, { name: 'b', count: 5 }]);
+test('toolBreakdown: most used first, ties by name, top N; usageRows lists only providers with a number or a limit, in catalog order, with the source of each number', () => {
+  assert.deepEqual(toolBreakdown([{ name: 'a', count: 6 }, { name: 'c', count: 1 }, { name: 'b', count: 6 }], 2), [{ name: 'a', count: 6 }, { name: 'b', count: 6 }]);
   assert.equal(toolLabel('deep_think'), '難しい推論'); assert.equal(toolLabel('zzz'), 'zzz');
+  const s = { catalog: { gemini: { label: 'Gemini', metrics: { calls: { label: '呼び出し', unit: '回', scale: 1 }, live_seconds: { label: 'Live', unit: '分', scale: 1 / 60 } } }, groq: { label: 'Groq', metrics: { calls: { label: '呼び出し', unit: '回', scale: 1 } } } },
+    today: { gemini: { calls: 3 } }, month: { gemini: { calls: 9 } }, meters: [{ provider: 'groq', metric: 'calls', period: 'day' }], sources: { calls: 'server', live_seconds: 'client' } };
+  assert.deepEqual(usageRows(s).map((r) => [r.provider, r.metric, r.source]), [['gemini', 'calls', 'server'], ['groq', 'calls', 'server']]);
 });
 test('barsSvg: one bar per value, budget line, over-budget bar is red, escapes labels', () => {
   const s = barsSvg([0, 30, 70], ['5/18', '5/19', '<x>'], { line: 60, unit: '分' });

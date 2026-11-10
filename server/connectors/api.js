@@ -13,6 +13,7 @@ import { newBind, bindCookie, nonceFromReq } from '../oauth/browser-bind.js';
 import { safeFetchAsFetch, privateAllowed } from '../net/safe-fetch.js';
 import { AGENTS } from '../agents/registry.js';
 import { redirectUriFor, confirmPage } from '../google/connect.js';
+import { hardLimit } from '../usage.js';
 import { validateManifest, applyToolPrefs, mergeRemoteTools, publicConnector, randomId, cleanText, MAX_CONNECTORS, MAX_PINNED, allocateExposure } from './manifest.js';
 import { probeHttp } from './http.js';
 import { clientFor } from './index.js';
@@ -93,11 +94,12 @@ export async function createConnector({ user, body }) {
   if (!(await cfg.hit('cx-write', 60, 30))) return bad(429, 'rate_limited', '操作が多すぎます。少し待ってください');
   const id = randomId();
   const draft = { ...body, tools: body?.type === 'http' ? body.tools : undefined, enabled: body?.type === 'mcp' ? false : body?.enabled };   // an MCP connector starts disabled: it is switched on after its tools were reviewed
-  const v = validateManifest(draft, { existing, id }); if (!v.ok) return bad(422, 'invalid', '入力を確認してください', { errors: v.errors });
-  if (existing.length >= MAX_CONNECTORS) return bad(422, 'invalid', `連携アプリは${MAX_CONNECTORS}個までです`);
+  const lim = await hardLimit('maxConnectors'), max = lim === null ? Infinity : lim ?? MAX_CONNECTORS;   // an administrator can change it per account (docs 6.3)
+  const v = validateManifest(draft, { existing, id, max }); if (!v.ok) return bad(422, 'invalid', '入力を確認してください', { errors: v.errors });
+  if (existing.length >= max) return bad(422, 'invalid', `連携アプリは${max}個までです`);
   if (needsSecret(v.manifest) && !sec.auth) return bad(422, 'invalid', '認証の値（トークンなど）を入れてください', { errors: [{ path: 'auth.secret', message: '認証の値を入れてください' }] });
   await user.db(async (r) => {
-    if ((await r.connectors.list()).length >= MAX_CONNECTORS) throw Object.assign(new Error('too_many_connectors'), { status: 422, code: 'too_many_connectors' });
+    if ((await r.connectors.list()).length >= max) throw Object.assign(new Error('too_many_connectors'), { status: 422, code: 'too_many_connectors' });
     await r.connectors.put(v.manifest); await applySecrets(r, ring, id, sec, v.manifest);
     await r.audit.append({ action: 'connector.created', target: id, meta: { type: v.manifest.type } });
   });

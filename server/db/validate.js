@@ -124,6 +124,7 @@ export function splitRuns(turns, gapMs) {
 
 // ---- P5: the file vault
 export const FILE_KINDS = Object.freeze(['pdf', 'image', 'text', 'office', 'other']);
+export const HARD_LIMIT_KEYS = Object.freeze(['maxFileBytes', 'requestsPerMinute', 'liveTokensPerHour', 'connectorCallsPerDay', 'exportsPerDay', 'maxConnectors', 'maxNotes', 'geminiCallsPerDay', 'groqCallsPerDay', 'exaCallsPerDay', 'newsdataCallsPerDay', 'sarashinaCallsPerDay', 'googleCallsPerDay']);   // the catalog of app.admin_set_limits (migration 18)
 export const FILE_MAX_BYTES = 62914560;          // O1: 60 MB per file (accounts.hard_limits.maxFileBytes can only lower it)
 export const FILE_TEXT_MAX_BYTES = 4000000;      // the extracted text of one file
 export const FILE_RESERVE_MINUTES = 30;

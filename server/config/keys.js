@@ -84,6 +84,7 @@ export const KEYS = [
   infra('ELVAR_TEST_MODE', 'test', 'Test only: allows test-minted user identities'),
   infra('ELVAR_SIGNUP', 'platform', 'Sign-up policy shown to the app: open | invite | closed (enforced by the Auth hook, see supabase/migrations/..._signup_admin.sql)'),
   infra('ELVAR_TURNSTILE_SITE_KEY', 'platform', 'Cloudflare Turnstile site key (public). Set the matching secret in the Supabase Auth CAPTCHA settings'),
+  infra('ELVAR_DEFAULT_LIMITS', 'platform', 'JSON object of default hard limits per account (the keys of server/usage-limits.js HARD_LIMITS), used where an account has no value of its own'),
   infra('ELVAR_BOOTSTRAP_ADMIN_EMAIL', 'platform', 'The e-mail whose confirmed account becomes the first admin (granted by cron/daily)'),
   infra('NODE_ENV', 'server', 'Set to production by the host: the dev login is refused then'),
   infra('ELVAR_DEV_CAPTCHA', 'test', 'Local development only: make the fake Auth issuer require the (fake) captcha'),

@@ -2,6 +2,7 @@
 // an object of the same shape as the Google tools ({ name, kind, danger, schema, describe, run }), so validation, the approval ticket, the card and the
 // audit log are the existing code. Tool declarations are built from the stored snapshot: no tools/list at token time.
 import { currentConfig } from '../config/resolve.js';
+import { gate, recordUsage } from '../usage.js';
 import { ConnectorError, toConnectorError } from './errors.js';
 import { toolFullName, hostOf, cleanText, allocateExposure, GATEWAY_TOOLS } from './manifest.js';
 import { toolPolicy } from './policy.js';
@@ -40,6 +41,8 @@ export async function runConnectorTool(cfg, c, t, args, { fetchImpl } = {}) {
   const pol = toolPolicy(c, t);
   if (!pol.allowed) throw new ConnectorError('disabled', pol.reason, 403);
   if (!(await rateAllowed(c))) throw new ConnectorError('rate_limited', `${c.name} への呼び出しが多すぎます（1分に${c.limits?.perMinute || 30}回まで）。少し待ってください`, 429);
+  await gate('connector');   // the user's own stop limit or the administrator's daily limit on connector calls (a UsageLimitError, not a connector error)
+  await recordUsage('connector', 'calls', 1);
   try {
     let out;
     if (c.type === 'http') out = await runHttpTool(c, t, args, { secret: cfg.cxSecret?.(c.id), ...(fetchImpl ? { fetchImpl } : {}) });

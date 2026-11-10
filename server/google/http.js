@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { googleConfig, base } from './config.js';
 import { markReauth } from './tok.js';
 import { currentConfig } from '../config/resolve.js';
+import { meteredFetch } from '../usage.js';
 
 export class GoogleError extends Error {
   constructor(status, message, code) { super(message); this.status = status; this.code = code; }
@@ -55,11 +56,11 @@ export async function gfetch(service, path, o = {}) {
   const headers = { authorization: `Bearer ${await accessToken(cfg)}`, ...(o.headers || {}) };
   let body = o.body;
   if (o.json !== undefined) { headers['content-type'] = 'application/json'; body = JSON.stringify(o.json); }
-  let r = await fetch(url, { method: o.method || 'GET', headers, body, signal: AbortSignal.timeout(20_000) });
+  let r = await meteredFetch('google', url, { method: o.method || 'GET', headers, body, signal: AbortSignal.timeout(20_000) });
   if (r.status === 401) {   // the cached access token was revoked early: get a fresh one once (a refused refresh token ends in the reconnect message)
     cache.delete(cacheKey(cfg));
     headers.authorization = `Bearer ${await accessToken(cfg)}`;
-    r = await fetch(url, { method: o.method || 'GET', headers, body, signal: AbortSignal.timeout(20_000) });
+    r = await meteredFetch('google', url, { method: o.method || 'GET', headers, body, signal: AbortSignal.timeout(20_000) });
   }
   if (r.status === 204) return null;
   const raw = await r.text();

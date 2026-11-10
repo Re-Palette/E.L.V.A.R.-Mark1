@@ -201,7 +201,7 @@ test('admin: metadata only; needs the claim AND the table row; suspend / lift ar
   assert.equal((await h.call('GET', '/api/elvar/admin/users', await h.bearer(h.mkUser(), { app_metadata: { elvar_role: 'admin' } }))).status, 403, 'the claim alone is not enough');
   const list = (await h.call('GET', '/api/elvar/admin/users', ha)).body.users;
   const row = list.find((x) => x.userId === alice);
-  assert.deepEqual(Object.keys(row).sort(), ['calls30d', 'callsToday', 'createdAt', 'email', 'isAdmin', 'lastSignInAt', 'liveSecondsToday', 'status', 'storageQuotaBytes', 'storageUsedBytes', 'userId']);
+  assert.deepEqual(Object.keys(row).sort(), ['appliedLimits', 'calls30d', 'callsToday', 'createdAt', 'email', 'hardLimits', 'isAdmin', 'lastSignInAt', 'liveSecondsToday', 'status', 'storageQuotaBytes', 'storageUsedBytes', 'suspendedReason', 'userId']);
   assert.ok(!JSON.stringify(list).includes(GEMINI) && !/profile|settings|secret|ct|token/i.test(Object.keys(row).join(',')), 'no content, no secrets');
   assert.equal(row.email, 'alice@example.test'); assert.equal(row.status, 'active');
   const old = await h.adminBearer(admin); void old;

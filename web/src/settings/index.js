@@ -67,7 +67,7 @@ export function initSettingsPanel(app) {
 
   const device = mountDevice(pane('device'), app, { close });
   const parts = {
-    account: mountAccount(pane('account')),
+    account: mountAccount(pane('account'), { openUsage: () => { close(); app.openUsage?.(); } }),
     keys: mountKeys(pane('keys')),
     google: mountGoogle(pane('google')),
     connectors: mountConnectorsPane(pane('connectors')),

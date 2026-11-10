@@ -71,13 +71,12 @@ test('deep_think tool: calls Groq with Bearer key; only declared when GROQ_API_K
   }
 });
 
-test('usage_report: budgets from env; deep_think passes Groq rate-limit headers through as _quota', async () => {
+test('usage_report needs a signed-in user (the numbers are the account\'s own); deep_think passes Groq rate-limit headers through as _quota', async () => {
   (await import('../server/llm-health.js'))._reset();
   const real = globalThis.fetch, k = process.env.GROQ_API_KEY, n = process.env.GEMINI_LIVE_DAILY_MINUTES;
   try {
     process.env.GEMINI_LIVE_DAILY_MINUTES = '45'; process.env.GROQ_API_KEY = 'gsk-x';
-    const r = await TOOL_MAP.usage_report.run({});
-    assert.equal(r.budgets.geminiLiveMinutesPerDay, 45); assert.equal(r.configured.groq, true);
+    await assert.rejects(TOOL_MAP.usage_report.run({}), /ログインしているときだけ/);
     globalThis.fetch = async () => ({ ok: true, status: 200, headers: { get: (h) => ({ 'x-ratelimit-limit-requests': '1000', 'x-ratelimit-remaining-requests': '990', 'x-ratelimit-limit-tokens': '8000', 'x-ratelimit-remaining-tokens': '7000' }[h]) }, json: async () => ({ choices: [{ message: { content: 'ok' } }] }) });
     const d = await TOOL_MAP.deep_think.run({ question: 'q' });
     assert.deepEqual([d._quota.requestsLimit, d._quota.requestsRemaining, d._quota.tokensRemaining], [1000, 990, 7000]);

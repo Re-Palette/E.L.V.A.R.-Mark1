@@ -113,8 +113,33 @@ export function createMemoryDb({ now = null } = {}) {
             const sum = (pred) => tables.usage_daily.filter((r) => r.user_id === u.id && pred(r)).reduce((x, r) => x + r.amount, 0);
             return { userId: u.id, email: u.email ?? null, createdAt: u.createdAt ? iso(u.createdAt) : null, lastSignInAt: u.lastSignInAt ? iso(u.lastSignInAt) : null, status: a?.status || 'active', isAdmin: Boolean(tables.admins.find((r) => r.user_id === u.id)),
               storageQuotaBytes: a?.storage_quota_bytes ?? DEFAULT_QUOTA, storageUsedBytes: su ? su.files_bytes + su.text_bytes + su.notes_bytes + su.messages_bytes : 0,
-              callsToday: sum((r) => r.day === day && r.metric === 'calls'), liveSecondsToday: sum((r) => r.day === day && r.metric === 'live_seconds'), calls30d: sum((r) => r.day >= since && r.metric === 'calls') };
+              callsToday: sum((r) => r.day === day && r.metric === 'calls'), liveSecondsToday: sum((r) => r.day === day && r.metric === 'live_seconds'), calls30d: sum((r) => r.day >= since && r.metric === 'calls' && r.provider !== 'tool'),
+              hardLimits: clone(a?.hard_limits || {}), suspendedReason: a?.suspended_reason ?? null };
           });
+        },
+        /** The hard limits of one user: the same catalog and rules as app.admin_set_limits (migration 18). */
+        async setLimits(userId, limits) {
+          if (!find('admins', uid)) throw dbError('forbidden', 403);
+          V.need(typeof userId === 'string' && UUID_RE.test(userId) && limits && typeof limits === 'object' && !Array.isArray(limits) && Object.keys(limits).length <= 20);
+          if (!users.has(userId)) throw dbError('not_found', 404);
+          let a = tables.accounts.find((r) => r.user_id === userId);
+          if (!a) { a = { user_id: userId, status: 'active', storage_quota_bytes: DEFAULT_QUOTA, hard_limits: {}, suspended_reason: null, created_at: clock() }; tables.accounts.push(a); }
+          const from = clone(a.hard_limits || {}), next = { ...from };
+          for (const [k, v] of Object.entries(limits)) {
+            V.need(V.HARD_LIMIT_KEYS.includes(k));
+            if (v === null) delete next[k];
+            else { V.need(Number.isInteger(v) && v >= 0 && v <= 2000000000 && (k !== 'maxFileBytes' || v <= V.FILE_MAX_BYTES)); next[k] = v; }
+          }
+          a.hard_limits = next;
+          tables.audit_log.push({ user_id: userId, id: ++auditSeq, at: clock(), actor: 'admin', actor_id: uid, action: 'account.limits_changed', target: null, meta: { from, to: clone(next) } });
+          return clone(next);
+        },
+        async userUsage(userId, days = 14) {
+          if (!find('admins', uid)) throw dbError('forbidden', 403);
+          V.need(typeof userId === 'string' && UUID_RE.test(userId) && Number.isInteger(days) && days >= 1 && days <= 60);
+          if (!users.has(userId)) throw dbError('not_found', 404);
+          const since = new Date(clock() - (days - 1) * 86400_000).toISOString().slice(0, 10);
+          return tables.usage_daily.filter((r) => r.user_id === userId && r.day >= since && r.provider !== 'tool').sort((a, b) => `${a.day}|${a.provider}|${a.metric}`.localeCompare(`${b.day}|${b.provider}|${b.metric}`)).map((r) => ({ day: r.day, provider: r.provider, metric: r.metric, amount: r.amount }));
         },
         async setQuota(userId, bytes) {
           if (!find('admins', uid)) throw dbError('forbidden', 403);
@@ -492,12 +517,14 @@ export function createMemoryDb({ now = null } = {}) {
       },
 
       usage: {
-        async record({ provider, metric, amount = 1, source = 'server' }) {
+        async record({ provider, metric, amount = 1, source = 'server', day: userDay = null }) {
           V.need(typeof provider === 'string' && provider.length >= 1 && provider.length <= 40 && typeof metric === 'string' && metric.length >= 1 && metric.length <= 40
-            && Number.isFinite(amount) && amount >= 0 && amount <= 1e9 && ['server', 'client'].includes(source));
+            && Number.isFinite(amount) && amount >= 0 && amount <= 1e9 && ['server', 'client'].includes(source) && (userDay === null || /^\d{4}-\d{2}-\d{2}$/.test(userDay)));
           if (!users.has(uid)) throw dbError('invalid_reference', 409);
+          const dbDay = new Date(clock()).toISOString().slice(0, 10), within = (x) => Math.abs(Date.parse(x) - Date.parse(dbDay)) <= 86400_000;   // like the function: the database date +-1 day
+          if (userDay !== null && !within(userDay)) throw dbError('invalid_value', 400);
           tables.usage_events.push({ user_id: uid, id: ++auditSeq, at: clock(), provider, metric, amount, source, meta: null });
-          const day = new Date(clock()).toISOString().slice(0, 10); const d = tables.usage_daily.find((r) => r.user_id === uid && r.day === day && r.provider === provider && r.metric === metric);
+          const day = userDay ?? dbDay; const d = tables.usage_daily.find((r) => r.user_id === uid && r.day === day && r.provider === provider && r.metric === metric);
           if (d) d.amount += amount; else tables.usage_daily.push({ user_id: uid, day, provider, metric, amount });
         },
         async daily({ from, to }) { return rows('usage_daily', uid).filter((r) => r.day >= from && r.day <= to).sort((a, b) => `${a.day}|${a.provider}|${a.metric}`.localeCompare(`${b.day}|${b.provider}|${b.metric}`)).map((r) => ({ day: r.day, provider: r.provider, metric: r.metric, amount: r.amount })); },
@@ -544,6 +571,8 @@ export function createMemoryDb({ now = null } = {}) {
         notes: remove('notes', (r) => r.deleted_at !== null && r.deleted_at <= clock() - 30 * 864e5),
         messages: remove('messages', (m) => { const s = tables.settings.find((x) => x.user_id === m.user_id)?.settings?.MESSAGE_RETENTION_DAYS, d = /^[0-9]{1,5}$/.test(String(s ?? '')) ? Number(s) : 180; return d > 0 && m.at < clock() - d * 864e5; }),
         conversations: remove('conversations', (c) => c.last_at < clock() - 864e5 && !tables.messages.some((m) => m.user_id === c.user_id && m.conversation_id === c.id)),
+        // P6 (migration 18): raw usage events 90 days, daily totals 2 years
+        usage_events: remove('usage_events', (r) => r.at <= clock() - 90 * 864e5), usage_daily: remove('usage_daily', (r) => r.day <= new Date(clock() - 730 * 864e5).toISOString().slice(0, 10)),
       };
     },
     async residualCheck(vuid) {
