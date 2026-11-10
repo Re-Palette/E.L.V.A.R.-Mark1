@@ -1,12 +1,13 @@
 // The browser side of the file vault (web/src/file-store.js, file-legacy.js, shared/file-record.js) against the REAL server routes on the memory database and the fake Storage:
-// the same code path the screen takes (reserve -> PUT -> finalize), with the HTTP and the signed-link transfers replaced by direct calls.
+// the same code path the screen takes (reserve -> upload with the user's own token -> finalize), with the HTTP and the Storage transfers replaced by direct calls.
 import test from 'node:test';
 import crypto from 'node:crypto';
 import assert from 'node:assert/strict';
 import { startHarness } from './helpers/api-harness.mjs';
-import { getStorage } from '../server/storage/index.js';
-import { createFileStore, capText, TEXT_MAX_CHARS } from '../web/src/file-store.js';
-import { migrateLibrary } from '../web/src/file-legacy.js';
+import { getStorage, pathOwner } from '../server/storage/index.js';
+import { browserUpload, pathOfUpload } from './helpers/upload.mjs';
+import { createFileStore, capText, TEXT_MAX_CHARS, xhrUpload } from '../web/src/file-store.js';
+import { migrateLibrary, legacyAsk, legacySig } from '../web/src/file-legacy.js';
 import { toColumns, indexOf, metaOf } from '../shared/file-record.js';
 import { buildIndex, sha256Hex } from '../web/src/file-index.js';
 import { meterModel, accountQuotaText, checkQuota, LIMITS, MB } from '../web/src/file-lib.js';
@@ -26,7 +27,7 @@ const apiFor = (who, log = []) => async (path, { method = 'GET', body } = {}) =>
   const r = await h.call(method, u.pathname, who, body ?? {}, Object.fromEntries(u.searchParams)); return { status: r.status, body: r.body };
 };
 const transfer = {
-  upload: async (up, blob) => { await st.uploadWithToken(new URL(up.url).searchParams.get('token'), Buffer.from(await blob.arrayBuffer()), { contentType: up.headers['content-type'] }); },
+  upload: async (up, blob) => { await browserUpload(st, pathOwner(pathOfUpload(up)), up, Buffer.from(await blob.arrayBuffer())); },
   download: async (url) => new Blob([(await st.downloadWithToken(new URL(url).searchParams.get('token'))).bytes]),
 };
 const newStore = (who, extra = {}) => createFileStore({ api: apiFor(who), idb: null, storage: null, ...transfer, ...extra });
@@ -101,7 +102,7 @@ test('migrating the old local library: one by one, memory and tags kept, the ori
   items.push({ meta: { id: 'noindex', name: 'noindex.txt', type: 'text/plain', kind: 'text', size: 5, addedAt: 2 }, blob: new Blob(['plain']), index: null, text: '' });
   const local = new Map(items.map((i) => [i.meta.id, i])), destroyed = []; const progress = [];
   const lib = { summary: async () => ({ count: local.size, bytes: 1 }), async *records() { for (const i of [...local.values()]) yield i; }, remove: async (id) => { local.delete(id); }, destroy: async () => { destroyed.push(1); } };
-  const r = await migrateLibrary(lib, { store: s, onProgress: (p) => progress.push(p.name), analyse: async (blob) => ({ index: buildIndex({ text: 'plain', status: 'ok' }, { name: 'noindex.txt', ext: 'txt', size: blob.size, sha256: await sha256Hex(new Uint8Array(await blob.arrayBuffer())) }), text: 'plain', sha256: await sha256Hex(new Uint8Array(await blob.arrayBuffer())) }) });
+  const r = await migrateLibrary(lib, { confirmedAccount: 'a@example.test', store: s, onProgress: (p) => progress.push(p.name), analyse: async (blob) => ({ index: buildIndex({ text: 'plain', status: 'ok' }, { name: 'noindex.txt', ext: 'txt', size: blob.size, sha256: await sha256Hex(new Uint8Array(await blob.arrayBuffer())) }), text: 'plain', sha256: await sha256Hex(new Uint8Array(await blob.arrayBuffer())) }) });
   assert.deepEqual([r.moved, r.skipped, r.failed, r.stopped, r.remaining], [3, ['already-copy.txt'], [], null, 0]);
   assert.equal(local.size, 0, 'every local copy was removed after it was in the account'); assert.equal(destroyed.length, 1, 'and the emptied library was deleted');
   assert.ok(progress.includes('old1.txt') && progress.includes('noindex.txt'));
@@ -113,14 +114,14 @@ test('migrating the old local library: one by one, memory and tags kept, the ori
   const small = await analysed('s.txt', 'x'.repeat(80) + crypto.randomUUID().slice(0, 4)), big = await analysed('b.txt', 'y'.repeat(300));
   const loc2 = new Map([['s', { meta: { id: 's', name: 's.txt', type: 'text/plain', kind: 'text', size: small.blob.size, addedAt: 1 }, blob: small.blob, index: small.index, text: small.text }], ['b', { meta: { id: 'b', name: 'b.txt', type: 'text/plain', kind: 'text', size: big.blob.size, addedAt: 2 }, blob: big.blob, index: big.index, text: big.text }]]);
   const lib2 = { summary: async () => ({ count: loc2.size, bytes: 1 }), async *records() { for (const i of [...loc2.values()]) yield i; }, remove: async (id) => { loc2.delete(id); }, destroy: async () => { destroyed.push(2); } };
-  const r2 = await migrateLibrary(lib2, { store: newStore(D) });
+  const r2 = await migrateLibrary(lib2, { confirmedAccount: 'd@example.test', store: newStore(D) });
   assert.deepEqual([r2.moved, r2.stopped, r2.remaining], [1, 'quota', 1]); assert.match(r2.message, /保存容量の上限に達しました/); assert.deepEqual([...loc2.keys()], ['b'], 'the one that did not fit is still on the device'); assert.equal(destroyed.length, 1, 'the library is not deleted while files remain');
   // cancel
   const loc3 = new Map([['z', { meta: { id: 'z', name: 'z.txt', type: 'text/plain', kind: 'text', size: 3, addedAt: 1 }, blob: new Blob(['zzz']), index: null, text: '' }]]);
-  const r3 = await migrateLibrary({ summary: async () => ({ count: 1, bytes: 3 }), async *records() { yield* loc3.values(); }, remove: async () => {}, destroy: async () => { destroyed.push(3); } }, { store: newStore(C), shouldStop: () => true });
+  const r3 = await migrateLibrary({ summary: async () => ({ count: 1, bytes: 3 }), async *records() { yield* loc3.values(); }, remove: async () => {}, destroy: async () => { destroyed.push(3); } }, { confirmedAccount: 'c@example.test', store: newStore(C), shouldStop: () => true });
   assert.deepEqual([r3.moved, r3.stopped], [0, 'cancelled']); assert.equal(destroyed.length, 1);
   // a file over 60 MB or empty is reported, not sent
-  const r4 = await migrateLibrary({ summary: async () => ({ count: 2, bytes: 1 }), async *records() { yield { meta: { id: 'e', name: 'empty.txt', type: 'text/plain', kind: 'text', size: 0 }, blob: new Blob([]), index: null, text: '' }; yield { meta: { id: 'f', name: 'huge.bin', type: 'text/plain', kind: 'text', size: 61 * MB }, blob: { size: 61 * MB }, index: null, text: '' }; }, remove: async () => {}, destroy: async () => { destroyed.push(4); } }, { store: newStore(C) });
+  const r4 = await migrateLibrary({ summary: async () => ({ count: 2, bytes: 1 }), async *records() { yield { meta: { id: 'e', name: 'empty.txt', type: 'text/plain', kind: 'text', size: 0 }, blob: new Blob([]), index: null, text: '' }; yield { meta: { id: 'f', name: 'huge.bin', type: 'text/plain', kind: 'text', size: 61 * MB }, blob: { size: 61 * MB }, index: null, text: '' }; }, remove: async () => {}, destroy: async () => { destroyed.push(4); } }, { confirmedAccount: 'c@example.test', store: newStore(C) });
   assert.deepEqual(r4.failed.map((f) => f.name), ['empty.txt', 'huge.bin']); assert.equal(destroyed.length, 1, 'a library with failures is kept');
 });
 
@@ -157,4 +158,27 @@ test('a very long extracted text is capped at what one request can carry (and sa
   const meta = await s.put({ name: 'long.txt' }, new Blob([bytes]), index.index, big);
   const f = (await h.call('GET', `/api/elvar/files/${meta.id}`, A)).body.file; assert.equal(f.analysis.textTruncated, true); assert.ok(f.analysis.notes.some((n) => /130万字/.test(n)));
   assert.equal((await s.getText(meta.id)).length, TEXT_MAX_CHARS); await s.remove(meta.id);
+});
+
+test('xhrUpload: POSTs to Storage with the user\'s own access token and the reserve headers; nothing is signed in the URL; a 403 says the upload time is over', async () => {
+  const sent = [];
+  globalThis.XMLHttpRequest = class { constructor() { this.upload = {}; this.h = {}; } open(m, u) { this.m = m; this.u = u; } setRequestHeader(k, v) { this.h[k.toLowerCase()] = v; }
+    send(b) { sent.push({ m: this.m, u: this.u, h: this.h, b }); this.status = this.forced ?? sent.length > 1 ? 403 : 200; queueMicrotask(() => this.onload()); } abort() {} };
+  try {
+    const up = { url: 'https://p.supabase.test/storage/v1/object/user-files/users/x/files/y/z', method: 'POST', userToken: true, headers: { 'content-type': 'text/plain', 'x-upsert': 'false', apikey: 'pk' } };
+    await xhrUpload(up, new Blob(['x']), { headers: () => ({ authorization: 'Bearer JWT' }) });
+    assert.deepEqual([sent[0].m, sent[0].h.authorization, sent[0].h.apikey, sent[0].h['x-upsert'], sent[0].h['content-type']], ['POST', 'Bearer JWT', 'pk', 'false', 'text/plain']); assert.ok(!/token=/.test(sent[0].u));
+    await assert.rejects(xhrUpload(up, new Blob(['x']), { headers: () => ({ authorization: 'Bearer JWT' }) }), /有効時間が過ぎた/);
+    await xhrUpload({ ...up, userToken: false }, new Blob(['x']), { headers: () => ({ authorization: 'Bearer JWT' }) }).catch(() => {}); assert.equal(sent[2].h.authorization, undefined, 'the token goes only where the server asked for it');
+  } finally { delete globalThis.XMLHttpRequest; }
+});
+
+test('the old device library never moves without an explicit confirmation naming the account; the question names the account, shows the count and offers "not mine"', async () => {
+  const calls = []; const lib = { summary: async () => ({ count: 2, bytes: 2048 }), async *records() { calls.push('read'); yield { meta: { id: 'q', name: 'q.txt', type: 'text/plain', kind: 'text', size: 3 }, blob: new Blob(['abc']), index: null, text: '' }; }, remove: async () => { calls.push('remove'); }, destroy: async () => { calls.push('destroy'); } };
+  const log = []; const store = { indexes: async () => new Map(), put: async () => { log.push('put'); } };
+  for (const bad of [undefined, '', '   ', null, 5]) await assert.rejects(migrateLibrary(lib, { store, confirmedAccount: bad }), (e) => e.code === 'confirmation_required', String(bad));
+  assert.deepEqual([calls, log], [[], []], 'nothing was read, nothing was uploaded, nothing was removed');
+  const q = legacyAsk({ count: 2, bytes: 2048, account: 'shared-pc-user@example.test', fmt: (n) => `${n / 1024} KB` });
+  assert.match(q.confirmLabel, /shared-pc-user@example\.test/); assert.match(q.moveLabel, /shared-pc-user@example\.test/); assert.match(q.body, /2件（2 KB）/); assert.match(q.notMineLabel, /自分のファイルではない/);
+  assert.match(q.removeLabel, /2件を、この端末から消す/); assert.match(q.keepLabel, /残す/); assert.equal(legacyAsk({ count: 1, bytes: 1, account: '' }).who, 'このアカウント'); assert.equal(legacySig(2, 2048), '2:2048');
 });

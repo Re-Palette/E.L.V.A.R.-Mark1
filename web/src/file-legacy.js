@@ -1,6 +1,7 @@
 // The library this device kept BEFORE files lived in the account: IndexedDB `elvar-files` (stores meta, blobs, index, texts; web/src/file-store.js of the single-owner
 // days). Two places can hold it: the plain name (made before per-user names existed) and the name of the user who is signed in now (web/public/ns.js adds `@<namespace>`).
-// Nothing here uploads by itself: the screen asks the owner 「この端末のファイル（n件・xMB）をアカウントに移しますか」, then migrateLibrary() moves them one by one
+// Nothing here uploads by itself: the screen asks the owner 「この端末のファイル（n件・xMB）は <アカウント> のものですか。移しますか」 (it NAMES the account, and the owner
+// must tick that the files are theirs: on a shared computer the old library may belong to somebody else), then migrateLibrary() moves them one by one
 // (reserve -> upload -> finalize, each file's memory and tags kept, the original date kept), skips what the account already has, stops when the account is full, and
 // deletes each local copy only after it is safely in the account. A library that ends up empty is removed.
 import { sha256Hex } from './file-index.js';
@@ -53,9 +54,11 @@ export async function legacyLibraries({ idb = globalThis.indexedDB, win = global
  * Move one old library into the account.
  * @param {{ store:{ put:Function, indexes:Function }, analyse?:(blob:Blob,name:string,mime:string)=>Promise<{sha256:string,index:object,text:string}>,
  *           onProgress?:(p:{i:number,n:number,name:string,stage?:string,done?:number,total?:number})=>void, shouldStop?:()=>boolean, signal?:AbortSignal }} o
+ * `confirmedAccount` is REQUIRED: the account (its e-mail) the owner explicitly confirmed the files belong to. Without it nothing is read and nothing is uploaded.
  * @returns {Promise<{moved:number, skipped:string[], failed:{name:string,reason:string}[], stopped:null|'quota'|'cancelled'|'offline', message:string, remaining:number}>}
  */
-export async function migrateLibrary(lib, { store, analyse = null, onProgress = () => {}, shouldStop = () => false, signal } = {}) {
+export async function migrateLibrary(lib, { store, analyse = null, onProgress = () => {}, shouldStop = () => false, signal, confirmedAccount = '' } = {}) {
+  if (typeof confirmedAccount !== 'string' || !confirmedAccount.trim()) throw Object.assign(new Error('このファイルがこのアカウントのものか、確認が済んでいません'), { code: 'confirmation_required' });
   const { count } = await lib.summary(), known = new Set([...(await store.indexes()).values()].map((x) => x.sha256).filter(Boolean));
   const res = { moved: 0, skipped: [], failed: [], stopped: null, message: '', remaining: count };
   let i = 0;
@@ -83,3 +86,20 @@ export async function migrateLibrary(lib, { store, analyse = null, onProgress = 
   if (!res.stopped && !res.failed.length) { res.remaining = 0; await lib.destroy(); }   // everything is in the account: the old library goes
   return res;
 }
+
+/** What the screen asks before anything moves. The account is NAMED, the count and size are shown, and there is a way out: "これは自分のファイルではない". */
+export function legacyAsk({ count, bytes, account, fmt = (n) => `${n} B` }) {
+  const who = String(account || '').trim() || 'このアカウント';
+  return {
+    who, headline: 'この端末に、以前のファイルが残っています',
+    body: `この端末に、以前の方式（この端末の中だけ）で保存されたファイルが ${count}件（${fmt(bytes)}）あります。共用のパソコンでは、ほかの人のファイルかもしれません。`,
+    confirmLabel: `これは ${who} のファイルです`, moveLabel: `${who} に移す`,
+    notMineLabel: 'これは自分のファイルではない',
+    notMineTitle: `この ${count}件（${fmt(bytes)}）は、${who} のファイルではないものとして扱います`,
+    notMineBody: 'この端末から消すと元に戻せません。消さずに残すと、移さずにそのままにします（持ち主の人があとで開けます）。',
+    removeLabel: `${count}件を、この端末から消す`, keepLabel: '消さずに残す（移さない）',
+  };
+}
+/** The key under which "leave it" is remembered (per user through ns.js) and a signature of what was left, so a changed library asks again. */
+export const LEGACY_KEEP_KEY = 'elvar_legacy_files_kept';
+export const legacySig = (count, bytes) => `${count}:${bytes}`;

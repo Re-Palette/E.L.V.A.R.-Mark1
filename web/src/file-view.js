@@ -7,7 +7,7 @@
 // It reuses the .vf-* look injected by finance-view.js (same family of screens).
 import { ACCEPT, LIMITS, TROUBLESHOOT, approvalLines, checkQuota, classify, clampCopies, countPdfPagesRough, decodeText, escHtml as esc, fmtSize, formatLogEntry, imagePrintHtml, matchFiles, meterModel, printMode, accountQuotaText, safeName, textPrintHtml } from './file-lib.js';
 import { KINDS, STATUS_JA, LANG_JA, buildIndex, choiceDetail, findExactDuplicate, findNearDuplicate, gatedRead, indexNote, kindOf, normTags, searchFiles } from './file-index.js';
-import { legacyLibraries, migrateLibrary } from './file-legacy.js';
+import { legacyLibraries, migrateLibrary, legacyAsk, LEGACY_KEEP_KEY, legacySig } from './file-legacy.js';
 import { startAnalysis } from './file-analyze-client.js';
 import { classifyReply } from './approval.js';
 import { toBase64 } from './doc-card.js';
@@ -80,7 +80,7 @@ const CSS = `
 .vfl-back .vfl-msg{color:#FFD99A}.vfl-back .vfl-msg.warn{color:#ffb347}
 .vfl-back .vfl-meter{border-color:rgba(232,185,106,.4);background:rgba(13,10,6,.7);color:#e9dcc4}.vfl-back .vfl-meter .bar{background:rgba(232,185,106,.14)}.vfl-back .vfl-meter .bar .m{background:#6a5224}.vfl-back .vfl-meter .m-d{color:#b99b6a}
 .vfl-meter{padding:6px 8px;border:1px solid rgba(25,211,255,.25);border-radius:4px;background:rgba(5,25,40,.55);font-size:12px;color:#cfeeff}.vfl-meter .m-t{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}.vfl-meter .m-t b{color:#fff;font-weight:600}.vfl-meter .bar{margin-top:4px;height:8px;border-radius:4px;background:rgba(25,211,255,.14);overflow:hidden;display:flex}.vfl-meter .bar i{display:block;height:100%;min-width:0}.vfl-meter .bar .f{background:linear-gradient(90deg,#d9a441,#f3cf7a)}.vfl-meter .bar .x{background:#b8862b}.vfl-meter .bar .n{background:#8f6a2a}.vfl-meter .bar .r{background:repeating-linear-gradient(45deg,#6d5a2c,#6d5a2c 3px,#3f3318 3px,#3f3318 6px)}.vfl-meter.hot .m-t b{color:#ffb347}.vfl-meter .m-d{margin-top:3px;color:#9fb9c9;white-space:normal}.vfl-meter .off{color:#ffb347}
-.vfl-mig{padding:8px 10px;border:1px solid rgba(217,164,65,.6);border-radius:4px;background:rgba(60,45,15,.35);font-size:13px;color:#f3e3b8}.vfl-mig .b{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}.vfl-mig progress{width:100%;height:8px;margin-top:6px}
+.vfl-mig .vf-btn.dan{border-color:#c0553d;color:#ffc9b8}.vfl-own{display:flex;gap:8px;align-items:center;margin-top:8px;font-size:13px;color:#f3e3b8}.vfl-mig{padding:8px 10px;border:1px solid rgba(217,164,65,.6);border-radius:4px;background:rgba(60,45,15,.35);font-size:13px;color:#f3e3b8}.vfl-mig .b{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}.vfl-mig progress{width:100%;height:8px;margin-top:6px}
 .vfl-pf{position:fixed;right:0;bottom:0;width:1px;height:1px;border:0;opacity:0;pointer-events:none}
 @media (max-width:760px){.vfl-body{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(300px,52%) minmax(0,1fr);overflow:auto}.vfl-drop .dz-n,.vfl-drop .dz-t{display:none}.vfl-drop{padding:4px 8px}.vf-back.printing .vfl-body{padding-bottom:var(--vfl-pad,360px);grid-template-rows:minmax(0,1fr)}.vf-back.printing .vfl-side{display:none}.vfl .vf-top small{display:none}.vfl-flt input{flex-basis:100%}.vfl-info .r>b{flex-basis:100%}}
 @media (min-width:761px) and (max-height:640px){.vf-back.printing .vfl-body{grid-template-columns:minmax(0,1fr)}.vf-back.printing .vfl-side{display:none}.vfl-body{gap:6px;padding:6px 10px 8px}.vfl-main{padding:6px 8px;gap:4px}.vfl-drop{padding:3px 8px}.vfl-drop .dz-n{display:none}.vfl-row{padding:3px 8px}}
@@ -101,9 +101,9 @@ async function shrinkImage(blob) {
 }
 
 /**
- * @param {{approval:{ask:Function}, store:ReturnType<import('./file-store.js').createFileStore>, saveToBrain?:(a:{path:string,content:string,replace?:boolean})=>Promise<{ok:boolean,message:string}>, callAI?:(body:object)=>Promise<object>, sendText?:(t:string)=>void, onActivity?:(a:{icon:string,title:string,sub:string})=>void}} o
+ * @param {{approval:{ask:Function}, store:ReturnType<import('./file-store.js').createFileStore>, saveToBrain?:(a:{path:string,content:string,replace?:boolean})=>Promise<{ok:boolean,message:string}>, callAI?:(body:object)=>Promise<object>, sendText?:(t:string)=>void, onActivity?:(a:{icon:string,title:string,sub:string})=>void, account?:()=>string}} o
  */
-export function initFileView({ approval, store, saveToBrain = null, callAI = null, sendText = () => {}, onActivity = () => {} }) {
+export function initFileView({ approval, store, saveToBrain = null, callAI = null, sendText = () => {}, onActivity = () => {}, account = () => '' }) {
   const style = document.createElement('style'); style.textContent = CSS; document.head.appendChild(style);
   const back = document.createElement('div'); back.className = 'vf-back vfl-back'; back.setAttribute('role', 'dialog'); back.setAttribute('aria-modal', 'true'); back.setAttribute('aria-label', 'ファイル');
   back.innerHTML = `<div class="vf vfl"><div class="vf-top"><i></i><h2>FILES</h2><small id="vfl-quota">あなたのアカウントに保存（あなただけが見られます）</small><span class="sp"></span><button class="vf-btn" data-showlog type="button">印刷ログ</button><button class="vf-btn" data-x type="button">閉じる</button></div>
@@ -257,6 +257,8 @@ export function initFileView({ approval, store, saveToBrain = null, callAI = nul
   function skipDuplicate(i) { const d = pendingDups[i]; pendingDups.splice(i, 1); dupBox(); if (d) say(`「${d.name}」は保存しませんでした（すでにある「${d.dup.name}」と同じ内容です）`); }
 
   // ---------------------------------------------------------------- the old library of this device -> the account (once, with the owner's say-so)
+  const ls = { get: (k) => { try { return localStorage.getItem(k) || ''; } catch { return ''; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* ignore */ } } };
+  let legacyStage = 'ask';   // 'ask' | 'notmine'
   async function checkLegacy() {
     if (legacyAsked || migrating) return; legacyAsked = true;
     try { legacy = await legacyLibraries(); } catch { legacy = []; }
@@ -265,18 +267,28 @@ export function initFileView({ approval, store, saveToBrain = null, callAI = nul
   async function drawLegacy() {
     if (!legacy?.length) { migEl.hidden = true; return; }
     let count = 0, bytes = 0; for (const l of legacy) { const x = await l.summary(); count += x.count; bytes += x.bytes; }
-    if (!count) { migEl.hidden = true; return; }
+    if (!count || ls.get(LEGACY_KEEP_KEY) === legacySig(count, bytes)) { migEl.hidden = true; return; }   // left on purpose (and nothing changed since)
+    const q = legacyAsk({ count, bytes, account: account(), fmt: fmtSize });
     migEl.hidden = false;
-    migEl.innerHTML = `<div><b>この端末のファイルを、アカウントに移しますか</b><br>この端末に、以前の方式（この端末の中だけ）で保存したファイルが <b>${count}件（${esc(fmtSize(bytes))}）</b>あります。アカウントに移すと、どの端末からも見られます（あなただけが見られます）。同じ内容のファイルは、二重に保存しません。</div><div class="b"><button class="vf-btn pri" data-migrate type="button">移す</button><button class="vf-btn" data-migrate-later type="button">あとで</button></div>`;
+    if (legacyStage === 'notmine') {
+      migEl.innerHTML = `<div><b>${esc(q.notMineTitle)}</b><br>${esc(q.notMineBody)}</div><div class="b"><button class="vf-btn dan" data-mig-remove type="button">${esc(q.removeLabel)}</button><button class="vf-btn" data-mig-keep type="button">${esc(q.keepLabel)}</button><button class="vf-btn" data-mig-back type="button">戻る</button></div>`;
+      return;
+    }
+    migEl.innerHTML = `<div><b>${esc(q.headline)}</b><br>${esc(q.body)}<br>アカウントに移すと、どの端末からも見られます（<b>${esc(q.who)}</b> だけが見られます）。同じ内容のファイルは、二重に保存しません。</div>
+      <label class="vfl-own"><input type="checkbox" data-mig-own> ${esc(q.confirmLabel)}</label>
+      <div class="b"><button class="vf-btn pri" data-migrate type="button" disabled>${esc(q.moveLabel)}</button><button class="vf-btn" data-mig-notmine type="button">${esc(q.notMineLabel)}</button><button class="vf-btn" data-migrate-later type="button">あとで</button></div>`;
   }
   async function runMigration() {
-    if (migrating || !legacy?.length) return; migrating = true; batchCancelled = false;
+    if (migrating || !legacy?.length) return;
+    const confirmed = migEl.querySelector('[data-mig-own]')?.checked === true, who = String(account() || '').trim() || 'このアカウント';
+    if (!confirmed) { say('先に「これは ' + who + ' のファイルです」にチェックを入れてください', true); return; }
+    migrating = true; batchCancelled = false;
     migEl.innerHTML = '<div><b>アカウントに移しています…</b></div><progress id="vfl-mig-p" max="100"></progress><div class="vf-muted" id="vfl-mig-t"></div><div class="b"><button class="vf-btn" data-cancel type="button">中止</button></div>';
     const tot = { moved: 0, skipped: [], failed: [], stopped: null, message: '' };
     try {
       for (const lib of legacy) {
         const r = await migrateLibrary(lib, {
-          store, analyse: (blob, name, mime) => analyse(blob, name, mime, { name }), shouldStop: () => batchCancelled,
+          store, analyse: (blob, name, mime) => analyse(blob, name, mime, { name }), shouldStop: () => batchCancelled, confirmedAccount: who,
           onProgress: (p) => { const bar = migEl.querySelector('#vfl-mig-p'), t = migEl.querySelector('#vfl-mig-t'); if (bar && p.total) bar.value = Math.round((p.done / p.total) * 100); if (t) t.textContent = `${p.i}/${p.n}　${p.name}：${p.stage || '処理中'}`; },
         });
         tot.moved += r.moved; tot.skipped.push(...r.skipped); tot.failed.push(...r.failed); if (r.stopped) { tot.stopped = r.stopped; tot.message = r.message; break; }
@@ -661,6 +673,14 @@ export function initFileView({ approval, store, saveToBrain = null, callAI = nul
     if (t.closest('[data-cancel]')) { batchCancelled = true; running?.cancel(); uploadCtl?.abort(); say('キャンセルしています…'); return; }
     if (t.closest('[data-migrate]')) { runMigration().catch((err) => { migrating = false; say(String(err?.message || err), true); }); return; }
     if (t.closest('[data-migrate-later]')) { migEl.hidden = true; say('あとで移せます（ファイル画面を開き直すと、また案内します）'); return; }
+    if (t.closest('[data-mig-own]')) { const b = migEl.querySelector('[data-migrate]'); if (b) b.disabled = !t.closest('[data-mig-own]').checked; return; }
+    if (t.closest('[data-mig-notmine]')) { legacyStage = 'notmine'; await drawLegacy(); return; }
+    if (t.closest('[data-mig-back]')) { legacyStage = 'ask'; await drawLegacy(); return; }
+    if (t.closest('[data-mig-keep]')) { let c = 0, by = 0; for (const l of legacy || []) { const x = await l.summary(); c += x.count; by += x.bytes; } ls.set(LEGACY_KEEP_KEY, legacySig(c, by)); legacyStage = 'ask'; migEl.hidden = true; say('この端末のファイルは、移さずにそのまま残しました（消していません）'); return; }
+    if (t.closest('[data-mig-remove]')) {
+      const libs = legacy || []; let n = 0; for (const l of libs) { n += (await l.summary()).count; await l.destroy(); }
+      legacy = await legacyLibraries().catch(() => []); legacyStage = 'ask'; await drawLegacy(); say(`${n}件を、この端末から消しました（アカウントには何も移していません）`); return;
+    }
     const dk = t.closest('[data-dupkeep]'); if (dk) { await keepDuplicate(Number(dk.dataset.dupkeep)); return; }
     const ds = t.closest('[data-dupskip]'); if (ds) { skipDuplicate(Number(ds.dataset.dupskip)); return; }
     if (t.closest('[data-showlog]')) { showLog = !showLog; await renderMain(); return; }

@@ -10,6 +10,7 @@ import { initBuildView } from './build-view.js';
 import { initUsageView } from './usage-view.js';
 import { createAutoClose } from './auto-close.js';
 import { createFileStore } from './file-store.js';
+import { currentSession } from './elvar/auth.js';
 import { initFileView } from './file-view.js';
 import { choiceLabels, clampCopies, fmtSize, classify, parseCopies } from './file-lib.js';
 import { searchResultForModel } from './file-index.js';
@@ -87,7 +88,7 @@ export function initGoogleTools({ live, approval, authHeaders, agents, systemChe
     return { status: r.status, body: await r.json().catch(() => ({})) };
   };
   const fileView = initFileView({   // 取り込んだファイルの一覧・プレビュー・印刷（アカウントの保管庫。この端末のIndexedDBはキャッシュだけ。印刷は承認カードのあとだけ）
-    approval, store: createFileStore({ api: filesApi }), sendText: (t) => live.sendText(t), onActivity: (a) => hudLive?.logActivity(a),
+    approval, account: () => currentSession()?.user?.email || '', store: createFileStore({ api: filesApi, authHeaders }), sendText: (t) => live.sendText(t), onActivity: (a) => hudLive?.logActivity(a),
     saveToBrain: async ({ path, content, replace }) => {
       if (window.__elvarDeviceLocked) return { ok: false, message: 'スマホのロックを解除してからお試しください' };
       const r = await post({ tool: 'file_note_save', args: { path, content, ...(replace ? { replace: true } : {}) } });
