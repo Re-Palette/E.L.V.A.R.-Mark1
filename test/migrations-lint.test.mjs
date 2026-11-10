@@ -105,3 +105,13 @@ test('O1: the default quota is 500 MB and the per-file limit 60 MB is documented
 test('O3: a deletion request is either immediate or after 7 days', () => {
   assert.match(ALL, /grace_days\s+smallint\s+not\s+null\s+check\s*\(\s*grace_days\s+in\s*\(\s*0\s*,\s*7\s*\)\s*\)/);
 });
+
+test('P5: the file vault bucket is private and its 60 MB limit is the same in the migration and in supabase/config.toml; the Storage policies are owner-only and there is no update policy', () => {
+  const sql = code(SQL['20261110000007_files.sql']), cfg = fs.readFileSync(path.join(DIR, '..', 'config.toml'), 'utf8');
+  assert.match(sql, /insert\s+into\s+storage\.buckets[^;]*'user-files'[^;]*false\s*,\s*62914560/i);
+  assert.match(cfg, /\[storage\.buckets\.user-files\][^\[]*public\s*=\s*false[^\[]*file_size_limit\s*=\s*"60MiB"/);
+  const pols = [...sql.matchAll(/create\s+policy\s+(\w+)\s+on\s+storage\.objects\s+for\s+(\w+)/gi)].map((m) => `${m[1]}:${m[2].toLowerCase()}`);
+  assert.deepEqual(pols.sort(), ['files_delete:delete', 'files_read:select', 'files_upload:insert'], 'no update policy: an object is never replaced');
+  assert.match(sql, /files_upload[\s\S]*?f\.object_path\s*=\s*objects\.name[\s\S]*?status\s*=\s*'pending'[\s\S]*?reserved_until\s*>\s*now\(\)/i, 'a write needs a live reservation of exactly this object name (objects.name: the unqualified name would be app.files.name)');
+  for (const m of sql.matchAll(/create\s+policy[^;]*on\s+storage\.objects[^;]*;/gi)) assert.match(m[0], /bucket_id\s*=\s*'user-files'/i);
+});

@@ -120,7 +120,7 @@ test('per-file limit: 60 MB, an empty file, a type that is not supported, a name
   const d = h.mkUser(), D = await h.bearer(d); await h.call('GET', '/api/elvar/session', D);
   h.db.testing.setHardLimits(d, { maxFileBytes: 100 });
   const small = await h.call('POST', '/api/elvar/files/reserve', D, { name: 'small.txt', size: 100, sha256: 'b'.repeat(64) }); assert.equal(small.status, 200);
-  const lowered = await h.call('POST', '/api/elvar/files/reserve', D, { name: 'bigger.txt', size: 101, sha256: 'c'.repeat(64) }); assert.equal(lowered.status, 413); assert.equal(lowered.body.error, 'file_too_large'); assert.match(lowered.body.message, /0\.0 MB|MB/);
+  const lowered = await h.call('POST', '/api/elvar/files/reserve', D, { name: 'bigger.txt', size: 101, sha256: 'c'.repeat(64) }); assert.equal(lowered.status, 413); assert.equal(lowered.body.error, 'file_too_large'); assert.match(lowered.body.message, /1ファイルは 100 B までです/);
 });
 
 test('metadata edits: tags, memo, kind label, rename (the extension stays), the AI summary; the memory replaces the text and the quota follows', async () => {

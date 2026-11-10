@@ -42,3 +42,14 @@ secure_password_change = true
 enabled = true
 uri = "pg-functions://postgres/app/before_user_created"
 
+
+# The file vault (P5, docs/ELVAR_MULTIUSER.md 3.3): one PRIVATE bucket, 60 MB per object (O1). Object names are users/<uid>/files/<fileId>/<sha256>; the policies
+# (owner-only read / delete, a write needs a live upload reservation, no update) are in migration 20261110000007_files.sql, which also creates the bucket, so a plain
+# `db reset` or a hosted project needs nothing here. Keep this block and the migration in step (a test compares the limit).
+[storage]
+enabled = true
+file_size_limit = "60MiB"
+
+[storage.buckets.user-files]
+public = false
+file_size_limit = "60MiB"

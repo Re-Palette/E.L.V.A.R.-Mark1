@@ -18,7 +18,8 @@ const ok = (body = { ok: true }) => ({ status: 200, body });
 const id404 = (id) => !UUID.test(String(id));
 const fail = (e) => (e?.status && e.status < 500 ? bad(e.status, e.code || 'error') : (() => { throw e; })());
 const guard = (fn) => async (a) => { try { return await fn(a); } catch (e) { return fail(e); } };
-const mb = (n) => `${(Number(n) / MB).toFixed(Number(n) < 10 * MB ? 1 : 0)} MB`;
+/** Bytes the way the screen shows them (B / KB / MB), so a small quota or a small file is not "0.0 MB". */
+const mb = (n) => { n = Number(n) || 0; return n < 1024 ? `${n} B` : n < MB ? `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0)} KB` : `${(n / MB).toFixed(n < 10 * MB ? 1 : 0)} MB`; };
 
 /** What the vault accepts (the same list as web/src/file-lib.js; SVG, HTML and anything executable are refused). */
 const TYPES = {
@@ -190,7 +191,7 @@ export const patchFile = guard(async ({ user, params, body }) => {
   if (b.tags !== undefined) { if (!Array.isArray(b.tags)) return bad(400, 'bad_request'); patch.tags = [...new Set(b.tags.map((t) => String(t).normalize('NFKC').trim().replace(/^#/, '').slice(0, 30)).filter(Boolean))].slice(0, 30); }
   if (b.memo !== undefined) patch.memo = String(b.memo).slice(0, 1000);
   if (b.kindLabel !== undefined) patch.kindLabel = String(b.kindLabel ?? '').slice(0, 40);
-  Object.assign(patch, memoryFields({ related: b.related, analysis: b.analysis }));
+  Object.assign(patch, memoryFields(b));   // title, kind guess, keywords, snippet, version mark, analysis: the memory of a file the browser read again
   try { await user.db((r) => r.files.patch(params.id, patch)); }
   catch (e) { if (e?.code === 'invalid_value') return bad(400, 'bad_request', '入力の形式が正しくありません'); throw e; }
   return ok({ file: publicFile(await user.db((r) => r.files.get(params.id))) });

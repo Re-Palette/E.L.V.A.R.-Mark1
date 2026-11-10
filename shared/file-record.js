@@ -29,4 +29,5 @@ export function indexOf(file) {
 }
 
 /** The list entry of a file (the `meta` record the screen used to keep in IndexedDB). */
-export const metaOf = (file) => ({ id: file.id, name: file.name, type: file.mime, kind: file.kind, size: file.size, addedAt: Date.parse(file.createdAt) || 0, source: file.source });
+/** `addedAt` is when the owner got the file: a file moved up from this device's old library keeps its original date (analysis.addedAt); everything else is when it was finalized. */
+export const metaOf = (file) => ({ id: file.id, name: file.name, type: file.mime, kind: file.kind, size: file.size, addedAt: Number.isFinite(file.analysis?.addedAt) && file.analysis.addedAt > 0 ? file.analysis.addedAt : Date.parse(file.createdAt) || 0, source: file.source });

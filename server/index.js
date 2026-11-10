@@ -31,8 +31,9 @@ const MIME = {
 
 function readJson(req) {
   return new Promise((resolve) => {
-    let b = ''; req.on('data', (c) => { b += c; if (b.length > 6_000_000) req.destroy(); /* room for a base64 PDF upload */ });
-    req.on('end', () => { try { resolve(JSON.parse(b || '{}')); } catch { resolve({}); } });
+    // chunks are collected as bytes and decoded ONCE: decoding each chunk on its own breaks a multi-byte (Japanese) character that straddles two chunks
+    const chunks = []; let n = 0; req.on('data', (c) => { n += c.length; if (n > 6_000_000) req.destroy(); else chunks.push(c); /* room for a base64 PDF upload and the extracted text of a file */ });
+    req.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')); } catch { resolve({}); } });
     req.on('error', () => resolve({}));
   });
 }
@@ -57,7 +58,7 @@ const FUNCTIONS = {
   '/api/hud/data': () => import('../api/hud-data.js'), '/api/agent/run': () => import('../api/agent-run.js'),
 };
 const BODY_METHODS = new Set(['POST', 'PUT', 'PATCH']);
-let fakeAuth = null;
+let fakeAuth = null, fakeStorage = null;
 
 const server = http.createServer((req, res) => {
   if (String(req.url || '').startsWith('/api/')) for (const [k, v] of Object.entries(API_HEADERS)) res.setHeader(k, v);
@@ -68,6 +69,7 @@ async function handle(req, res) {
   try {
     if (DEV_AUTH && !isLoopbackHostHeader(req.headers.host)) return sendJson(res, { status: 421, body: { error: 'dev_auth_loopback_only' } });   // the dev login is for this computer only (no DNS rebinding)
     const { pathname, searchParams } = new URL(req.url, 'http://x');
+    if (fakeStorage && pathname.startsWith('/dev-supabase/storage/') && (await fakeStorage.handle(req, res, pathname, Object.fromEntries(searchParams)))) return;   // the signed links of the fake Storage (dev stack only)
     if (fakeAuth && pathname.startsWith('/dev-supabase/') && (await fakeAuth.handle(req, res, pathname, Object.fromEntries(searchParams)))) return;
     if (isRouterPath(pathname)) {
       return sendJson(res, await routeElvar(req, { pathname, query: Object.fromEntries(searchParams), body: BODY_METHODS.has(req.method) ? await readJson(req) : {} }));
@@ -97,6 +99,8 @@ server.listen(PORT, HOST, async () => {
       process.env.CRON_SECRET ||= crypto.randomBytes(24).toString('hex');
       const { createFakeAuth } = await import('./dev/fake-auth.js');
       fakeAuth = await createFakeAuth({ db: await getDb(), issuerBase: `http://127.0.0.1:${port}` });
+      const { createFakeStorageHttp } = await import('./dev/fake-storage-http.js'), { getStorage } = await import('./storage/index.js');
+      fakeStorage = createFakeStorageHttp({ storage: await getStorage() });   // uploads and downloads of the file vault, in memory like everything else of this mode
       console.log(`[elvar] DEV LOGIN is on (fake Auth, in-memory database; data is lost on restart). Confirmation mails: http://127.0.0.1:${port}/dev-supabase/dev/mailbox`);
     } else if (!process.env.SUPABASE_URL || !process.env.SUPABASE_PUBLISHABLE_KEY) {
       console.log('[elvar] Supabase is not configured (see .env.example: the Supabase URL and publishable key, the database URL, the key-encryption key): see docs/ELVAR_MULTIUSER.md section 9, or try ELVAR_DB=memory ELVAR_DEV_AUTH=1');

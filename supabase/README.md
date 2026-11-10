@@ -11,12 +11,13 @@ migrations/            applied in file-name order
   ..03_ephemeral       kv_ephemeral, rate_limits, ticket_uses, oauth_pending, rl_hit(), purge_expired()
   ..05_notes           notes, note_revisions, search_notes() (PGroonga, or pg_trgm where PGroonga is not installed)
   ..06_conversations   conversations, messages, search_messages()
-  ..09_usage_quota     usage_events, usage_daily, usage_limits, storage_usage (tables only)
+  ..07_files           files, file_texts (the user's file vault), the storage triggers, reserve_file / finalize_file / patch_file / delete steps / reconcile_storage / admin_set_quota, the private bucket user-files and its Storage policies
+  ..09_usage_quota     usage_events, usage_daily, usage_limits, storage_usage (tables only; kept up to date by the triggers of 07)
   ..13_inbox_notif     inbox_items, notif_items (the notification box and the phone-notification relay)
   ..14_retention       purge_expired(): message retention, old revisions, trash, relay items
   ..11_jobs_rights     export_jobs, deletion_requests, deletion_receipts, residual_check()
 ```
-(The numbers follow the plan in section 5 of the design; 07 and 08 arrive with P5 and the optional embeddings.)
+(The numbers follow the plan in section 5 of the design; 08 arrives with the optional embeddings.)
 
 ## One-time setup of a project
 
