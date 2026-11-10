@@ -9,6 +9,7 @@ import { mountConnectors } from './connectors.js';
 import { mountBuilds } from './builds.js';
 import { mountAdmin } from './admin.js';
 import { mountAccount } from './account.js';
+import { mountMyData } from './mydata.js';
 import { mountProfile } from './profile.js';
 import { mountMemory } from './memory.js';
 
@@ -38,7 +39,7 @@ const DEVICE_CSS = `
 @media (max-width:560px){.ev-settings .vs-row{flex-wrap:wrap}.ev-settings .vs-row>span.l{flex:1 0 100%}}
 `;
 
-const BASE_TABS = [['account', 'アカウント'], ['keys', 'APIキー'], ['google', 'Google'], ['connectors', '連携アプリ'], ['profile', 'プロフィール'], ['features', '機能'], ['memory', '記憶'], ['device', 'この端末']];
+const BASE_TABS = [['account', 'アカウント'], ['keys', 'APIキー'], ['google', 'Google'], ['connectors', '連携アプリ'], ['profile', 'プロフィール'], ['features', '機能'], ['memory', '記憶'], ['mydata', '私のデータ'], ['device', 'この端末']];
 const TABS = [...BASE_TABS, ['admin', '管理']];   // the admin tab is shown only to admins
 
 /** 連携アプリ: the user's connectors, and below them their build requests (each in its own element: both redraw themselves). */
@@ -67,11 +68,12 @@ export function initSettingsPanel(app) {
 
   const device = mountDevice(pane('device'), app, { close });
   const parts = {
-    account: mountAccount(pane('account'), { openUsage: () => { close(); app.openUsage?.(); } }),
+    account: mountAccount(pane('account'), { openUsage: () => { close(); app.openUsage?.(); }, goTab: (t) => show(t) }),
     keys: mountKeys(pane('keys')),
     google: mountGoogle(pane('google')),
     connectors: mountConnectorsPane(pane('connectors')),
     admin: mountAdmin(pane('admin')),
+    mydata: mountMyData(pane('mydata'), { goTab: (t) => show(t), actions: { brain: () => { close(); app.openBrain?.(); }, conversations: () => { close(); app.openConversations?.(); }, files: () => { close(); app.openFiles?.(); }, usage: () => { close(); app.openUsage?.(); } } }),
     profile: mountProfile(pane('profile'), 'profile', { onSaved: () => loadSession() }),
     features: mountProfile(pane('features'), 'features', { onSaved: () => loadSession() }),
     memory: mountMemory(pane('memory'), { openBrain: () => { close(); app.openBrain?.(); }, openConversations: () => { close(); app.openConversations?.(); } }),

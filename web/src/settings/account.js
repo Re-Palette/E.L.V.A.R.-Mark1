@@ -8,7 +8,7 @@ import { passwordProblem } from '../auth/screens.js';
 const when = (v) => { try { return new Date(v).toLocaleString('ja-JP', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }); } catch { return ''; } };
 const mb = (b) => `${(Number(b || 0) / 1048576).toFixed(1)} MB`;
 
-export function mountAccount(root, { openUsage = () => {} } = {}) {
+export function mountAccount(root, { openUsage = () => {}, goTab = () => {} } = {}) {
   const msg = (t, cls = '') => { const m = root.querySelector('#ea-msg'); if (m) { m.textContent = t; m.className = 'ev-msg ' + cls; } };
   const $ = (id) => root.querySelector('#' + id);
   async function fresh() { try { await authClient().refresh(); } catch { /* the call below reports a problem */ } }
@@ -34,8 +34,8 @@ export function mountAccount(root, { openUsage = () => {} } = {}) {
         <p class="ev-note">スマホの通知を、クラウドを通してPCでも聞く機能は、準備中です。</p>
       </section>
       <section class="ev-sec"><h3>私のデータ</h3>
-        <p class="ev-p" style="font-size:14px">プロフィール・設定・APIキーの名前・端末・利用状況・操作の記録を、ファイルにして受け取れます。APIキーの値は、安全のため含まれません。</p>
-        <div class="ev-btns"><button class="ev-btn" id="ea-export" type="button">データを書き出す</button></div>
+        <p class="ev-p" style="font-size:14px">保存しているデータのすべての種類を見て、直して、消して、持ち出す（zipで書き出す）ことができます。</p>
+        <div class="ev-btns"><button class="ev-btn" id="ea-mydata" type="button">「私のデータ」を開く</button></div>
       </section>
       <section class="ev-sec"><h3>アカウントの削除</h3>
         <p class="ev-p" style="font-size:14px">あなたのデータ（プロフィール・設定・暗号化したキー・端末・利用記録）を、すべて削除します。元に戻せません。</p>
@@ -58,14 +58,7 @@ export function mountAccount(root, { openUsage = () => {} } = {}) {
       try { await authClient().updatePassword(pw); $('ea-new').value = ''; msg('パスワードを変更しました', 'ok'); } catch (err) { msg(authMessage(err), 'warn'); }
       return;
     }
-    if (e.target.closest('#ea-export')) {
-      await fresh(); msg('書き出しています…');
-      const r = await fetch('/api/elvar/account/export', { cache: 'no-store' });
-      if (!r.ok) { const j = await r.json().catch(() => ({})); return msg(j.error === 'rate_limited' ? j.message : j.error === 'reauth_required' ? 'もう一度ログインしてから、やり直してください' : '書き出せませんでした', 'warn'); }
-      const blob = new Blob([JSON.stringify(await r.json(), null, 2)], { type: 'application/json' }), a = document.createElement('a');
-      a.href = URL.createObjectURL(blob); a.download = 'elvar-export.json'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-      return msg('書き出しました', 'ok');
-    }
+    if (e.target.closest('#ea-mydata')) return goTab('mydata');
     if (e.target.closest('#ea-del')) {
       const grace = Number(root.querySelector('input[name="ea-grace"]:checked')?.value ?? 7), me = authClient().session().user, typed = $('ea-confirm').value;
       if (!typed) return msg('確認の入力が必要です', 'warn');
