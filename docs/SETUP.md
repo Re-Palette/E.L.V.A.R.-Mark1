@@ -16,7 +16,7 @@
 最新の上限と規約は、各社のページで確かめてください。次の点に気をつけます。
 
 - Supabase の無料プランは、使われないとプロジェクトが止まることがあります。バックアップも当てにできません。有料プランに上げて、バックアップを有効にしてください。
-- Supabase の無料プランでは、プロジェクト全体の「1ファイルのアップロード上限」が **50MB まで**で、バケットの上限もそれを超えられません（Supabase の公式ドキュメント「Storage → Uploads → Limits」で確認済み。有料プランは最大 500GB まで）。E.L.V.A.R. の既定の 1ファイル上限は 60MB（オーナーの決定 O1）なので、**無料プランで動かすときは `ELVAR_MAX_FILE_BYTES=52428800`（50MB）を設定してください**。そうしないと、50MB を超えるファイルは「予約は通るが、アップロードが Storage に断られる」状態になります。有料プランに上げて 60MB 以上にしたいときは、Supabase ダッシュボードの Storage Settings の「Global file size limit」も上げてください（こちらは手作業です）。
+- Supabase の無料プランでは、プロジェクト全体の「1ファイルのアップロード上限」が **50MB まで**で、バケットの上限もそれを超えられません（Supabase の公式ドキュメント「Storage → Uploads → Limits」で確認済み。有料プランは最大 500GB まで）。E.L.V.A.R. の 1ファイル上限の考え方は 60MB（オーナーの決定 O1）ですが、マイグレーションは**最初から 50MB（52428800）で始めます**（無料プランのまま動かせるように。60MB で始めると、50MB を超えるファイルは「予約は通るが、アップロードが Storage に断られる」状態になるため）。有料プランに上げて 60MB 以上にしたいときは、Supabase ダッシュボードの Storage Settings の「Global file size limit」も上げてください（こちらは手作業です）。
 - Supabase 標準のメール送信は、数がとても少なく、本番に使えません。独自のSMTPが必要です（§1.6）。
 - パスワードの漏洩チェックなど、一部の認証機能は上位のプランで使えます。
 - Vercel の無料（Hobby）プランは、商用利用ができない決まりです。公開サービスには、有料プランが必要です。
@@ -25,7 +25,7 @@
 
 ## 1. Supabase
 
-必要なもの: Supabase のアカウント、Node.js 22.12 以上、Supabase CLI（任意。SQLエディタだけでも進められます）。
+必要なもの: Supabase のアカウント、Node.js 22.12 以上、Supabase CLI（マイグレーションの適用に使います。§1.2）。
 
 ### 1.1 プロジェクトを作る
 
@@ -37,24 +37,37 @@
 
 ### 1.2 マイグレーション
 
-`supabase/migrations/` のファイルを、ファイル名の順に適用します。全部で 19 本です（`20261110000001` 〜 `20261110000019`）。
+`supabase/migrations/` のファイルを、ファイル名の順に適用します。全部で 21 本です（`20261110000001` 〜 `20261110000022`。`…08` は欠番です）。
 
-CLI を使う場合:
+適用は **Supabase CLI の `supabase db push` だけ**で行います。CLI は、どのファイルを適用したかをデータベースの履歴（`supabase_migrations.schema_migrations`）に記録し、1ファイルずつトランザクションで実行します（途中で失敗したファイルは、まるごと取り消されます）。
 
 ```bash
 supabase link --project-ref <project-ref>
-supabase db push
+supabase migration list          # ローカル（ファイル）とリモート（履歴）の対応を見る
+supabase db push --dry-run       # これから適用するファイルの一覧だけを表示（何も変えない）
+supabase db push                 # 確認してから適用
 ```
 
-CLI を使わない場合は、SQLエディタに、ファイルを順に貼って実行します。
+守ること:
+
+- 各ファイルが何をするか（作るもの・消すもの・Storage や Auth に触れるところ）は `docs/MIGRATION_REVIEW.md` にまとめてあります。`--dry-run` に出たファイルを、そこで1本ずつ確かめてから `db push` します。
+- 本番のプロジェクトに、SQLエディタや MCP などから DDL（`create` / `alter` / `drop`）を直接流さないでください。履歴に残らず、CLI と食い違います（運営者の設定値の `insert` / `update` は別です）。
+- 一度適用したファイルは、書き換えません。直したいことは、新しい番号のファイルで足します。
+- 履歴がファイルと食い違ったとき（たとえば、別の方法で適用したために、履歴のバージョン番号がファイル名と違うとき）は、`supabase migration repair` で履歴だけを直します（データベースの中身は変わりません）。
+
+```bash
+supabase migration repair --status reverted <履歴にある間違ったバージョン>   # その履歴の行を消す
+supabase migration repair --status applied <ファイル名のバージョン>          # 適用済みとして記録する
+supabase migration list                                                       # 左右がそろったか確かめる
+```
 
 マイグレーションは、次のものを作ります。
 
 - 非公開スキーマ `app`、サーバー用ロール `elvar_app`、全ユーザーデータのテーブル（RLS 強制）。
-- 非公開の Storage バケット `user-files`（1ファイル 60MB。`ELVAR_MAX_FILE_BYTES` または `app.platform_config` の `max_file_bytes` を変えると、バケットの上限もトリガーで同じ値になります）と `user-exports`（512MB）。作る SQL がマイグレーションの中にあります。
+- 非公開の Storage バケット `user-files`（1ファイル 50MB で始まります。マイグレーション 20 が `app.platform_config` の `max_file_bytes` を 52428800 にします。`ELVAR_MAX_FILE_BYTES` か `max_file_bytes` を変えると、バケットの上限もトリガーで同じ値になります）と `user-exports`（512MB。ただし無料プランでは全体の 50MB 上限が先に効きます）。作る SQL がマイグレーションの中にあります。
 - サインアップの制限用の関数（`app.before_user_created`）と、運営者用の設定テーブル。
 
-日本語の全文検索は、PGroonga が使える環境では PGroonga、なければ `pg_trgm` を、マイグレーションが選びます。PGroonga の側は、本物の Supabase ではまだ確かめていません。
+日本語の全文検索は、PGroonga が使える環境では PGroonga、なければ `pg_trgm` を、マイグレーションが選びます。PGroonga の側は、PGroonga 入りの Postgres 17（Docker イメージ `groonga/pgroonga`）で `npm run test:db` を通して確かめました（`ELVAR_TEST_DB_IMAGE=groonga/pgroonga:latest-debian-17 npm run test:db`）。本物の Supabase での検索は、まだ確かめていません。
 
 Data API（PostgREST）には、`app` スキーマを出さないでください。`supabase/config.toml` の `api.schemas` は `public` と `graphql_public` だけです。ホスティングされたプロジェクトでは、ダッシュボードの API 設定で、同じになっているか確かめます。
 
@@ -166,7 +179,7 @@ CSP は、`vercel.json` で `challenges.cloudflare.com` を許可済みです。
 | `ELVAR_BOOTSTRAP_ADMIN_EMAIL` | おすすめ | 最初の管理者のメールアドレス（§3） |
 | `ELVAR_TURNSTILE_SITE_KEY` | 任意 | §1.8 のサイトキー |
 | `ELVAR_SIGNUP` | 任意 | `open`、`invite`、`closed`。データベースが無いときの表示だけに使われます。実際の制限は §1.7 の表です |
-| `ELVAR_MAX_FILE_BYTES` | 任意 | 1ファイルの上限（バイト、1MB〜5GB。既定 62914560 = 60MB）。cron がデータベース（`app.platform_config` の `max_file_bytes`）に書き込み、Storage バケットの上限もトリガーで同じ値になります。**Supabase の無料プランは 52428800（50MB）** |
+| `ELVAR_MAX_FILE_BYTES` | 任意 | 1ファイルの上限（バイト、1MB〜5GB）。設定すると cron がデータベース（`app.platform_config` の `max_file_bytes`）に書き込み、Storage バケットの上限もトリガーで同じ値になります。未設定ならデータベースの値のまま（マイグレーションの初期値は 52428800 = 50MB。無料プランはこのままにします）。有料プランで 60MB にするなら 62914560 |
 | `ELVAR_DEFAULT_LIMITS` | 任意 | 1アカウントごとの既定のハード上限（JSON）。例: `{"geminiCallsPerDay":2000,"requestsPerMinute":120}`。管理者が1人ずつ変えられます |
 | `ELVAR_DELETION_RECEIPT_WEBHOOK` | 任意 | アカウント削除が完了したとき、`{to, subject, text}` を受け取る https の URL。確認メールは、あなたの側で送ります |
 | `ELVAR_KEK_PREV` | 回転中だけ | 古い KEK（複数はカンマ区切り） |

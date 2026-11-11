@@ -8,7 +8,7 @@
 --   files_upload  also requires an `active` account (a suspended or pending-deletion account cannot write into a reservation it made earlier).
 --   reserve_file  a reservation lives 15 minutes (was 30): less time for an unverified object to sit in the bucket, and the stale sweep has less to do.
 -- The per-object size cannot be tied to the reservation in a policy (the Storage API does not know the byte count when it checks the INSERT policy); the bucket's
--- file_size_limit (60 MB) is the hard ceiling, finalize compares the real size with the reserved one, rejects and deletes anything else, and until finalize the reserved
+-- file_size_limit (= max_file_bytes, see below) is the hard ceiling, finalize compares the real size with the reserved one, rejects and deletes anything else, and until finalize the reserved
 -- size is what counts against the quota. docs 19 says so.
 
 drop policy if exists files_read on storage.objects;
@@ -27,9 +27,10 @@ create policy files_upload on storage.objects for insert to authenticated with c
   and exists (select 1 from app.accounts a where a.user_id = (select auth.uid()) and a.status = 'active')
   and exists (select 1 from app.files f where f.user_id = (select auth.uid()) and f.object_path = objects.name and f.status = 'pending' and f.reserved_until > now()));
 
--- The per-file limit of the whole platform (P8): app.platform_config key `max_file_bytes` (default 60 MB; 1 MB .. 5 GB). The operator sets it (SQL editor, or ELVAR_MAX_FILE_BYTES which the
--- server writes through app.set_max_file_bytes), reserve_file enforces it, and a trigger keeps the bucket's file_size_limit equal to it. On the Supabase Free plan the project-wide
--- upload limit is 50 MB and a bucket limit cannot exceed it: set 52428800 there (docs/SETUP.md).
+-- The per-file limit of the whole platform (P8): app.platform_config key `max_file_bytes` (1 MB .. 5 GB; a row that is missing or not a number means 60 MB, decision O1). The operator
+-- sets it (SQL editor, or ELVAR_MAX_FILE_BYTES which the server writes through app.set_max_file_bytes), reserve_file enforces it, and a trigger keeps the bucket's file_size_limit
+-- equal to it. The migration STARTS the platform at 50 MB (row inserted at the end of this section): the Supabase Free plan refuses any upload over 50 MB whatever the bucket says,
+-- so a 60 MB start would let reserve_file accept files that Storage then rejects. On a paid plan raise it (ELVAR_MAX_FILE_BYTES=62914560); docs/DECISIONS.md O1.
 create function app.platform_max_file_bytes() returns bigint
 language sql stable security definer set search_path = pg_catalog, app as $$
   select least(5368709120::bigint, greatest(1048576::bigint, coalesce((select case when c.value ~ '^[0-9]{1,12}$' then c.value::bigint end from app.platform_config c where c.key = 'max_file_bytes'), 62914560::bigint)));
@@ -55,6 +56,9 @@ begin
 end $$;
 revoke all on function app.set_max_file_bytes(bigint) from public, anon, authenticated;
 grant execute on function app.set_max_file_bytes(bigint) to elvar_app;
+
+-- The safe start (see above): 50 MB, unless an operator already set a value. The trigger copies it onto the bucket `user-files` in the same statement.
+insert into app.platform_config (key, value) values ('max_file_bytes', '52428800') on conflict (key) do nothing;
 
 -- A platform-wide ceiling on stored bytes (P8 abuse control; the Supabase Free plan has 1 GB of Storage): app.platform_config `max_total_storage_bytes` (unset = no ceiling). A
 -- reservation that would take the sum of everybody's counted bytes over it is refused with EQ004. Notes and messages are small and bounded per user by the quota, so only the file vault checks it.

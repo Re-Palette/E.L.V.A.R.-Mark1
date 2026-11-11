@@ -2,6 +2,23 @@
 -- expired ones (the schedule arrives with the cron migration, or Vercel Cron calls it through the server). No row outlives its user either:
 -- user_id cascades, so even rate-limit rows are gone when the account is.
 
+-- Preflight (hosted Supabase): every SECURITY DEFINER function below and in the later migrations reads tables whose row level security is FORCED, so it only works when the
+-- role that runs the migrations (Supabase: `postgres`) has BYPASSRLS (or is a superuser), and that role must be able to create objects in schema `app` (made by migration 01).
+-- If either is not true, stop here with a clear message instead of creating functions that would silently see zero rows. Changes nothing.
+do $pre$
+declare
+  r record;
+begin
+  select rolsuper, rolbypassrls into r from pg_catalog.pg_roles where rolname = current_user;
+  if not (r.rolsuper or r.rolbypassrls) then
+    raise exception 'preflight: role % has neither SUPERUSER nor BYPASSRLS; the definer functions of these migrations need one of them', current_user;
+  end if;
+  if not r.rolsuper and not pg_catalog.pg_has_role(current_user, (select n.nspowner from pg_catalog.pg_namespace n where n.nspname = 'app'), 'MEMBER') then
+    raise exception 'preflight: schema app is owned by %, not by the migration role %; apply every migration as the same role',
+      (select pg_catalog.pg_get_userbyid(n.nspowner) from pg_catalog.pg_namespace n where n.nspname = 'app'), current_user;
+  end if;
+end $pre$;
+
 create table app.kv_ephemeral (
   user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
   key text not null check (length(key) between 1 and 200),

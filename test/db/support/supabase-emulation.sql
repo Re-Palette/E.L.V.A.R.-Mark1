@@ -11,6 +11,8 @@ begin
 end $$;
 
 create schema if not exists extensions;
+-- Supabase grants this on every project (the extension operators the SECURITY INVOKER search functions use, e.g. PGroonga's &@|, are resolved in this schema as the caller)
+grant usage on schema extensions to anon, authenticated, service_role;
 create schema if not exists auth;
 create table if not exists auth.users (
   id uuid primary key default gen_random_uuid(),

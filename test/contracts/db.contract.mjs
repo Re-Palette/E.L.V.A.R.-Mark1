@@ -815,12 +815,13 @@ export function runDbContract(label, setup) {
     await db.asUser(U, async (r) => { await assert.rejects(r.files.reserve(reqOf('f.txt', 'f')), code('storage_quota_exceeded')); await r.accounts.get(); });
   });
 
-  T('files: the per-file limit is 60 MB and an admin can only lower it; empty, oversized and badly named requests are refused by the database layer', async ({ db, newUser, setHardLimits }) => {
+  T('files: the per-file ceiling is 60 MB and an admin can only lower it; empty, oversized and badly named requests are refused by the database layer', async ({ db, newUser, setHardLimits }) => {
     const uid = await newUser(), U = mint(uid);
     await db.asUser(U, async (r) => {
       await assert.rejects(r.files.reserve({ ...reqOf('big.txt', 'x'), size: 60 * 1024 * 1024 + 1 }), code('invalid_value'));
       for (const bad of [{ size: 0 }, { size: 1.5 }, { name: '' }, { name: 'a/b.txt' }, { name: 'a\\b.txt' }, { name: 'a\nb.txt' }, { sha256: 'xyz' }, { kind: 'script' }, { textBytes: -1 }, { textBytes: 5_000_000 }, { source: 'Bad Source!' }]) await assert.rejects(r.files.reserve({ ...reqOf('ok.txt', 'ok'), ...bad }), code('invalid_value'), JSON.stringify(bad));
-      const okAtLimit = await r.files.reserve({ ...reqOf('limit.txt', 'x'), size: 60 * 1024 * 1024 }); await r.files.beginDelete(okAtLimit.fileId); await r.files.finishDelete(okAtLimit.fileId);
+      // 50 MB: allowed by every platform setting a test uses (the Postgres migrations start the platform at 50 MB for the Supabase Free plan; the memory backend at 60 MB)
+      const okAtLimit = await r.files.reserve({ ...reqOf('limit.txt', 'x'), size: 50 * 1024 * 1024 }); await r.files.beginDelete(okAtLimit.fileId); await r.files.finishDelete(okAtLimit.fileId);
     });
     await setHardLimits(uid, { maxFileBytes: 100 });
     await db.asUser(U, async (r) => {

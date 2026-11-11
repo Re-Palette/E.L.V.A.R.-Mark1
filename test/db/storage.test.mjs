@@ -20,9 +20,10 @@ const denied = async (p) => { try { await p; } catch (e) { assert.equal(e.code, 
 const objects = (sql, where = '') => sql.unsafe(`select name from storage.objects where bucket_id = 'user-files' ${where} order by name`).then((r) => r.map((x) => x.name));
 const put = (tx, name, bucket = 'user-files') => tx`insert into storage.objects (bucket_id, name) values (${bucket}, ${name})`;
 
-test('the bucket is private with a 60 MB limit (the migration creates it)', async () => {
+test('the bucket is private and starts at 50 MB (the migrations create it; migration 20 seeds max_file_bytes = 50 MB for the Supabase Free plan)', async () => {
   const [bk] = await admin`select id, public, file_size_limit from storage.buckets where id = 'user-files'`;
-  assert.deepEqual({ id: bk.id, public: bk.public, limit: Number(bk.file_size_limit) }, { id: 'user-files', public: false, limit: 62914560 });
+  assert.deepEqual({ id: bk.id, public: bk.public, limit: Number(bk.file_size_limit) }, { id: 'user-files', public: false, limit: 52428800 });
+  const [c] = await admin`select value from app.platform_config where key = 'max_file_bytes'`; assert.equal(c?.value, '52428800');
 });
 
 test('upload: only a path with a live reservation of the caller can be written, only inside their own prefix', async () => {
@@ -101,14 +102,17 @@ test('the reservation lives 15 minutes; the platform per-file limit (platform_co
   const r = await reserve(A, 'ttl.txt', 'a-content-ttl'), [row] = await admin`select extract(epoch from reserved_until - now()) as s from app.files where id = ${r.fileId}`;
   assert.ok(Number(row.s) <= 900 && Number(row.s) > 840, `reservation lives ${row.s} s`);
   try {
-    assert.equal(await db.system.maxFileBytes(), 62914560, 'default 60 MB');
-    assert.equal(await db.system.setMaxFileBytes(52428800), 52428800);
-    const [bk] = await admin`select file_size_limit from storage.buckets where id = 'user-files'`; assert.equal(Number(bk.file_size_limit), 52428800, 'the bucket limit follows');
+    // never below 50 MB here: the contract test (another process, same database) reserves exactly 50 MB at the same time
+    assert.equal(await db.system.maxFileBytes(), 52428800, 'the migrations start at 50 MB');
     await assert.rejects(db.asUser(A, (r2) => r2.files.reserve({ name: 'big.txt', mime: 'text/plain', kind: 'text', size: 52428801, sha256: hex('big') })), (e) => e.code === 'file_too_large');
+    assert.equal(await db.system.setMaxFileBytes(62914560), 62914560);
+    const [bk] = await admin`select file_size_limit from storage.buckets where id = 'user-files'`; assert.equal(Number(bk.file_size_limit), 62914560, 'the bucket limit follows');
     await admin`update app.platform_config set value = 'not a number' where key = 'max_file_bytes'`;
-    assert.equal(await db.system.maxFileBytes(), 62914560, 'a bad value falls back to the default');
+    assert.equal(await db.system.maxFileBytes(), 62914560, 'a bad value falls back to the O1 default (60 MB)');
+    await admin`delete from app.platform_config where key = 'max_file_bytes'`;
+    const [bk2] = await admin`select file_size_limit from storage.buckets where id = 'user-files'`; assert.equal(Number(bk2.file_size_limit), 62914560, 'no row: the O1 default, on the bucket too');
     await assert.rejects(db.system.setMaxFileBytes(10));
-  } finally { await admin`delete from app.platform_config where key = 'max_file_bytes'`; const [bk] = await admin`select file_size_limit from storage.buckets where id = 'user-files'`; assert.equal(Number(bk.file_size_limit), 62914560, 'removing the row restores the default on the bucket'); }
+  } finally { await db.system.setMaxFileBytes(52428800); const [bk] = await admin`select file_size_limit from storage.buckets where id = 'user-files'`; assert.equal(Number(bk.file_size_limit), 52428800, 'back to the 50 MB start'); }
   await db.asUser(A, async (r2) => { await r2.files.beginDelete(r.fileId); await r2.files.finishDelete(r.fileId); });
 });
 
