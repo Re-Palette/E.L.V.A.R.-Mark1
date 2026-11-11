@@ -27,13 +27,13 @@ create policy files_upload on storage.objects for insert to authenticated with c
   and exists (select 1 from app.accounts a where a.user_id = (select auth.uid()) and a.status = 'active')
   and exists (select 1 from app.files f where f.user_id = (select auth.uid()) and f.object_path = objects.name and f.status = 'pending' and f.reserved_until > now()));
 
--- The per-file limit of the whole platform (P8): app.platform_config key `max_file_bytes` (1 MB .. 5 GB; a row that is missing or not a number means 60 MB, decision O1). The operator
+-- The per-file limit of the whole platform (P8): app.platform_config key `max_file_bytes` (1 MB .. 60 MB; a row that is missing or not a number means 60 MB, decision O1; a larger number is clamped to the 60 MB ceiling that app.files.size_bytes enforces). The operator
 -- sets it (SQL editor, or ELVAR_MAX_FILE_BYTES which the server writes through app.set_max_file_bytes), reserve_file enforces it, and a trigger keeps the bucket's file_size_limit
 -- equal to it. The migration STARTS the platform at 50 MB (row inserted at the end of this section): the Supabase Free plan refuses any upload over 50 MB whatever the bucket says,
 -- so a 60 MB start would let reserve_file accept files that Storage then rejects. On a paid plan raise it (ELVAR_MAX_FILE_BYTES=62914560); docs/DECISIONS.md O1.
 create function app.platform_max_file_bytes() returns bigint
 language sql stable security definer set search_path = pg_catalog, app as $$
-  select least(5368709120::bigint, greatest(1048576::bigint, coalesce((select case when c.value ~ '^[0-9]{1,12}$' then c.value::bigint end from app.platform_config c where c.key = 'max_file_bytes'), 62914560::bigint)));
+  select least(62914560::bigint, greatest(1048576::bigint, coalesce((select case when c.value ~ '^[0-9]{1,12}$' then c.value::bigint end from app.platform_config c where c.key = 'max_file_bytes'), 62914560::bigint)));
 $$;
 revoke all on function app.platform_max_file_bytes() from public, anon;
 grant execute on function app.platform_max_file_bytes() to authenticated, elvar_app;
@@ -50,8 +50,8 @@ create trigger platform_max_file_sync after insert or update or delete on app.pl
 create function app.set_max_file_bytes(p_bytes bigint) returns bigint
 language plpgsql security definer set search_path = pg_catalog, app as $$
 begin
-  if p_bytes is null or p_bytes < 1048576 or p_bytes > 5368709120 then raise exception 'set_max_file_bytes: bad value' using errcode = '22023'; end if;
-  insert into app.platform_config (key, value) values ('max_file_bytes', p_bytes::text) on conflict (key) do update set value = excluded.value, updated_at = now() where app.platform_config.value is distinct from excluded.value;
+  if p_bytes is null or p_bytes < 1048576 then raise exception 'set_max_file_bytes: bad value' using errcode = '22023'; end if;   -- above the 60 MB ceiling (app.files.size_bytes check) the value is clamped by platform_max_file_bytes(), never refused
+  insert into app.platform_config (key, value) values ('max_file_bytes', least(p_bytes, 62914560)::text) on conflict (key) do update set value = excluded.value, updated_at = now() where app.platform_config.value is distinct from excluded.value;
   return app.platform_max_file_bytes();
 end $$;
 revoke all on function app.set_max_file_bytes(bigint) from public, anon, authenticated;

@@ -43,6 +43,20 @@ select column_name from information_schema.columns where table_schema = 'storage
 
 (a) が false、(b) が postgres 以外のときは、**push しないで**相談してください。03 の先頭に同じ確認を入れてあるので、その場合 push は 03 で止まり、何も作られません（§03）。
 
+#### 実プロジェクトでの確認結果（2026-11-11、読み取り専用）
+
+上の (a)〜(d) などを、実プロジェクトに対して**読むだけ**で確認した結果です（DDL は流していません）。
+
+- **(a) 役割**: `postgres` は super=false、bypassrls=**true**（期待どおり）。`supabase_auth_admin` / `supabase_storage_admin` / `elvar_app` は bypassrls=false。
+- **(b) 持ち主**: スキーマ `app` と、01/02 が作った表・関数は、すべて `postgres` の持ち物（期待どおり）。
+- **(c) Storage**: バケット `user-files` / `user-exports` はまだなく、ポリシー `files_read` / `files_upload` / `files_delete` / `exports_read` もまだない（0 行が期待値で、そのとおり）。
+- **(d) `storage.buckets` の列**: `id, name, owner, created_at, updated_at, public, avif_autodetection, file_size_limit, allowed_mime_types, owner_id, type, versioning_status, lifecycle_configuration, lifecycle_configuration_generation`（`id, name, public, file_size_limit` がある。07 の insert が使う列はそろっている）。
+- **`extensions` スキーマ**: `authenticated` に USAGE がある。`postgres` は `extensions` に CREATE できる。`pgroonga` と `pg_trgm` は「特権拡張」で、`postgres` が作ってよい（05 の `create extension` は通る見込み）。
+- **`storage.objects` のポリシー**: `storage.objects` の持ち主は `supabase_storage_admin` だが、`supautils.policy_grants` により `postgres` が `storage.objects` / `storage.buckets` にポリシーを作れる（`drop_trigger_grants` も同様）。07 / 19 / 20 の `create policy` / `drop policy` と 20 のトリガー関連はこの前提で通る。
+- **`postgres` の権限**: `storage.buckets` に INSERT / UPDATE、`storage.objects` に SELECT / DELETE、`auth.users` に SELECT がある（07・19・20 の insert / update、削除関数、サインアップ関連の読み取りに足りる）。
+- **`supabase_auth_admin`**: いまは `app` スキーマの USAGE を**持っていない**。Auth フック用に、マイグレーション側で付ける必要がある。確認した結果、**12 と 17 と 22 が、いずれも `grant usage on schema app to supabase_auth_admin` と `grant execute on function app.before_user_created(jsonb) to supabase_auth_admin` を実行する**（`pg_roles` に役割があるときだけ。実プロジェクトにはある）。したがって追加の修正は要らない。
+- **`pg_cron`**: インストールされていない。この製品は使わない（定期処理は Vercel Cron が `/api/elvar/cron/daily` を呼ぶ）。
+
 ### 0.4 適用
 
 ```bash
@@ -377,9 +391,9 @@ Storage / Auth / 拡張 / data_registry: なし。 **前提**: 03, 05, 06, 13。
 **作る・置き換える関数**（すべて DEFINER）
 | 関数 | 実行 | 中でする変更 |
 |---|---|---|
-| `platform_max_file_bytes()` | authenticated, elvar_app | 読むだけ（`max_file_bytes`。行がない・数字でないときは 60MB） |
+| `platform_max_file_bytes()` | authenticated, elvar_app | 読むだけ（`max_file_bytes`。行がない・数字でないときは 60MB。60MB を超える値は 60MB に丸める） |
 | `_sync_bucket_limit()`（トリガー関数） | 誰も直接は不可 | `storage.buckets` の `user-files` の file_size_limit を update |
-| `set_max_file_bytes(bytes)` | elvar_app | platform_config の max_file_bytes を insert/update（毎日の Cron、`ELVAR_MAX_FILE_BYTES` があるときだけ） |
+| `set_max_file_bytes(bytes)` | elvar_app | platform_config の max_file_bytes を insert/update（毎日の Cron、`ELVAR_MAX_FILE_BYTES` があるときだけ）。1MB 未満は拒否、60MB を超える値は 60MB に丸めて保存（`app.files.size_bytes` の check が 60MB までのため。以前は 5GB まで受け付けていた不整合を直した） |
 | `_platform_storage_full(add)` | 誰も直接は不可 | 読むだけ |
 | `reserve_file(...)`（置き換え） | authenticated | 07 と同じ。上限は設定値、予約は15分、全体上限（`max_total_storage_bytes`）も確認 |
 **作るトリガー**: `platform_max_file_sync` — `app.platform_config` への insert/update/delete のたび（文ごとに1回）に `_sync_bucket_limit()`。Storage のテーブルにはトリガーを作りません。

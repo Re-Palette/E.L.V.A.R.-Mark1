@@ -179,7 +179,7 @@ CSP は、`vercel.json` で `challenges.cloudflare.com` を許可済みです。
 | `ELVAR_BOOTSTRAP_ADMIN_EMAIL` | おすすめ | 最初の管理者のメールアドレス（§3） |
 | `ELVAR_TURNSTILE_SITE_KEY` | 任意 | §1.8 のサイトキー |
 | `ELVAR_SIGNUP` | 任意 | `open`、`invite`、`closed`。データベースが無いときの表示だけに使われます。実際の制限は §1.7 の表です |
-| `ELVAR_MAX_FILE_BYTES` | 任意 | 1ファイルの上限（バイト、1MB〜5GB）。設定すると cron がデータベース（`app.platform_config` の `max_file_bytes`）に書き込み、Storage バケットの上限もトリガーで同じ値になります。未設定ならデータベースの値のまま（マイグレーションの初期値は 52428800 = 50MB。無料プランはこのままにします）。有料プランで 60MB にするなら 62914560 |
+| `ELVAR_MAX_FILE_BYTES` | 任意 | 1ファイルの上限（バイト、1MB〜60MB。60MB より大きい値は 60MB に丸められます）。設定すると cron がデータベース（`app.platform_config` の `max_file_bytes`）に書き込み、Storage バケットの上限もトリガーで同じ値になります。未設定ならデータベースの値のまま（マイグレーションの初期値は 52428800 = 50MB。無料プランはこのままにします）。有料プランで 60MB にするなら 62914560 |
 | `ELVAR_DEFAULT_LIMITS` | 任意 | 1アカウントごとの既定のハード上限（JSON）。例: `{"geminiCallsPerDay":2000,"requestsPerMinute":120}`。管理者が1人ずつ変えられます |
 | `ELVAR_DELETION_RECEIPT_WEBHOOK` | 任意 | アカウント削除が完了したとき、`{to, subject, text}` を受け取る https の URL。確認メールは、あなたの側で送ります |
 | `ELVAR_KEK_PREV` | 回転中だけ | 古い KEK（複数はカンマ区切り） |

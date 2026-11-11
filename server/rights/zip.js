@@ -59,6 +59,8 @@ export function createZip({ now = () => Date.now() } = {}) {
     get entries() { return central.length; },
     /** Bytes written so far (compressed): the caller closes the part when this is big enough. */
     get size() { return size; },
+    /** What the file would weigh if it were closed now: the bytes written plus the central directory (46 bytes and the name per entry) and the end record. The export budgets with this. */
+    get total() { return size + central.reduce((n, e) => n + 46 + e.nm.length, 0) + 22; },
     finish() {
       const start = offset, cd = [];
       for (const e of central) cd.push(Buffer.concat([u32(0x02014b50), u16(20), u16(20), u16(0x0800), u16(e.method), u16(e.t.time), u16(e.t.date), u32(e.crc), u32(e.csize), u32(e.usize), u16(e.nm.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(e.off), e.nm]));

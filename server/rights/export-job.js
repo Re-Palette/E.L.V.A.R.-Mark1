@@ -1,6 +1,9 @@
 // The data export as an asynchronous job (docs/ELVAR_MULTIUSER.md 7.3, 19; principle 7). The user asks (a recent sign-in is needed, one export a day by default, one running job
-// at a time); the server then builds the export in STEPS, each step closes one zip PART (about 100 MB at most, or 60,000 entries, plus the one file that crosses the line) and
-// uploads it with the service key to the private bucket `user-exports` (users/<uid>/exports/<job>/part-<n>.zip). The page asks for the next step while it is open; a job that
+// at a time); the server then builds the export in STEPS, each step closes one zip PART and uploads it with the service key to the private bucket `user-exports`
+// (users/<uid>/exports/<job>/part-<n>.zip). A part never weighs more than the platform's upload limit (app.platform_config max_file_bytes: 50 MB on the Supabase Free plan, where Storage
+// refuses anything bigger whatever the bucket says): the budget is partBudget(limit) = limit minus a safety margin for the zip's own bytes, and it counts the central directory too (a part also
+// closes at 60,000 entries). An original that cannot fit in a part next to the zip overhead (a file may be as big as the limit itself) is NOT put in a part: it is delivered as its own entry,
+// a short-lived signed download link to the owner's original in `user-files`, marked 「別ダウンロード」 in files/index and in export-report.json and shown by the page beside the zip parts. The page asks for the next step while it is open; a job that
 // stops moving for 30 minutes is marked failed by the daily sweep. When the last part is written the job is `done` and its links live for 24 hours; after that the job and its objects
 // are deleted.
 //
@@ -11,8 +14,9 @@
 //                            extracted texts), walked page by page with a keyset cursor (export-pages.js): nothing is cut at a fixed number
 //   notes/<path>.md          every note as a Markdown file (Obsidian opens the folder as it is), trash included under the same path
 //   conversations/<day>.<n>.jsonl  the conversation log by day, one JSON line per message
-//   files/index-part<n>.json, files/<id>-<name>   the file vault: the index (name, hash, ...) and every ORIGINAL
-//   export-report.json       (last part) how many rows of each table went in against the manifest, how many originals went in, which ones could not be read, which objects were left out on purpose
+//   files/index-part<n>.json, files/<id>-<name>   the file vault: the index (name, hash, ...) and every ORIGINAL that fits in a part (the others say `separateDownload` in the index)
+//   export-report.json       (last part) how many rows of each table went in against the manifest, how many originals went in, which ones are delivered by link (originalsLinked: name, size, hash, url, expiry),
+//                            which could not be read, which objects were left out on purpose. Every user-files object is in exactly one place: inside a part, or in originalsLinked.
 // Never in the export: ciphertext, wrapped keys, token hashes (the registry's exportExclude), the Storage paths, anybody else's data (every read runs as the user).
 //
 // Races with a deletion (the account may be deleted while a step runs): a step takes a per-job lock (two steps never run at once), checks a purge lock before it writes, and if the job is
@@ -21,11 +25,27 @@ import crypto from 'node:crypto';
 import { createZip, MAX_ENTRIES } from './zip.js';
 import { REGISTRY, exportPlan } from './registry.js';
 import { EXPORTERS, exportedFiles, rowsFileOf, originalPath, objectPathOf } from './export.js';
-import { PAGED, PAGED_ORDER } from './export-pages.js';
+import { PAGED, PAGED_ORDER, keyOf } from './export-pages.js';
 import { USER_BUCKET, USER_BUCKETS } from '../storage/index.js';
 
 export const EXPORT_BUCKET = 'user-exports';
-export const PART_BYTES = 100 * 1024 * 1024;
+export const MIB = 1024 * 1024;
+/** What a part may weigh when nothing says otherwise: the O1 default limit (60 MB) less its margin. The real budget comes from the platform's limit (partBudget). */
+export const PART_BYTES = 60 * MIB - MIB;
+/**
+ * Pure: the byte budget of one zip part from the platform's upload limit (app.platform_config max_file_bytes). A part is uploaded to Storage, which refuses any object over that limit,
+ * so the budget is the limit less a safety margin for the zip's own bytes that the running count cannot know yet (the closing entries, the report): 1 MB, or a quarter of the limit
+ * when the limit is tiny (the smallest configurable limit is 1 MB). Never above the limit, never below 1 byte.
+ */
+export function partBudget(limit) {
+  const l = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Math.floor(Number(limit)) : 60 * MIB;
+  return Math.max(1, l - Math.min(MIB, Math.floor(l / 4)));
+}
+/** Bytes a zip entry costs next to its data (local header, central directory record, the name twice) - a deliberately generous count. */
+const entryOverhead = (f) => 256 + 2 * Buffer.byteLength(originalPath(f));
+/** Pure: does this original go in a part? A file whose size plus entry overhead cannot fit the part budget even in an empty part goes by signed link instead. */
+export const isLinked = (f, budget) => f.status === 'ready' && Number(f.size_bytes) + entryOverhead(f) > budget;
+export const LINKED_LABEL = '別ダウンロード';
 export const LINK_TTL_SEC = 24 * 3600;
 export const PURGE_LOCK = 'purge-lock';
 const day = (iso) => String(iso || '').slice(0, 10) || 'unknown';
@@ -57,25 +77,35 @@ const purging = (user) => user.db((r) => r.kv.get(PURGE_LOCK)).then((v) => v !==
 
 /**
  * One step: builds the next part, uploads it, records progress. Safe to call again while a step runs (a per-job lock: the second call gets the job as it is).
- * @param {{storage: {service: {put:Function, get:Function, remove:Function, list:Function}}, budgetMs?: number, partBytes?: number, maxEntries?: number, now?: () => number}} o
+ * @param {{storage: {service: {put:Function, get:Function, remove:Function, list:Function, hash:Function, sign:Function}}, budgetMs?: number, partBytes?: number, maxEntries?: number, now?: () => number}} o  partBytes: tests only (a smaller budget than the platform's)
  * @returns the job as it is now, or null when it does not exist (any more)
  */
-export async function stepExport(user, id, { storage, budgetMs = 12_000, partBytes = PART_BYTES, maxEntries = MAX_ENTRIES, now = () => Date.now() } = {}) {
+export async function stepExport(user, id, { storage, budgetMs = 12_000, partBytes = null, maxEntries = MAX_ENTRIES, now = () => Date.now() } = {}) {
   const job = await user.db((r) => r.exportJobs.get(id)); if (!job) return null;
   if (!['queued', 'running'].includes(job.status)) return job;
   const took = await user.db((r) => r.kv.setNx(`export-step:${id}`, { at: now() }, { ttlSec: 120 }));
   if (!took) return job;   // a step of this job is running: do not build the same part twice
-  try { return await runStep(user, id, job, { storage, budgetMs, partBytes, maxEntries, now }); }
+  try {
+    // the budget of a part follows the platform's upload limit; a job keeps the budget it started with (the cursor), so every step of it sorts the originals the same way
+    let budget = job.cursor?.budget ?? partBytes;
+    if (!budget) { let limit = null; try { limit = await user.system.maxFileBytes(); } catch { /* the default limit applies */ } budget = partBudget(limit); }
+    return await runStep(user, id, job, { storage, budgetMs, partBytes: budget, maxEntries, now });
+  }
   finally { await user.db((r) => r.kv.del(`export-step:${id}`)).catch(() => {}); }
 }
 
 async function runStep(user, id, job, { storage, budgetMs, partBytes, maxEntries, now }) {
   const t0 = now(), uid = user.uid.uid;
-  const c = job.cursor?.v === 2 ? job.cursor : { v: 2, stage: 'data', ti: 0, after: null, fileAfter: null, part: 1, originals: 0, missing: [], rows: {}, expected: {} };
+  const c = job.cursor?.v === 2 ? job.cursor : { v: 2, stage: 'data', ti: 0, after: null, fileAfter: null, part: 1, originals: 0, missing: [], linked: [], rows: {}, expected: {} };
+  c.budget ??= partBytes; c.linked ??= [];
+  const budget = c.budget;
   const zip = createZip({ now }), pending = new Map(), days = new Map(), index = [];   // pending: table -> JSON lines of this part
-  let buffered = 0, done = false;
-  const over = () => now() - t0 > budgetMs || zip.size + buffered >= partBytes || zip.entries >= maxEntries;
-  const note = (map, k, line) => { (map.get(k) || map.set(k, []).get(k)).push(line); buffered += line.length + 1; };
+  let buffered = 0, done = false, expiresAt = null;
+  const weight = () => zip.total + buffered;   // what the part weighs if it closed now, counted pessimistically (rows are counted at their raw size, the zip deflates them)
+  const hasContent = () => zip.entries > 0 || buffered > 0;
+  const over = () => now() - t0 > budgetMs || weight() >= budget || zip.entries >= maxEntries;
+  const sizeOf = (v) => Buffer.byteLength(typeof v === 'string' ? v : JSON.stringify(v));
+  const note = (map, k, line) => { (map.get(k) || map.set(k, []).get(k)).push(line); buffered += Buffer.byteLength(line) + 1; };
   const fail = async (error) => { await user.system.updateExportJob(user.uid, id, { status: 'failed', cursor: c, parts: job.parts, bytes: job.bytes, error }).catch(() => {}); return user.db((r) => r.exportJobs.get(id)).catch(() => null); };
   try {
     if (await purging(user)) return await fail('account_deleting');
@@ -90,27 +120,40 @@ async function runStep(user, id, job, { storage, budgetMs, partBytes, maxEntries
     // ---- the rows of every table that can be any size, page by page (each page is its own short transaction: no connection is held while the part is built or uploaded)
     while (c.stage === 'rows' && !over()) {
       const table = PAGED_ORDER[c.ti], { rows, next } = await user.db((r) => r.rights.exportPage(table, { after: c.after }));
+      let stopped = false;
       for (const row of rows) {
+        // the part closes BEFORE the row that would take it over the budget (the cursor stays at the last row that went in); an empty part always takes its first row
+        const est = table === 'notes' ? sizeOf(row.content ?? '') + 2 * sizeOf({ ...row, content: '' }) + 400 : 2 * sizeOf(row) + 100;
+        if (hasContent() && weight() + est > budget) { stopped = true; break; }
         let out = row;
-        if (table === 'notes') { const file = zip.add(`notes/${row.path}`, Buffer.from(row.content ?? '')); const { content, ...meta } = row; void content; out = { ...meta, file }; buffered += (row.content || '').length; }
+        if (table === 'notes') { const file = zip.add(`notes/${row.path}`, Buffer.from(row.content ?? '')); const { content, ...meta } = row; void content; out = { ...meta, file }; }
         if (table === 'messages') note(days, `${day(row.at)}`, JSON.stringify({ conversation: row.conversation_id, role: row.role, at: row.at, text: row.text }));
-        if (table === 'files') index.push({ ...row, exportPath: originalPath({ id: row.id, name: row.name }) });
+        if (table === 'files') { const entry = { ...row, exportPath: originalPath({ id: row.id, name: row.name }), ...(isLinked(row, budget) ? { exportPath: null, separateDownload: true, download: LINKED_LABEL, downloadNote: `${LINKED_LABEL}: この原本は大きいため zip には入っていません。export-report.json の originalsLinked と、書き出しの画面に、期限つきのダウンロードリンクがあります` } : {}) }; index.push(entry); buffered += sizeOf(entry) + 1; }
         note(pending, table, JSON.stringify(out));
+        c.rows[table] = (c.rows[table] || 0) + 1; c.after = keyOf(table, row);
       }
-      c.rows[table] = (c.rows[table] || 0) + rows.length;
+      if (stopped) break;
       if (next) c.after = next; else { c.ti++; c.after = null; if (c.ti >= PAGED_ORDER.length) c.stage = 'originals'; }
     }
-    // ---- the originals (Storage reads happen between short transactions, never inside one)
+    // ---- the originals (Storage reads happen between short transactions, never inside one). One that fits goes in the part; one that cannot fit a part is checked (size and hash,
+    //      streamed, never held in memory) and listed in c.linked: it is delivered by a signed link to the owner's own object
     if (c.stage === 'originals' && !over()) {
       for (;;) {
         const { rows, next } = await user.db((r) => r.rights.exportPage('files', { after: c.fileAfter }));
         let stopped = false;
         for (const f of rows) {
-          if (zip.entries > 0 && over()) { stopped = true; break; }
+          const linked = isLinked(f, budget), need = f.status === 'ready' && !linked ? Number(f.size_bytes) + entryOverhead(f) : 0;
+          if (hasContent() && (now() - t0 > budgetMs || zip.entries >= maxEntries || weight() + need > budget)) { stopped = true; break; }
           if (f.status === 'ready') {
-            const bytes = await storage.service.get(objectPathOf(uid, f), { bucket: USER_BUCKET });
-            if (!bytes || bytes.length !== f.size_bytes || crypto.createHash('sha256').update(bytes).digest('hex') !== f.sha256) c.missing.push({ id: f.id, name: f.name, why: bytes ? 'the stored copy differs from the recorded hash' : 'the stored copy is missing' });
-            if (bytes) { zip.add(originalPath(f), bytes); c.originals++; }
+            if (linked) {
+              const seen = await storage.service.hash(objectPathOf(uid, f), { bucket: USER_BUCKET, maxBytes: Number(f.size_bytes) + 1 });
+              if (!seen || seen.size !== Number(f.size_bytes) || seen.sha256 !== f.sha256) c.missing.push({ id: f.id, name: f.name, why: seen ? 'the stored copy differs from the recorded hash' : 'the stored copy is missing' });
+              else c.linked.push({ id: f.id, name: f.name, size: Number(f.size_bytes), sha256: f.sha256 });
+            } else {
+              const bytes = await storage.service.get(objectPathOf(uid, f), { bucket: USER_BUCKET });
+              if (!bytes || bytes.length !== f.size_bytes || crypto.createHash('sha256').update(bytes).digest('hex') !== f.sha256) c.missing.push({ id: f.id, name: f.name, why: bytes ? 'the stored copy differs from the recorded hash' : 'the stored copy is missing' });
+              if (bytes) { zip.add(originalPath(f), bytes); c.originals++; }
+            }
           }
           c.fileAfter = [f.id];
         }
@@ -123,16 +166,23 @@ async function runStep(user, id, job, { storage, budgetMs, partBytes, maxEntries
     for (const [d, lines] of [...days].sort()) zip.add(`conversations/${d}.${c.part}.jsonl`, Buffer.from(lines.join('\n') + '\n'));
     if (index.length) zip.add(`files/index-part${c.part}.json`, json({ files: index }));
     if (done) {
+      expiresAt = new Date(now() + LINK_TTL_SEC * 1000).toISOString();
+      // the originals too big for a part: a signed link to the owner's own object in user-files, valid until the export itself expires (every link is made from this user's id and the file's own id and hash)
+      const linkedOut = [];
+      for (const f of c.linked) {
+        let url = null; try { url = await storage.service.sign(objectPathOf(uid, f), { bucket: USER_BUCKET, expiresInSec: LINK_TTL_SEC, name: f.name }); } catch (e) { console.error('[elvar] export: could not sign a link:', e?.code || e?.message); }
+        linkedOut.push({ id: f.id, name: f.name, size: f.size, sha256: f.sha256, exportPath: null, download: LINKED_LABEL, url, expiresAt, ...(url ? {} : { note: '今は作れませんでした。書き出しの画面から、もう一度リンクを受け取ってください' }) });
+      }
       const left = {}; for (const b of USER_BUCKETS) if (b !== USER_BUCKET) left[b] = (await storage.service.list(`users/${uid}/`, { bucket: b })).length;
       const rowsReport = Object.fromEntries(PAGED_ORDER.map((t) => [t, { exported: c.rows[t] || 0, manifest: c.expected[t] ?? 0 }]));
-      zip.add('export-report.json', json({ parts: c.part, rows: rowsReport, rowsComplete: PAGED_ORDER.every((t) => (c.rows[t] || 0) >= (c.expected[t] ?? 0)), originalsIncluded: c.originals, originalsMissing: c.missing, objectsLeftOutOnPurpose: { 'user-exports': 'this export itself', 'user-cache': 'rebuildable caches (greeting audio and the like)', counts: left }, finishedAt: new Date(now()).toISOString() }));
+      zip.add('export-report.json', json({ parts: c.part, rows: rowsReport, rowsComplete: PAGED_ORDER.every((t) => (c.rows[t] || 0) >= (c.expected[t] ?? 0)), originalsIncluded: c.originals, originalsLinked: linkedOut, originalsLinkedNote: linkedOut.length ? `${LINKED_LABEL}: zip の1つの部分に入りきらない大きさの原本は、zip には入れず、期限つきのリンク（${expiresAt} まで）で受け取ります。原本の数 = originalsIncluded + originalsLinked + originalsMissing` : null, partBudgetBytes: budget, originalsMissing: c.missing, objectsLeftOutOnPurpose: { 'user-exports': 'this export itself', 'user-cache': 'rebuildable caches (greeting audio and the like)', counts: left }, finishedAt: new Date(now()).toISOString() }));
     }
     const buf = zip.finish();
     if (await purging(user)) return await fail('account_deleting');
     await storage.service.put(partPath(uid, id, c.part), buf, { bucket: EXPORT_BUCKET, contentType: 'application/zip' });
     const parts = c.part, bytes = job.bytes + buf.length;
     let kept;
-    if (done) kept = await user.system.updateExportJob(user.uid, id, { status: 'done', cursor: { ...c, stage: 'done' }, parts, bytes, expiresAt: new Date(now() + LINK_TTL_SEC * 1000).toISOString() });
+    if (done) kept = await user.system.updateExportJob(user.uid, id, { status: 'done', cursor: { ...c, stage: 'done' }, parts, bytes, expiresAt });
     else { c.part++; kept = await user.system.updateExportJob(user.uid, id, { status: 'running', cursor: c, parts, bytes }); }
     if (!kept) {   // the job is gone (the account was deleted, the user removed the export, the sweep took it): what was just written would be left behind for good
       await storage.service.remove([partPath(uid, id, parts)], { bucket: EXPORT_BUCKET }).catch((e) => console.error('[elvar] export: could not remove a part of a job that is gone:', e?.code || e?.message));
@@ -156,12 +206,18 @@ export async function exportsToday(user, now = Date.now()) { return (await user.
 /** The job as the page sees it: progress in plain numbers (never the cursor with its file ids) and, while it is ready, a link per part that expires. */
 export async function describeJob(job, { storage, uid, now = () => Date.now() } = {}) {
   if (!job) return null;
-  const out = { id: job.id, status: job.status, parts: job.parts, bytes: job.bytes, createdAt: job.createdAt, expiresAt: job.expiresAt, error: job.error ?? null, progress: { originals: job.cursor?.originals ?? 0, missing: (job.cursor?.missing || []).length, stage: job.cursor?.stage ?? 'data' } };
+  const out = { id: job.id, status: job.status, parts: job.parts, bytes: job.bytes, createdAt: job.createdAt, expiresAt: job.expiresAt, error: job.error ?? null, progress: { originals: job.cursor?.originals ?? 0, linked: (job.cursor?.linked || []).length, missing: (job.cursor?.missing || []).length, stage: job.cursor?.stage ?? 'data' } };
   if (job.status === 'done' && job.expiresAt && Date.parse(job.expiresAt) > now()) {
     const ttl = Math.max(1, Math.min(LINK_TTL_SEC, Math.ceil((Date.parse(job.expiresAt) - now()) / 1000)));
     out.downloads = [];
     for (let n = 1; n <= job.parts; n++) out.downloads.push({ part: n, name: `elvar-export-${job.createdAt.slice(0, 10)}-part${n}.zip`, url: await storage.service.sign(partPath(uid, job.id, n), { bucket: EXPORT_BUCKET, expiresInSec: ttl, name: `elvar-export-${job.createdAt.slice(0, 10)}-part${n}.zip` }) });
     out.linkExpiresInSec = ttl;
+    // the originals that did not fit a part: a fresh signed link to the owner's own object for the time the export has left (a file the user removed since is reported as unavailable)
+    out.linkedOriginals = [];
+    for (const f of job.cursor?.linked || []) {
+      let url = null; try { url = await storage.service.sign(objectPathOf(uid, f), { bucket: USER_BUCKET, expiresInSec: ttl, name: f.name }); } catch { /* the file is gone: no link */ }
+      out.linkedOriginals.push({ id: f.id, name: f.name, size: f.size, label: LINKED_LABEL, url, expiresAt: job.expiresAt, available: url !== null });
+    }
   }
   return out;
 }

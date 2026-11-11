@@ -112,6 +112,10 @@ test('the reservation lives 15 minutes; the platform per-file limit (platform_co
     await admin`delete from app.platform_config where key = 'max_file_bytes'`;
     const [bk2] = await admin`select file_size_limit from storage.buckets where id = 'user-files'`; assert.equal(Number(bk2.file_size_limit), 62914560, 'no row: the O1 default, on the bucket too');
     await assert.rejects(db.system.setMaxFileBytes(10));
+    // the ceiling is app.files.size_bytes (60 MB): a bigger value is clamped (in the function too, not only in the server), a value under 1 MB is refused
+    const [big] = await admin`select app.set_max_file_bytes(5368709120) as n`; assert.equal(Number(big.n), 62914560); assert.equal((await admin`select value from app.platform_config where key = 'max_file_bytes'`)[0].value, '62914560');
+    await admin`update app.platform_config set value = '5368709120' where key = 'max_file_bytes'`; assert.equal(await db.system.maxFileBytes(), 62914560, 'a stored value above the ceiling reads as the ceiling');
+    await assert.rejects(admin`select app.set_max_file_bytes(1000)`);
   } finally { await db.system.setMaxFileBytes(52428800); const [bk] = await admin`select file_size_limit from storage.buckets where id = 'user-files'`; assert.equal(Number(bk.file_size_limit), 52428800, 'back to the 50 MB start'); }
   await db.asUser(A, async (r2) => { await r2.files.beginDelete(r.fileId); await r2.files.finishDelete(r.fileId); });
 });

@@ -633,7 +633,7 @@ export function createMemoryDb({ now = null } = {}) {
     async accountCount() { return tables.accounts.length; },
     async existingUsers(ids) { V.need(Array.isArray(ids) && ids.length <= 1000 && ids.every((x) => UUID_RE.test(x))); return ids.filter((x) => users.has(x)); },
     async maxFileBytes() { return platformMaxFile; },
-    async setMaxFileBytes(n) { V.need(Number.isInteger(n) && n >= 1048576 && n <= 5368709120); platformMaxFile = n; return n; },
+    async setMaxFileBytes(n) { V.need(Number.isInteger(n) && n >= 1048576); platformMaxFile = Math.min(n, V.FILE_MAX_BYTES); return platformMaxFile; },
     async deviceLookup(hash) { V.need(V.isBytes(hash, 32)); const r = tables.devices.find((x) => sameBytes(x.token_hash, hash)); return r ? { userId: r.user_id, deviceId: r.id, scopes: [...r.scopes] } : null; },
   };
 
